@@ -1,0 +1,79 @@
+# External Data Ingestion — DLT Pipeline + Orchestration Job
+#
+# DAG:
+#   [Volume CSVs] → 3x Ingestion notebooks (parallel) → 3x Raw tables
+#                                                              ↓
+#                                        DLT Silver Pipeline (with DQ expectations)
+#                                                              ↓
+#                                        3x Silver tables (cleansed, enriched)
+
+resources:
+  pipelines:
+    silver_external_data:
+      name: "Silver — External Data Cleansing"
+      catalog: ${var.catalog_name}
+      target: ${var.schema_name}
+      channel: CURRENT
+      serverless: true
+      libraries:
+        - notebook:
+            path: ../src/02_silver/silver_market_pricing.sql
+        - notebook:
+            path: ../src/02_silver/silver_geospatial_hazard.sql
+        - notebook:
+            path: ../src/02_silver/silver_credit_bureau.sql
+
+  jobs:
+    ingest_external_data:
+      name: "Ingest External Data → Raw → Silver"
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: volume_name
+          default: ${var.volume_name}
+
+      tasks:
+        # Step 1: Ingest CSVs to Raw (parallel)
+        - task_key: ingest_market_pricing
+          notebook_task:
+            notebook_path: ../src/01_ingestion/ingest_market_pricing.py
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name: ${var.schema_name}
+              volume_name: ${var.volume_name}
+          environment_key: default
+
+        - task_key: ingest_geospatial_hazard
+          notebook_task:
+            notebook_path: ../src/01_ingestion/ingest_geospatial_hazard.py
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name: ${var.schema_name}
+              volume_name: ${var.volume_name}
+          environment_key: default
+
+        - task_key: ingest_credit_bureau
+          notebook_task:
+            notebook_path: ../src/01_ingestion/ingest_credit_bureau.py
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name: ${var.schema_name}
+              volume_name: ${var.volume_name}
+          environment_key: default
+
+        # Step 2: DLT pipeline — Raw → Silver (runs after all ingestion completes)
+        - task_key: build_silver
+          depends_on:
+            - task_key: ingest_market_pricing
+            - task_key: ingest_geospatial_hazard
+            - task_key: ingest_credit_bureau
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.silver_external_data.id}
+            full_refresh: true
+
+      environments:
+        - environment_key: default
+          spec:
+            client: "1"

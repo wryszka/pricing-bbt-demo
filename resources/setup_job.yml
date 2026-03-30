@@ -1,0 +1,28 @@
+# One-time setup job — creates schema, volume, internal tables, and generates CSVs
+
+resources:
+  jobs:
+    setup_demo:
+      name: "Setup — Pricing BBT Demo"
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: volume_name
+          default: ${var.volume_name}
+
+      tasks:
+        - task_key: setup
+          notebook_task:
+            notebook_path: ../src/00_setup/setup.py
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name: ${var.schema_name}
+              volume_name: ${var.volume_name}
+          environment_key: default
+
+      environments:
+        - environment_key: default
+          spec:
+            client: "1"
