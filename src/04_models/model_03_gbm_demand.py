@@ -78,7 +78,7 @@ feature_cols = [
     "population_density_per_km2", "distance_to_coast_km",
 ]
 
-pdf = enriched.select("quote_id", "converted_flag", "quote_to_market_ratio", *feature_cols).toPandas()
+pdf = enriched.select("quote_id", "converted_flag", *feature_cols).toPandas()
 pdf[feature_cols] = pdf[feature_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
 
 print(f"Total quotes: {len(pdf)}, Conversion rate: {pdf['converted_flag'].mean():.1%}")
