@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from server.routes import datasets
+from server.routes import datasets, models
 from server.config import get_workspace_host
 
 logging.basicConfig(
@@ -23,9 +23,10 @@ async def lifespan(application: FastAPI):
     logger.info("Starting Pricing UPT Ingestion Review App")
     try:
         await datasets.ensure_approvals_table()
-        logger.info("Approvals table ready")
+        await models.ensure_model_factory_tables()
+        logger.info("Approvals and model factory tables ready")
     except Exception:
-        logger.exception("Failed to ensure approvals table — will retry on first request")
+        logger.exception("Failed to ensure tables — will retry on first request")
     yield
     logger.info("Shutting down")
 
@@ -37,6 +38,7 @@ app = FastAPI(
 )
 
 app.include_router(datasets.router)
+app.include_router(models.router)
 
 
 @app.get("/api/health")

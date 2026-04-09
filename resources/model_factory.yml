@@ -1,0 +1,84 @@
+# Model Factory Pipeline — automated model training, evaluation, and actuary review
+#
+# DAG:
+#   feature_inspector → automated_training → evaluation → actuary_review → promote_model
+#
+# The pipeline generates ~20 model configurations (GLMs + GBMs), trains them all,
+# ranks them on insurance-specific metrics, and presents the leaderboard for
+# actuary approval. Approved models are registered in Unity Catalog.
+
+resources:
+  jobs:
+    model_factory_pipeline:
+      name: "Model Factory — Automated Pricing Model Pipeline"
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+
+      tasks:
+        # Step 1: Profile the UPT, classify features, generate training plan
+        - task_key: mf_feature_inspector
+          notebook_task:
+            notebook_path: ../src/06_model_factory/mf_01_feature_inspector.py
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name: ${var.schema_name}
+          environment_key: model_factory
+
+        # Step 2: Train all planned model configurations
+        - task_key: mf_automated_training
+          depends_on:
+            - task_key: mf_feature_inspector
+          notebook_task:
+            notebook_path: ../src/06_model_factory/mf_02_automated_training.py
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name: ${var.schema_name}
+          environment_key: model_factory
+
+        # Step 3: Evaluate models and build leaderboard
+        - task_key: mf_evaluation
+          depends_on:
+            - task_key: mf_automated_training
+          notebook_task:
+            notebook_path: ../src/06_model_factory/mf_03_evaluation.py
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name: ${var.schema_name}
+          environment_key: model_factory
+
+        # Step 4: Generate actuary review artifacts
+        - task_key: mf_actuary_review
+          depends_on:
+            - task_key: mf_evaluation
+          notebook_task:
+            notebook_path: ../src/06_model_factory/mf_04_actuary_review.py
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name: ${var.schema_name}
+          environment_key: model_factory
+
+        # Step 5: Promote approved models to UC registry
+        # Runs after actuary approval — will exit early if no models approved yet
+        - task_key: mf_promote_model
+          depends_on:
+            - task_key: mf_actuary_review
+          notebook_task:
+            notebook_path: ../src/06_model_factory/mf_05_promote_model.py
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name: ${var.schema_name}
+          environment_key: model_factory
+
+      environments:
+        - environment_key: model_factory
+          spec:
+            client: "1"
+            dependencies:
+              - mlflow
+              - statsmodels
+              - lightgbm
+              - scikit-learn
+              - databricks-sdk
