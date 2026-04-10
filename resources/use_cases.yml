@@ -22,7 +22,7 @@ resources:
       environments:
         - environment_key: default
           spec:
-            client: "1"
+            client: "5"
 
     uc2_point_in_time:
       name: "UC2 — Point-in-Time Backtesting"
@@ -47,7 +47,7 @@ resources:
       environments:
         - environment_key: default
           spec:
-            client: "1"
+            client: "5"
 
     uc3_new_dataset:
       name: "UC3 — New Dataset Addition (Subsidence)"
@@ -69,7 +69,7 @@ resources:
       environments:
         - environment_key: default
           spec:
-            client: "1"
+            client: "5"
 
     uc4_lineage_governance:
       name: "UC4 — Lineage & Governance Demo"
@@ -91,6 +91,6 @@ resources:
       environments:
         - environment_key: default
           spec:
-            client: "1"
+            client: "5"
             dependencies:
               - mlflow

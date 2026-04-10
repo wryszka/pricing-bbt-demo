@@ -36,7 +36,7 @@ resources:
       environments:
         - environment_key: default
           spec:
-            client: "1"
+            client: "5"
             dependencies:
               - databricks-feature-engineering
               - databricks-sdk

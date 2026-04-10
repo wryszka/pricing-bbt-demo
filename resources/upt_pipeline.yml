@@ -22,4 +22,4 @@ resources:
       environments:
         - environment_key: default
           spec:
-            client: "1"
+            client: "5"

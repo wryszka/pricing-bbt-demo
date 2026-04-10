@@ -75,7 +75,7 @@ resources:
       environments:
         - environment_key: model_factory
           spec:
-            client: "1"
+            client: "5"
             dependencies:
               - mlflow
               - statsmodels
