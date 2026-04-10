@@ -1,0 +1,38 @@
+# Full demo pipeline — runs everything from scratch
+
+resources:
+  jobs:
+    run_full_demo:
+      name: "Run Full Demo Pipeline"
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: volume_name
+          default: ${var.volume_name}
+        - name: scale_factor
+          default: "1"
+
+      tasks:
+        - task_key: full_pipeline
+          notebook_task:
+            notebook_path: ../src/00_setup/run_full_demo.py
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name: ${var.schema_name}
+              volume_name: ${var.volume_name}
+              scale_factor: "1"
+          environment_key: default
+
+      environments:
+        - environment_key: default
+          spec:
+            client: "5"
+            dependencies:
+              - mlflow
+              - statsmodels
+              - lightgbm
+              - scikit-learn
+              - databricks-feature-engineering
+              - databricks-sdk

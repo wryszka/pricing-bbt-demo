@@ -44,7 +44,7 @@ def get_workspace_host() -> str:
         try:
             host = get_workspace_client().config.host
         except Exception:
-            host = "https://fevm-lr-serverless-aws-us.cloud.databricks.com"
+            host = ""  # Could not resolve — set DATABRICKS_HOST env var
     host = host.rstrip("/")
     if host and not host.startswith("http"):
         host = f"https://{host}"
