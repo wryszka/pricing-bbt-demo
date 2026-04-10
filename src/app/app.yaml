@@ -6,3 +6,5 @@ env:
     value: "pricing_upt"
   - name: WAREHOUSE_ID
     value: "ab79eced8207d29b"
+  - name: GENIE_SPACE_ID
+    value: "01f134e996251f40bf521eac22ad10f1"

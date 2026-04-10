@@ -20,6 +20,26 @@ export default function DatasetList() {
         <p className="text-gray-500 mt-1">Review, validate and approve external datasets before they merge into the Unified Pricing Table</p>
       </div>
 
+      {/* Context panels */}
+      <div className="grid grid-cols-2 gap-4 mb-6">
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+          <h4 className="text-xs font-semibold text-blue-800 uppercase tracking-wide mb-1">Databricks features demonstrated</h4>
+          <div className="flex flex-wrap gap-1.5">
+            {["Delta Live Tables expectations", "Unity Catalog governance", "Volumes for file ingestion", "Shadow pricing simulation", "Audit trail logging"].map(f => (
+              <span key={f} className="px-2 py-0.5 rounded text-[10px] font-medium bg-blue-100 text-blue-700">{f}</span>
+            ))}
+          </div>
+        </div>
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+          <h4 className="text-xs font-semibold text-amber-800 uppercase tracking-wide mb-1">Why it matters for actuaries</h4>
+          <p className="text-xs text-amber-700">
+            Replaces manual spreadsheet comparison of data versions. Actuaries see the exact financial
+            impact of new data on their portfolio <em>before</em> it enters the rating engine — with
+            a single click to approve or reject.
+          </p>
+        </div>
+      </div>
+
       <div className="grid gap-4">
         {datasets.map((ds) => {
           const approval = ds.approval;

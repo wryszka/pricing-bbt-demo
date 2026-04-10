@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
 import { Database, Building2, FlaskConical, Zap, Shield } from 'lucide-react';
+import Home from './pages/Home';
 import DatasetList from './pages/DatasetList';
 import DatasetDetail from './pages/DatasetDetail';
 import ModelFactory from './pages/ModelFactory';
@@ -11,7 +12,8 @@ function Nav() {
   const { pathname } = useLocation();
 
   const tabs = [
-    { to: '/', label: 'Data Ingestion', icon: Database, match: (p: string) => p === '/' || p.startsWith('/dataset') },
+    { to: '/', label: 'Home', icon: Database, match: (p: string) => p === '/' },
+    { to: '/datasets', label: 'Data Ingestion', icon: Database, match: (p: string) => p.startsWith('/dataset') },
     { to: '/models', label: 'Model Factory', icon: FlaskConical, match: (p: string) => p.startsWith('/models') },
     { to: '/features', label: 'Feature Store', icon: Zap, match: (p: string) => p.startsWith('/features') },
     { to: '/governance', label: 'Governance', icon: Shield, match: (p: string) => p.startsWith('/governance') },
@@ -57,7 +59,8 @@ export default function App() {
         <Nav />
         <main>
           <Routes>
-            <Route path="/" element={<DatasetList />} />
+            <Route path="/" element={<Home />} />
+            <Route path="/datasets" element={<DatasetList />} />
             <Route path="/dataset/:datasetId" element={<DatasetDetail />} />
             <Route path="/models" element={<ModelFactory />} />
             <Route path="/models/:runId" element={<ModelFactoryRun />} />

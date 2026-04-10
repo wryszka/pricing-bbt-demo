@@ -10,6 +10,9 @@ async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  // App config
+  getConfig: () => fetchJson<any>('/config'),
+
   // Dataset routes
   getDatasets: () => fetchJson<any[]>('/datasets'),
   getDatasetDiff: (id: string) => fetchJson<any>(`/datasets/${id}/diff`),

@@ -42,6 +42,26 @@ export default function ModelFactory() {
         </div>
       </div>
 
+      {/* Context panels */}
+      <div className="grid grid-cols-2 gap-4 mb-6">
+        <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
+          <h4 className="text-xs font-semibold text-purple-800 uppercase tracking-wide mb-1">Databricks features demonstrated</h4>
+          <div className="flex flex-wrap gap-1.5">
+            {["MLflow experiment tracking", "UC model registry", "Automated model evaluation", "Regulatory suitability scoring", "PDF model reports", "Foundation Model API (optional)"].map(f => (
+              <span key={f} className="px-2 py-0.5 rounded text-[10px] font-medium bg-purple-100 text-purple-700">{f}</span>
+            ))}
+          </div>
+        </div>
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+          <h4 className="text-xs font-semibold text-amber-800 uppercase tracking-wide mb-1">Why it matters for actuaries</h4>
+          <p className="text-xs text-amber-700">
+            Replaces the manual model comparison process. The factory trains 20+ model configurations,
+            ranks them on insurance-specific metrics (Gini, PSI, regulatory suitability), and presents
+            a leaderboard for actuarial sign-off — with a one-click PDF report for regulators.
+          </p>
+        </div>
+      </div>
+
       {/* ── AI Assistant Toggle (OPTIONAL) ── */}
       <div className="mb-6 bg-white rounded-lg border border-gray-200 p-4">
         <div className="flex items-center justify-between">

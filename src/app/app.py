@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from server.routes import datasets, models, agent, features, governance
+import os
 from server.config import get_workspace_host
 
 logging.basicConfig(
@@ -47,6 +48,18 @@ app.include_router(governance.router)
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/api/config")
+async def config():
+    host = get_workspace_host()
+    genie_id = os.getenv("GENIE_SPACE_ID", "")
+    return {
+        "workspace_host": host,
+        "genie_space_id": genie_id,
+        "genie_url": f"{host}/genie/rooms/{genie_id}" if genie_id else None,
+        "genie_embed_url": f"{host}/embed/genie/rooms/{genie_id}" if genie_id else None,
+    }
 
 
 if FRONTEND_DIR.is_dir():
