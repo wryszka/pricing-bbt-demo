@@ -1,4 +1,4 @@
-# Use Case Jobs — Shadow Pricing, Point-in-Time, New Dataset
+# Use Case Jobs — Shadow Pricing, Point-in-Time, New Dataset, Lineage
 
 resources:
   jobs:
@@ -70,3 +70,27 @@ resources:
         - environment_key: default
           spec:
             client: "1"
+
+    uc4_lineage_governance:
+      name: "UC4 — Lineage & Governance Demo"
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+
+      tasks:
+        - task_key: lineage_demo
+          notebook_task:
+            notebook_path: ../src/05_use_cases/uc4_lineage_governance.py
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name: ${var.schema_name}
+          environment_key: default
+
+      environments:
+        - environment_key: default
+          spec:
+            client: "1"
+            dependencies:
+              - mlflow

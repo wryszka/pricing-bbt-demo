@@ -341,16 +341,103 @@ print(f"Final UPT columns: {len(upt.columns)}")
 
 # COMMAND ----------
 
-upt.write.mode("overwrite").saveAsTable(f"{fqn}.unified_pricing_table_live")
+table_name = f"{fqn}.unified_pricing_table_live"
+upt.write.mode("overwrite").saveAsTable(table_name)
 
-row_count = spark.table(f"{fqn}.unified_pricing_table_live").count()
-col_count = len(spark.table(f"{fqn}.unified_pricing_table_live").columns)
-print(f"✓ {fqn}.unified_pricing_table_live — {row_count:,} rows × {col_count} columns")
+row_count = spark.table(table_name).count()
+col_count = len(spark.table(table_name).columns)
+print(f"✓ {table_name} — {row_count:,} rows × {col_count} columns")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 10: Create initial monthly snapshot
+# MAGIC ## Step 10: Register as UC Feature Table
+# MAGIC Adding a PRIMARY KEY constraint makes this table automatically visible in
+# MAGIC the Unity Catalog Features UI. Tags and column comments aid discovery.
+
+# COMMAND ----------
+
+# Primary key — makes UPT a feature table in UC
+try:
+    spark.sql(f"ALTER TABLE {table_name} ADD CONSTRAINT upt_pk PRIMARY KEY (policy_id)")
+    print("✓ PRIMARY KEY constraint added (policy_id)")
+except Exception as e:
+    if "CONSTRAINT_ALREADY_EXISTS" in str(e) or "already exists" in str(e).lower():
+        print("✓ PRIMARY KEY constraint already exists")
+    else:
+        print(f"⚠ Could not add PK constraint: {e}")
+
+# COMMAND ----------
+
+# Table-level tags — visible in Catalog Explorer and Features UI
+tags = {
+    "business_line": "commercial_property",
+    "pricing_domain": "commercial_pricing",
+    "table_owner": "actuarial_pricing_team",
+    "refresh_cadence": "on_demand",
+    "demo_environment": "true",
+    "contains_pii": "false",
+}
+tag_sql = ", ".join(f"'{k}' = '{v}'" for k, v in tags.items())
+spark.sql(f"ALTER TABLE {table_name} SET TAGS ({tag_sql})")
+print(f"✓ Table tags set: {list(tags.keys())}")
+
+# COMMAND ----------
+
+# Column-level comments — show up in Features UI for discoverability
+column_comments = {
+    # Primary key
+    "policy_id": "Unique policy identifier — primary key",
+    # Core policy fields
+    "sic_code": "Standard Industrial Classification code (4-digit)",
+    "postcode_sector": "UK postcode sector for the insured premises",
+    "annual_turnover": "Declared gross revenue of the business (GBP)",
+    "sum_insured": "Total sum insured under the policy (GBP)",
+    "current_premium": "Current annual premium charged (GBP)",
+    "construction_type": "ISO construction class of the primary premises",
+    "building_age_years": "Age of the primary building in years",
+    "renewal_date": "Next renewal date for the policy",
+    # Claims features
+    "claim_count_5y": "Total number of claims in the last 5 years",
+    "total_incurred_5y": "Total incurred claim amount over 5 years (GBP)",
+    "loss_ratio_5y": "5-year loss ratio (incurred / premium)",
+    # Market features
+    "market_median_rate": "Market median premium rate per £1k sum insured",
+    "market_position_ratio": "Our rate vs market median (>1 = more expensive)",
+    "price_index_trend": "Quarterly market price trend (%)",
+    # Location risk
+    "flood_zone_rating": "Flood risk score (1=low, 10=high)",
+    "crime_theft_index": "Local area crime and theft index",
+    "subsidence_risk": "Ground subsidence risk score (0-10)",
+    "composite_location_risk": "Weighted composite location risk (flood+fire+crime+subsidence)",
+    "location_risk_tier": "Location risk classification: High/Medium/Low",
+    # Credit
+    "credit_score": "Company credit score (200-900)",
+    "credit_risk_tier": "Credit classification: Prime/Standard/Sub-Standard/High Risk",
+    "business_stability_score": "Composite business stability score (0-100)",
+    # Derived
+    "combined_risk_score": "Blended risk score combining location, credit, industry, claims",
+    "rate_per_1k_si": "Current premium rate per £1,000 sum insured",
+    "industry_risk_tier": "Industry risk classification: High/Medium/Low",
+    # Audit
+    "last_updated_by": "User or system that last modified this row",
+    "approval_timestamp": "Timestamp of the last approved data merge",
+    "upt_build_timestamp": "Timestamp when this version of the UPT was built",
+}
+
+for col_name, comment in column_comments.items():
+    try:
+        escaped_comment = comment.replace("'", "\\'")
+        spark.sql(f"ALTER TABLE {table_name} ALTER COLUMN {col_name} COMMENT '{escaped_comment}'")
+    except Exception:
+        pass  # Column may not exist or comment may already be set
+
+print(f"✓ Column comments set for {len(column_comments)} columns")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Step 11: Create initial monthly snapshot
 
 # COMMAND ----------
 
@@ -359,7 +446,7 @@ from datetime import datetime
 snapshot_suffix = datetime.now().strftime("%Y_%m")
 snapshot_table = f"{fqn}.unified_pricing_table_{snapshot_suffix}"
 
-spark.sql(f"CREATE TABLE IF NOT EXISTS {snapshot_table} DEEP CLONE {fqn}.unified_pricing_table_live")
+spark.sql(f"CREATE TABLE IF NOT EXISTS {snapshot_table} DEEP CLONE {table_name}")
 print(f"✓ Snapshot: {snapshot_table}")
 
 # COMMAND ----------
@@ -378,5 +465,15 @@ display(spark.sql(f"""
         avg(current_premium) as avg_premium,
         avg(loss_ratio_5y) as avg_loss_ratio,
         avg(combined_risk_score) as avg_risk_score
-    FROM {fqn}.unified_pricing_table_live
+    FROM {table_name}
 """))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Delta History
+# MAGIC Shows the version chain for this table — used by Time Travel and audit.
+
+# COMMAND ----------
+
+display(spark.sql(f"DESCRIBE HISTORY {table_name} LIMIT 10"))

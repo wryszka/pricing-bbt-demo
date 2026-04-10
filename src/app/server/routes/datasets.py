@@ -518,6 +518,24 @@ async def approve_dataset(dataset_id: str, req: ApprovalRequest):
         )
     """)
 
+    # Capture Delta versions for audit lineage
+    upt_version = None
+    silver_version = None
+    try:
+        upt_hist = await execute_query(
+            f"SELECT max(version) as v FROM (DESCRIBE HISTORY {fqn('unified_pricing_table_live')} LIMIT 1)"
+        )
+        upt_version = upt_hist[0]["v"] if upt_hist else None
+    except Exception:
+        pass
+    try:
+        silver_hist = await execute_query(
+            f"SELECT max(version) as v FROM (DESCRIBE HISTORY {fqn(ds['silver_table'])} LIMIT 1)"
+        )
+        silver_version = silver_hist[0]["v"] if silver_hist else None
+    except Exception:
+        pass
+
     await log_audit_event(
         event_type=f"dataset_{req.decision}",
         entity_type="dataset",
@@ -526,9 +544,13 @@ async def approve_dataset(dataset_id: str, req: ApprovalRequest):
         user_id=reviewer,
         details={
             "approval_id": approval_id,
+            "raw_table": ds["raw_table"],
+            "silver_table": ds["silver_table"],
             "raw_row_count": raw_count,
             "silver_row_count": silver_count,
             "rows_dropped_by_dq": raw_count - silver_count,
+            "upt_delta_version": upt_version,
+            "silver_delta_version": silver_version,
             "reviewer_notes": req.reviewer_notes,
         },
     )
@@ -538,6 +560,8 @@ async def approve_dataset(dataset_id: str, req: ApprovalRequest):
         "dataset_id": dataset_id,
         "decision": req.decision,
         "reviewer": reviewer,
+        "upt_delta_version": upt_version,
+        "silver_delta_version": silver_version,
         "message": f"Dataset {dataset_id} has been {req.decision}."
         + (" Data is ready to merge into the Unified Pricing Table." if req.decision == "approved" else ""),
     }

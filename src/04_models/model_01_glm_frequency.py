@@ -20,10 +20,10 @@ fqn = f"{catalog}.{schema}"
 # COMMAND ----------
 
 import mlflow
+import mlflow.data
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
-from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
 mlflow.set_registry_uri("databricks-uc")
@@ -40,7 +40,13 @@ except Exception:
 
 # COMMAND ----------
 
-upt = spark.table(f"{fqn}.unified_pricing_table_live")
+upt_table_name = f"{fqn}.unified_pricing_table_live"
+upt = spark.table(upt_table_name)
+
+# Capture the Delta version used for training — enables point-in-time reproducibility
+upt_history = spark.sql(f"DESCRIBE HISTORY {upt_table_name} LIMIT 1").collect()
+upt_delta_version = upt_history[0]["version"] if upt_history else None
+print(f"Training from: {upt_table_name} (Delta version {upt_delta_version})")
 
 feature_cols = [
     "annual_turnover", "sum_insured", "building_age_years", "current_premium",
@@ -91,9 +97,21 @@ with mlflow.start_run(run_name="glm_frequency_poisson") as run:
     mlflow.log_param("family", "Poisson")
     mlflow.log_param("link", "log")
     mlflow.log_param("features", len(feature_cols))
-    mlflow.log_param("upt_table", f"{fqn}.unified_pricing_table_live")
+    mlflow.log_param("upt_table", upt_table_name)
+    mlflow.log_param("upt_delta_version", upt_delta_version)
     mlflow.log_param("train_rows", len(train_pdf))
     mlflow.log_param("test_rows", len(test_pdf))
+
+    # Log input dataset for UC lineage tracking
+    # This creates a model→feature_table link visible in Catalog Explorer
+    try:
+        input_dataset = mlflow.data.from_spark(
+            upt, table_name=upt_table_name, version=str(upt_delta_version),
+        )
+        mlflow.log_input(input_dataset, context="training")
+    except Exception as e:
+        print(f"Note: mlflow.data.from_spark not available — {e}")
+    mlflow.set_tag("feature_table", upt_table_name)
 
     glm = sm.GLM(y_train, X_train, family=sm.families.Poisson(link=sm.families.links.Log()))
     result = glm.fit()
