@@ -59,4 +59,8 @@ export const api = {
   downloadModelReport: (runId: string, configId: string) =>
     `${BASE}/models/runs/${runId}/models/${configId}/report`,
   getFeatureProfile: (runId: string) => fetchJson<any[]>(`/models/runs/${runId}/features`),
+
+  // Agent (optional AI assistant)
+  getAgentStatus: () => fetchJson<any>('/agent/status'),
+  runAgentAnalysis: () => fetchJson<any>('/agent/analyze', { method: 'POST' }),
 };

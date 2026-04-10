@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from server.routes import datasets, models
+from server.routes import datasets, models, agent
 from server.config import get_workspace_host
 
 logging.basicConfig(
@@ -39,6 +39,7 @@ app = FastAPI(
 
 app.include_router(datasets.router)
 app.include_router(models.router)
+app.include_router(agent.router)
 
 
 @app.get("/api/health")
