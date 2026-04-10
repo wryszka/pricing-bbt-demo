@@ -155,14 +155,23 @@ export default function ModelFactoryRun() {
                             )}
                           </td>
                           <td className="px-4 py-3 text-center">
-                            {!m.decision && (
-                              <button
-                                onClick={() => setSelectedModel(selectedModel === m.model_config_id ? null : m.model_config_id)}
-                                className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+                            <div className="flex items-center justify-center gap-2">
+                              {!m.decision && (
+                                <button
+                                  onClick={() => setSelectedModel(selectedModel === m.model_config_id ? null : m.model_config_id)}
+                                  className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+                                >
+                                  Review
+                                </button>
+                              )}
+                              <a
+                                href={api.downloadModelReport(runId!, m.model_config_id)}
+                                className="text-xs text-gray-500 hover:text-blue-600 font-medium flex items-center gap-0.5"
+                                title="Download Model Report (PDF)"
                               >
-                                Review
-                              </button>
-                            )}
+                                <FileText className="w-3 h-3" /> PDF
+                              </a>
+                            </div>
                           </td>
                         </tr>
                       ))}

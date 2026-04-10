@@ -6,15 +6,19 @@ Provides endpoints for:
 3. Viewing model details (metrics, relativities, importances)
 4. Recording actuary approve/reject decisions
 5. Viewing the audit trail for a run
+6. Generating regulatory-grade PDF model reports
 """
 
+import io
 import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from server.audit import log_audit_event
+from server.pdf_report import build_model_report
 
 from server.config import fqn, get_current_user
 from server.sql import execute_query
@@ -301,3 +305,87 @@ async def get_feature_profile(run_id: str):
     except Exception as e:
         logger.warning("Failed to get feature profile: %s", e)
         return []
+
+
+# ---------------------------------------------------------------------------
+# 7. PDF Model Report
+# ---------------------------------------------------------------------------
+
+@router.get("/runs/{run_id}/models/{config_id}/report")
+async def download_model_report(run_id: str, config_id: str):
+    """Generate and download a regulatory-grade PDF model validation report."""
+
+    # Get model data from leaderboard
+    lb = await execute_query(f"""
+        SELECT * FROM {fqn('mf_leaderboard')}
+        WHERE factory_run_id = '{run_id}' AND model_config_id = '{config_id}'
+    """)
+    if not lb:
+        raise HTTPException(404, f"Model {config_id} not found in run {run_id}")
+
+    model = lb[0]
+
+    # Get decision if any
+    decisions = await execute_query(f"""
+        SELECT * FROM {fqn('mf_actuary_decisions')}
+        WHERE factory_run_id = '{run_id}' AND model_config_id = '{config_id}'
+        ORDER BY decided_at DESC LIMIT 1
+    """)
+    decision = decisions[0] if decisions else None
+
+    # Get audit trail
+    try:
+        audit_events = await execute_query(f"""
+            SELECT * FROM {fqn('mf_audit_log')}
+            WHERE factory_run_id = '{run_id}'
+            ORDER BY event_timestamp
+        """)
+    except Exception:
+        audit_events = []
+
+    # Also check unified audit_log
+    try:
+        unified_audit = await execute_query(f"""
+            SELECT event_id, event_type, user_id AS actor,
+                   timestamp AS event_timestamp, details AS details_json
+            FROM {fqn('audit_log')}
+            WHERE entity_id = '{config_id}'
+            ORDER BY timestamp
+        """)
+        audit_events.extend(unified_audit)
+    except Exception:
+        pass
+
+    # Get feature profile
+    try:
+        features = await execute_query(f"""
+            SELECT * FROM {fqn('mf_feature_profile')}
+            WHERE factory_run_id = '{run_id}'
+            ORDER BY feature_group, feature_name
+        """)
+    except Exception:
+        features = []
+
+    # Generate PDF
+    pdf_bytes = build_model_report(
+        model=model,
+        decision=decision,
+        audit_events=audit_events,
+        features=features,
+    )
+
+    filename = f"model_report_{config_id}_{datetime.now(timezone.utc).strftime('%Y%m%d')}.pdf"
+
+    await log_audit_event(
+        event_type="manual_download",
+        entity_type="model",
+        entity_id=config_id,
+        entity_version=run_id,
+        details={"report_type": "model_validation_pdf", "filename": filename},
+    )
+
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )

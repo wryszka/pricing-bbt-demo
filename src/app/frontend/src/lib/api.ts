@@ -56,5 +56,7 @@ export const api = {
       body: JSON.stringify({ decision, reviewer_notes: notes, conditions }),
     }),
   getAuditTrail: (runId: string) => fetchJson<any[]>(`/models/runs/${runId}/audit`),
+  downloadModelReport: (runId: string, configId: string) =>
+    `${BASE}/models/runs/${runId}/models/${configId}/report`,
   getFeatureProfile: (runId: string) => fetchJson<any[]>(`/models/runs/${runId}/features`),
 };
