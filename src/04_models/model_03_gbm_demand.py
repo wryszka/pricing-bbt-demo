@@ -161,8 +161,11 @@ with mlflow.start_run(run_name="lgbm_demand_conversion") as run:
     # FeatureLookup against the policy-keyed UPT directly. Log with standard
     # mlflow and register in UC. Feature enrichment for this model happens at
     # quote ingestion time, not at serving time.
+    from mlflow.models.signature import infer_signature
+    sig = infer_signature(pd.DataFrame(X_train, columns=feature_cols), y_pred)
     mlflow.sklearn.log_model(
         model, "lgbm_demand_model",
+        signature=sig,
         registered_model_name=f"{catalog}.{schema}.lgbm_demand_model",
     )
 
