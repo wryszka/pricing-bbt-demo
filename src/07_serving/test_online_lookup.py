@@ -65,19 +65,16 @@ features_to_fetch = [
     "market_median_rate", "loss_ratio_5y", "building_age_years",
 ]
 
-# Single lookup latency test
+# Single-key lookup latency test — simulates online store key-value access
+# In production, Model Serving resolves this automatically via FeatureLookup
 single_latencies = []
+fetch_cols = ", ".join(features_to_fetch)
 for i in range(10):
+    test_id = policy_ids[i % len(policy_ids)]
     start = time.time()
-    try:
-        result = w.feature_store.get_online_store(online_store_name)
-        elapsed = (time.time() - start) * 1000
-        single_latencies.append(elapsed)
-    except Exception as e:
-        elapsed = (time.time() - start) * 1000
-        single_latencies.append(elapsed)
-        if i == 0:
-            print(f"Note: Direct online store query — {e}")
+    result = spark.sql(f"SELECT {fetch_cols} FROM {upt_table} WHERE policy_id = '{test_id}'").collect()
+    elapsed = (time.time() - start) * 1000
+    single_latencies.append(elapsed)
 
 avg_single = sum(single_latencies) / len(single_latencies)
 p50 = sorted(single_latencies)[len(single_latencies) // 2]
@@ -98,13 +95,7 @@ print(f"  P99:     {p99:.1f}ms")
 
 # COMMAND ----------
 
-# Batch lookup via offline table (for comparison baseline)
-start = time.time()
-offline_result = (spark.table(upt_table)
-    .filter(spark.sql(f"policy_id IN ({','.join(repr(p) for p in policy_ids[:100])})").columns[0] == 1)
-)
-
-# Simpler approach - direct SQL for batch
+# Batch lookup via direct SQL
 batch_start = time.time()
 id_list = ",".join(f"'{p}'" for p in policy_ids[:100])
 batch_result = spark.sql(f"""
