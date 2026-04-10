@@ -1,0 +1,32 @@
+# Governance — regulatory export and dashboard queries
+
+resources:
+  jobs:
+    regulatory_export:
+      name: "Regulatory Export — Model Package"
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: model_name
+          default: "glm_frequency_model"
+
+      tasks:
+        - task_key: export
+          notebook_task:
+            notebook_path: ../src/08_governance/regulatory_export.py
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name: ${var.schema_name}
+              model_name: "glm_frequency_model"
+          environment_key: default
+
+      environments:
+        - environment_key: default
+          spec:
+            client: "5"
+            dependencies:
+              - mlflow
+              - fpdf2
+              - databricks-sdk

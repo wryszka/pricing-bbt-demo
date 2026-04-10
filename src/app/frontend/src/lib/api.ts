@@ -66,4 +66,7 @@ export const api = {
 
   // Feature Store
   getFeatureStoreStatus: () => fetchJson<any>('/features/status'),
+
+  // Governance
+  getGovernanceSummary: () => fetchJson<any>('/governance/summary'),
 };
