@@ -94,12 +94,15 @@ export default function Home() {
       {/* About */}
       <div className="bg-gray-50 border border-gray-200 rounded-lg p-5">
         <h3 className="font-semibold text-gray-800 mb-2">About this demo</h3>
+        <p className="text-sm text-gray-600 mb-3">
+          <strong>This is not a Databricks product.</strong> It is an example of what can be built
+          on the Databricks platform using standard capabilities (Unity Catalog, Delta Lake, MLflow,
+          Mosaic AI, Databricks Apps). The full source code is available on GitHub — feel free to
+          fork it, adapt it to your own data, and use it as a starting point.
+        </p>
         <p className="text-sm text-gray-600">
-          This is a synthetic demonstration built for the Databricks Field Engineering team.
           All company names (Bricksurance SE), policy data, and financial figures are entirely
-          fictional and generated for illustrative purposes only. No real customer data is used.
-          The accelerator is designed to be redeployable on any Databricks workspace with
-          serverless compute enabled.
+          fictional and generated for illustrative purposes. No real customer data is used.
         </p>
       </div>
     </div>
