@@ -157,32 +157,12 @@ with mlflow.start_run(run_name="lgbm_demand_conversion") as run:
     mlflow.log_metric("precision", precision)
     mlflow.log_metric("recall", recall)
 
-    # Log with FeatureEngineeringClient for automatic feature lookup at serving time
-    # The demand model uses quote-level features enriched from the UPT,
-    # so we create lookups against both quote and UPT features
-    fe = FeatureEngineeringClient()
-    training_set = fe.create_training_set(
-        df=spark.createDataFrame(train_pdf[["quote_id", "converted_flag"]]),
-        feature_lookups=[FeatureLookup(
-            table_name=upt_table_name,
-            feature_names=[c for c in feature_cols if c in [
-                "flood_zone_rating", "crime_theft_index", "subsidence_risk",
-                "composite_location_risk", "market_median_rate",
-                "competitor_a_min_premium", "price_index_trend",
-                "credit_default_probability", "business_stability_score",
-                "population_density_per_km2", "distance_to_coast_km",
-            ]],
-            lookup_key="policy_id",
-        )],
-        label="converted_flag",
-        exclude_columns=["quote_id"],
-    )
-
-    fe.log_model(
-        model=model,
-        artifact_path="lgbm_demand_model",
-        flavor=mlflow.sklearn,
-        training_set=training_set,
+    # Demand model operates at QUOTE level (not policy level) so it cannot use
+    # FeatureLookup against the policy-keyed UPT directly. Log with standard
+    # mlflow and register in UC. Feature enrichment for this model happens at
+    # quote ingestion time, not at serving time.
+    mlflow.sklearn.log_model(
+        model, "lgbm_demand_model",
         registered_model_name=f"{catalog}.{schema}.lgbm_demand_model",
     )
 
@@ -192,7 +172,7 @@ with mlflow.start_run(run_name="lgbm_demand_conversion") as run:
     print(f"  Precision: {precision:.4f}")
     print(f"  Recall:    {recall:.4f}")
     print(f"  MLflow Run ID: {run.info.run_id}")
-    print(f"  ✓ Logged with fe.log_model() — auto feature lookup enabled")
+    print(f"  ✓ Model registered in UC (quote-level — enrichment at ingestion)")
 
 # COMMAND ----------
 
