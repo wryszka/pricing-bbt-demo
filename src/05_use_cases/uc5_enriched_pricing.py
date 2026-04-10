@@ -91,9 +91,9 @@ print(f"  Based on: GLM Frequency × Severity (proxy formula)")
 pricing = (pricing
     .withColumn("fraud_score",
         spark_round(
-            (F.coalesce(col("loss_ratio_5y"), lit(0)).cast("double").clip(0, 5) / 5 * 0.3) +
-            (F.coalesce(col("ccj_count"), lit(0)).cast("double").clip(0, 5) / 5 * 0.3) +
-            (F.coalesce(col("credit_default_probability"), lit(0)).cast("double").clip(0, 0.5) / 0.5 * 0.4),
+            (F.least(F.greatest(F.coalesce(col("loss_ratio_5y"), lit(0)).cast("double"), lit(0)), lit(5)) / 5 * 0.3) +
+            (F.least(F.greatest(F.coalesce(col("ccj_count"), lit(0)).cast("double"), lit(0)), lit(5)) / 5 * 0.3) +
+            (F.least(F.greatest(F.coalesce(col("credit_default_probability"), lit(0)).cast("double"), lit(0)), lit(0.5)) / 0.5 * 0.4),
         3))
     # Fraud load: 0% for low risk, up to 15% for high risk
     .withColumn("fraud_load",
@@ -125,9 +125,9 @@ print(f"  Policies with loading: {fraud_uplift.policies_loaded:,}")
 pricing = (pricing
     .withColumn("churn_score",
         spark_round(
-            (F.coalesce(col("market_position_ratio"), lit(1.0)).cast("double").clip(0.5, 2) - 0.5) / 1.5 * 0.4 +
-            (1.0 - F.coalesce(col("claim_count_5y"), lit(0)).cast("double").clip(0, 5) / 5) * 0.3 +
-            (F.coalesce(col("competitor_quote_count"), lit(0)).cast("double").clip(0, 5) / 5) * 0.3,
+            (F.least(F.greatest(F.coalesce(col("market_position_ratio"), lit(1.0)).cast("double"), lit(0.5)), lit(2)) - 0.5) / 1.5 * 0.4 +
+            (1.0 - F.least(F.greatest(F.coalesce(col("claim_count_5y"), lit(0)).cast("double"), lit(0)), lit(5)) / 5) * 0.3 +
+            (F.least(F.greatest(F.coalesce(col("competitor_quote_count"), lit(0)).cast("double"), lit(0)), lit(5)) / 5) * 0.3,
         3))
     # Retention discount: 0% for sticky, up to 10% for at-risk
     .withColumn("retention_factor",
