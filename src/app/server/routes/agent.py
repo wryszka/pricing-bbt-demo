@@ -57,7 +57,7 @@ async def agent_status():
     try:
         w = get_workspace_client()
         ep = w.serving_endpoints.get(endpoint)
-        ready = ep.state and ep.state.ready == "READY"
+        ready = ep.state and "READY" in str(ep.state.ready)
         return {
             "available": ready,
             "endpoint": endpoint,
