@@ -22,44 +22,67 @@ async def list_registered_models():
     catalog = get_catalog()
     schema = get_schema()
 
+    # Try SDK first, fall back to SQL
+    results = []
     try:
         w = get_workspace_client()
         models_list = list(w.registered_models.list(
             catalog_name=catalog, schema_name=schema,
         ))
+
+        for m in models_list:
+            full_name = f"{catalog}.{schema}.{m.name}"
+            versions = []
+            try:
+                vs = list(w.model_versions.list(full_name=full_name))
+                for v in sorted(vs, key=lambda x: int(x.version), reverse=True)[:5]:
+                    versions.append({
+                        "version": v.version,
+                        "run_id": v.run_id,
+                        "status": str(v.status).split(".")[-1] if v.status else "?",
+                        "created_at": v.created_at,
+                        "created_by": v.created_by,
+                    })
+            except Exception:
+                pass
+
+            results.append({
+                "name": m.name,
+                "full_name": full_name,
+                "comment": m.comment,
+                "created_at": m.created_at,
+                "created_by": m.created_by,
+                "updated_at": m.updated_at,
+                "updated_by": m.updated_by,
+                "versions": versions,
+                "latest_version": versions[0] if versions else None,
+                "catalog_url": f"{host}/explore/data/models/{catalog}/{schema}/{m.name}",
+            })
     except Exception as e:
-        logger.warning("Failed to list models: %s", e)
-        models_list = []
-
-    results = []
-    for m in models_list:
-        full_name = f"{catalog}.{schema}.{m.name}"
-        versions = []
+        logger.warning("SDK model list failed (%s), trying SQL fallback", e)
+        # SQL fallback — query information_schema for models
         try:
-            vs = list(w.model_versions.list(full_name=full_name))
-            for v in sorted(vs, key=lambda x: int(x.version), reverse=True)[:5]:
-                versions.append({
-                    "version": v.version,
-                    "run_id": v.run_id,
-                    "status": str(v.status).split(".")[-1] if v.status else "?",
-                    "created_at": v.created_at,
-                    "created_by": v.created_by,
+            rows = await execute_query(f"""
+                SELECT model_name, comment, created, created_by, last_altered, last_altered_by
+                FROM {catalog}.information_schema.registered_models
+                WHERE schema_name = '{schema}'
+                ORDER BY model_name
+            """)
+            for r in rows:
+                results.append({
+                    "name": r.get("model_name", ""),
+                    "full_name": f"{catalog}.{schema}.{r.get('model_name', '')}",
+                    "comment": r.get("comment"),
+                    "created_at": r.get("created"),
+                    "created_by": r.get("created_by"),
+                    "updated_at": r.get("last_altered"),
+                    "updated_by": r.get("last_altered_by"),
+                    "versions": [],
+                    "latest_version": None,
+                    "catalog_url": f"{host}/explore/data/models/{catalog}/{schema}/{r.get('model_name', '')}",
                 })
-        except Exception:
-            pass
-
-        results.append({
-            "name": m.name,
-            "full_name": full_name,
-            "comment": m.comment,
-            "created_at": m.created_at,
-            "created_by": m.created_by,
-            "updated_at": m.updated_at,
-            "updated_by": m.updated_by,
-            "versions": versions,
-            "latest_version": versions[0] if versions else None,
-            "catalog_url": f"{host}/explore/data/models/{catalog}/{schema}/{m.name}",
-        })
+        except Exception as e2:
+            logger.warning("SQL model list also failed: %s", e2)
 
     return results
 
@@ -80,21 +103,26 @@ async def list_serving_endpoints():
     for ep in custom_eps:
         entities = []
         traffic = []
-        if ep.config and ep.config.served_entities:
-            for e in ep.config.served_entities:
-                entities.append({
-                    "name": e.name,
-                    "model": e.entity_name,
-                    "version": e.entity_version,
-                    "workload_size": e.workload_size,
-                    "scale_to_zero": e.scale_to_zero_enabled,
-                })
-        if ep.config and ep.config.traffic_config and ep.config.traffic_config.routes:
-            for r in ep.config.traffic_config.routes:
-                traffic.append({
-                    "model": r.served_model_name,
-                    "traffic_pct": r.traffic_percentage,
-                })
+        try:
+            full_ep = w.serving_endpoints.get(ep.name)
+            cfg = full_ep.config
+            if cfg and hasattr(cfg, 'served_entities') and cfg.served_entities:
+                for e in cfg.served_entities:
+                    entities.append({
+                        "name": e.name,
+                        "model": e.entity_name,
+                        "version": e.entity_version,
+                        "workload_size": e.workload_size,
+                        "scale_to_zero": e.scale_to_zero_enabled,
+                    })
+            if cfg and hasattr(cfg, 'traffic_config') and cfg.traffic_config:
+                for r in (cfg.traffic_config.routes or []):
+                    traffic.append({
+                        "model": r.served_model_name,
+                        "traffic_pct": r.traffic_percentage,
+                    })
+        except Exception as ex:
+            logger.warning("Failed to get endpoint details for %s: %s", ep.name, ex)
 
         results.append({
             "name": ep.name,
