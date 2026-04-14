@@ -160,17 +160,43 @@ async def score_model(req: ScoreRequest):
     """Send a scoring request to a serving endpoint and return the prediction + latency."""
     try:
         w = get_workspace_client()
+        host = w.config.host.rstrip("/")
+
+        # Build auth header — in Databricks App context, use the SDK's authenticator
+        headers = {"Content-Type": "application/json"}
+        try:
+            auth_headers = w.config._header_factory()
+            headers.update(auth_headers)
+        except Exception:
+            # Fallback: try to get token from the API client
+            headers["Authorization"] = f"Bearer {w.config.token}"
+
+        payload = {"dataframe_split": {
+            "columns": list(req.features.keys()),
+            "data": [list(req.features.values())],
+        }}
 
         start = time.time()
-        resp = w.serving_endpoints.query(
-            name=req.endpoint_name,
-            dataframe_records=[req.features],
+        resp = requests.post(
+            f"{host}/serving-endpoints/{req.endpoint_name}/invocations",
+            headers=headers,
+            json=payload,
+            timeout=120,
         )
         latency_ms = round((time.time() - start) * 1000)
 
+        if resp.status_code != 200:
+            return {
+                "success": False,
+                "error": resp.text[:300],
+                "status_code": resp.status_code,
+                "latency_ms": latency_ms,
+            }
+
+        data = resp.json()
         return {
             "success": True,
-            "predictions": resp.predictions,
+            "predictions": data.get("predictions"),
             "latency_ms": latency_ms,
             "endpoint": req.endpoint_name,
             "input_features": req.features,
