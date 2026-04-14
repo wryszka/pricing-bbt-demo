@@ -63,9 +63,15 @@ export const api = {
     `${BASE}/models/runs/${runId}/models/${configId}/report`,
   getFeatureProfile: (runId: string) => fetchJson<any[]>(`/models/runs/${runId}/features`),
 
-  // Agent (optional AI assistant)
+  // Agents (optional AI assistants)
   getAgentStatus: () => fetchJson<any>('/agent/status'),
   runAgentAnalysis: () => fetchJson<any>('/agent/analyze', { method: 'POST' }),
+  runDqMonitor: () => fetchJson<any>('/agent/dq-monitor', { method: 'POST' }),
+  runExplainability: (question: string) =>
+    fetchJson<any>('/agent/explain', {
+      method: 'POST',
+      body: JSON.stringify({ question }),
+    }),
 
   // Feature Store
   getFeatureStoreStatus: () => fetchJson<any>('/features/status'),

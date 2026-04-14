@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, GitCompare, TrendingUp, ShieldCheck, CheckCircle2, XCircle, Loader2, Download, Upload, History } from 'lucide-react';
+import { ArrowLeft, GitCompare, TrendingUp, ShieldCheck, CheckCircle2, XCircle, Loader2, Download, Upload, History, Bot, ChevronDown, ChevronUp } from 'lucide-react';
 import { api } from '../lib/api';
 
 type Tab = 'diff' | 'impact' | 'quality' | 'upload' | 'approval';
@@ -171,10 +171,23 @@ function DiffTab({ datasetId }: { datasetId: string }) {
 function ImpactTab({ datasetId }: { datasetId: string }) {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [explainResult, setExplainResult] = useState<any>(null);
+  const [explainLoading, setExplainLoading] = useState(false);
+  const [explainExpanded, setExplainExpanded] = useState(false);
 
   useEffect(() => {
     api.getDatasetImpact(datasetId).then(setData).finally(() => setLoading(false));
   }, [datasetId]);
+
+  const askExplain = async () => {
+    setExplainLoading(true);
+    try {
+      setExplainResult(await api.runExplainability(
+        `Why did premiums change for the ${datasetId.replace(/_/g, ' ')} dataset update?`
+      ));
+    } catch (e: any) { setExplainResult({ success: false, error: e.message }); }
+    finally { setExplainLoading(false); }
+  };
 
   if (loading) return <Spinner />;
   if (!data) return <ErrorMsg msg="Failed to load impact analysis" />;
@@ -482,6 +495,58 @@ function ImpactTab({ datasetId }: { datasetId: string }) {
           )}
         </Section>
       )}
+      {/* AI Explainability */}
+      <div className="bg-purple-50 border border-purple-200 rounded-lg p-5">
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-2">
+            <Bot className="w-5 h-5 text-purple-600" />
+            <h3 className="font-semibold text-purple-800">Ask AI: Why did this change?</h3>
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-100 text-purple-600 border border-purple-200">OPTIONAL</span>
+          </div>
+          <button onClick={askExplain} disabled={explainLoading}
+            className="px-3 py-1.5 bg-purple-600 text-white rounded-lg text-xs font-medium hover:bg-purple-700 disabled:opacity-50 flex items-center gap-1.5">
+            {explainLoading ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Analysing...</> : 'Explain This'}
+          </button>
+        </div>
+        <p className="text-xs text-purple-600 mb-3">
+          Uses AI to trace the causal chain from data changes to premium impact. Produces a
+          plain-English explanation suitable for regulatory submissions.
+        </p>
+        {explainResult?.success && explainResult.explanation && (
+          <div className="bg-white border border-purple-200 rounded-lg p-4 space-y-3">
+            <h4 className="font-semibold text-gray-900">{explainResult.explanation.headline}</h4>
+            <p className="text-sm text-gray-700 whitespace-pre-line">{explainResult.explanation.explanation}</p>
+            {explainResult.explanation.key_drivers?.length > 0 && (
+              <div>
+                <h5 className="text-xs font-semibold text-gray-500 uppercase mb-1">Key Drivers</h5>
+                {explainResult.explanation.key_drivers.map((d: any, i: number) => (
+                  <div key={i} className="text-sm text-gray-600 mb-1">
+                    <strong>{d.factor}</strong> ({d.contribution}): {d.detail}
+                  </div>
+                ))}
+              </div>
+            )}
+            {explainResult.explanation.regulatory_statement && (
+              <div className="bg-gray-50 border rounded p-3">
+                <h5 className="text-xs font-semibold text-gray-500 uppercase mb-1">Regulatory Statement</h5>
+                <p className="text-sm text-gray-700 italic">{explainResult.explanation.regulatory_statement}</p>
+              </div>
+            )}
+            <button onClick={() => setExplainExpanded(!explainExpanded)} className="text-xs text-purple-500 flex items-center gap-1">
+              {explainExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+              {explainExpanded ? 'Hide' : 'Show'} full LLM interaction
+            </button>
+            {explainExpanded && (
+              <pre className="text-[10px] bg-gray-50 border rounded p-2 max-h-40 overflow-auto whitespace-pre-wrap">
+                {explainResult.transparency?.raw_response}
+              </pre>
+            )}
+          </div>
+        )}
+        {explainResult && !explainResult.success && (
+          <p className="text-red-500 text-sm">Agent error: {explainResult.error || 'Unknown'}</p>
+        )}
+      </div>
     </div>
   );
 }

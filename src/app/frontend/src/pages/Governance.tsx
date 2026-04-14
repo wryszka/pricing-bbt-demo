@@ -1,8 +1,18 @@
 import { useEffect, useState } from 'react';
-import { Shield, Clock, Database, Activity, Bot, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { Shield, Clock, Database, Activity, Bot, CheckCircle2, AlertTriangle, Loader2, ChevronDown, ChevronUp } from 'lucide-react';
 import { api } from '../lib/api';
 
 export default function Governance() {
+  // DQ Agent state
+  const [dqResult, setDqResult] = useState<any>(null);
+  const [dqLoading, setDqLoading] = useState(false);
+  const [dqExpanded, setDqExpanded] = useState(false);
+
+  const runDqAgent = async () => {
+    setDqLoading(true);
+    try { setDqResult(await api.runDqMonitor()); } catch (e: any) { setDqResult({ success: false, error: e.message }); }
+    finally { setDqLoading(false); }
+  };
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
@@ -155,6 +165,62 @@ export default function Governance() {
             <p className="text-gray-400 text-sm">No agent interactions — AI assistant is optional</p>
           )}
         </Section>
+      </div>
+
+      {/* DQ Monitoring Agent */}
+      <div className="mt-6 bg-white rounded-lg border border-gray-200 overflow-hidden">
+        <div className="px-4 py-3 bg-gray-50 border-b flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Bot className="w-4 h-4 text-orange-600" />
+            <h3 className="font-semibold text-gray-800">AI Data Quality Monitor</h3>
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-orange-50 text-orange-600 border border-orange-200">OPTIONAL</span>
+          </div>
+          <button onClick={runDqAgent} disabled={dqLoading}
+            className="px-3 py-1 bg-orange-600 text-white rounded text-xs font-medium hover:bg-orange-700 disabled:opacity-50 flex items-center gap-1">
+            {dqLoading ? <><Loader2 className="w-3 h-3 animate-spin" /> Scanning...</> : <><Bot className="w-3 h-3" /> Run DQ Scan</>}
+          </button>
+        </div>
+        <div className="p-4">
+          <p className="text-xs text-gray-500 mb-3">
+            <strong>Why this matters:</strong> Rule-based DQ catches known issues. This agent uses AI to detect
+            unexpected patterns — distribution shifts, cross-column inconsistencies, and anomalies that rules miss.
+          </p>
+          {dqResult?.success && dqResult.findings && (
+            <>
+              <div className="mb-3 text-sm text-gray-700">{dqResult.findings.overall_assessment}</div>
+              <div className="space-y-2">
+                {dqResult.findings.findings?.map((f: any, i: number) => (
+                  <div key={i} className={`rounded-lg p-3 border text-sm ${
+                    f.severity === 'CRITICAL' ? 'bg-red-50 border-red-200' :
+                    f.severity === 'WARNING' ? 'bg-amber-50 border-amber-200' : 'bg-blue-50 border-blue-200'
+                  }`}>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                        f.severity === 'CRITICAL' ? 'bg-red-100 text-red-700' :
+                        f.severity === 'WARNING' ? 'bg-amber-100 text-amber-700' : 'bg-blue-100 text-blue-700'
+                      }`}>{f.severity}</span>
+                      <span className="font-medium text-gray-800">{f.dataset} / {f.column}</span>
+                    </div>
+                    <p className="text-gray-600 text-xs">{f.finding}</p>
+                    <p className="text-gray-500 text-xs mt-1">Action: {f.suggested_action}</p>
+                  </div>
+                ))}
+              </div>
+              <button onClick={() => setDqExpanded(!dqExpanded)} className="mt-2 text-xs text-gray-500 flex items-center gap-1">
+                {dqExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                {dqExpanded ? 'Hide' : 'Show'} full LLM response
+              </button>
+              {dqExpanded && (
+                <pre className="mt-2 text-[10px] bg-gray-50 border rounded p-2 max-h-40 overflow-auto whitespace-pre-wrap">
+                  {dqResult.transparency?.raw_response}
+                </pre>
+              )}
+            </>
+          )}
+          {dqResult && !dqResult.success && (
+            <p className="text-red-500 text-sm">Agent error: {dqResult.error || 'Unknown'}</p>
+          )}
+        </div>
       </div>
 
       {/* Recent Activity Timeline */}
