@@ -246,7 +246,7 @@ for i, config in enumerate(plan_rows):
             mlflow.set_tag("model_type", model_type)
             mlflow.set_tag("target_column", target_col)
             mlflow.set_tag("feature_subset", subset_name)
-            mlflow.set_tag("plan_source", config.get("plan_source", "unknown"))
+            mlflow.set_tag("plan_source", config["plan_source"] if "plan_source" in config.asDict() else "unknown")
 
             mlflow.log_param("model_type", model_type)
             mlflow.log_param("target_column", target_col)
