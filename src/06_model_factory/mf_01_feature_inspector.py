@@ -174,21 +174,8 @@ spark.sql(f"""
 # mf_feature_profile is created by the write.mode("overwrite") below
 # with an explicit schema derived from pandas dtypes. No CREATE TABLE needed.
 
-spark.sql(f"""
-    CREATE TABLE IF NOT EXISTS {fqn}.mf_training_plan (
-        factory_run_id STRING,
-        model_config_id STRING,
-        model_family STRING,
-        model_type STRING,
-        target_column STRING,
-        feature_subset_name STRING,
-        feature_list_json STRING,
-        hyperparams_json STRING,
-        rationale STRING,
-        plan_source STRING,
-        created_at STRING
-    )
-""")
+# mf_training_plan is created by the write.mode("overwrite") below
+# with an explicit schema. No CREATE TABLE needed.
 
 print("Model Factory tables ready")
 
