@@ -72,17 +72,28 @@ def get_current_user():
         return os.getenv("USER", "unknown")
 
 def log_audit_event(spark, fqn, factory_run_id, event_type, details, mlflow_run_id=None, upt_version=None):
-    event = {
-        "event_id": str(uuid.uuid4()),
-        "factory_run_id": factory_run_id,
-        "event_type": event_type,
-        "event_timestamp": datetime.now(timezone.utc).isoformat(),
-        "actor": get_current_user(),
-        "details_json": json.dumps(details) if isinstance(details, dict) else str(details),
-        "mlflow_run_id": mlflow_run_id,
-        "upt_table_version": upt_version,
-    }
-    spark.createDataFrame([event]).write.mode("append").saveAsTable(f"{fqn}.mf_audit_log")
+    from pyspark.sql.types import StructType, StructField, StringType
+    schema = StructType([
+        StructField("event_id", StringType()),
+        StructField("factory_run_id", StringType()),
+        StructField("event_type", StringType()),
+        StructField("event_timestamp", StringType()),
+        StructField("actor", StringType()),
+        StructField("details_json", StringType()),
+        StructField("mlflow_run_id", StringType()),
+        StructField("upt_table_version", StringType()),
+    ])
+    event = (
+        str(uuid.uuid4()),
+        factory_run_id,
+        event_type,
+        datetime.now(timezone.utc).isoformat(),
+        get_current_user(),
+        json.dumps(details) if isinstance(details, dict) else str(details),
+        mlflow_run_id or "",
+        str(upt_version) if upt_version is not None else "",
+    )
+    spark.createDataFrame([event], schema=schema).write.mode("append").saveAsTable(f"{fqn}.mf_audit_log")
 
 # Get UPT version for audit
 upt_version = spark.sql(f"DESCRIBE HISTORY {fqn}.unified_pricing_table_live LIMIT 1").collect()[0]["version"]
