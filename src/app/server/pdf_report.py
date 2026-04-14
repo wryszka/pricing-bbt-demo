@@ -56,7 +56,7 @@ class ModelReport(FPDF):
         self.set_y(-15)
         self.set_font("Helvetica", "I", 7)
         self.set_text_color(*GRAY)
-        self.cell(0, 5, "CONFIDENTIAL — For regulatory and internal use only", align="L")
+        self.cell(0, 5, "CONFIDENTIAL -For regulatory and internal use only", align="L")
         self.cell(0, 5, f"Page {self.page_no()}/{{nb}}", align="R")
 
     def section_title(self, num: int, title: str):
@@ -112,7 +112,7 @@ class ModelReport(FPDF):
 def _safe(val, fmt=None) -> str:
     """Safely format a value for display."""
     if val is None:
-        return "—"
+        return "-"
     try:
         if fmt == "pct":
             return f"{float(val):.1f}%"
@@ -237,15 +237,15 @@ def build_model_report(
         "provides a unique, immutable reference for reproducibility."
     )
 
-    pdf.key_value("Model Name", model.get("model_config_id", "—"))
-    pdf.key_value("Model Family", model.get("model_family", "—"))
-    pdf.key_value("Model Type", model.get("model_type", "—"))
-    pdf.key_value("Target Variable", model.get("target_column", "—"))
+    pdf.key_value("Model Name", model.get("model_config_id", "-"))
+    pdf.key_value("Model Family", model.get("model_family", "-"))
+    pdf.key_value("Model Type", model.get("model_type", "-"))
+    pdf.key_value("Target Variable", model.get("target_column", "-"))
     pdf.key_value("Feature Count", _safe(model.get("feature_count"), "int"))
     pdf.key_value("Rank (in cohort)", _safe(model.get("rank")))
-    pdf.key_value("MLflow Run ID", model.get("mlflow_run_id", "—"))
-    pdf.key_value("Evaluated At", model.get("evaluated_at", "—"))
-    pdf.key_value("Recommended Action", model.get("recommended_action", "—"))
+    pdf.key_value("MLflow Run ID", model.get("mlflow_run_id", "-"))
+    pdf.key_value("Evaluated At", model.get("evaluated_at", "-"))
+    pdf.key_value("Recommended Action", model.get("recommended_action", "-"))
     pdf.ln(3)
 
     # ═══════════════════════════════════════════════════════════════
@@ -349,7 +349,7 @@ def build_model_report(
 
     pdf.key_value("Regulatory Suitability Score", f"{reg_score:.1f} / 100")
     pdf.key_value("Composite Score", f"{composite:.4f}")
-    pdf.key_value("Recommended Action", model.get("recommended_action", "—"))
+    pdf.key_value("Recommended Action", model.get("recommended_action", "-"))
     pdf.ln(2)
 
     # Regulatory score breakdown
@@ -391,17 +391,17 @@ def build_model_report(
     )
 
     if decision:
-        pdf.key_value("Decision", decision.get("decision", "—"))
-        pdf.key_value("Reviewer", decision.get("reviewer", "—"))
-        pdf.key_value("Date", decision.get("decided_at", "—"))
-        pdf.key_value("Notes", decision.get("reviewer_notes", "—") or "—")
-        pdf.key_value("Conditions", decision.get("conditions", "—") or "—")
+        pdf.key_value("Decision", decision.get("decision", "-"))
+        pdf.key_value("Reviewer", decision.get("reviewer", "-"))
+        pdf.key_value("Date", decision.get("decided_at", "-"))
+        pdf.key_value("Notes", decision.get("reviewer_notes", "-") or "-")
+        pdf.key_value("Conditions", decision.get("conditions", "-") or "-")
         pdf.key_value("Regulatory Sign-Off",
                       "Yes" if decision.get("regulatory_sign_off") in ("true", True) else "No")
     else:
         pdf.set_font("Helvetica", "I", 9)
         pdf.set_text_color(*AMBER)
-        pdf.cell(0, 6, "Pending actuarial review — no decision recorded yet.",
+        pdf.cell(0, 6, "Pending actuarial review -no decision recorded yet.",
                  new_x="LMARGIN", new_y="NEXT")
     pdf.ln(3)
 
@@ -412,8 +412,8 @@ def build_model_report(
         pdf.add_page()
         pdf.section_title(6, "Audit Trail")
         pdf.context_box(
-            "Complete event log for this model's lifecycle. Every action — from "
-            "training initiation to approval — is immutably recorded."
+            "Complete event log for this model's lifecycle. Every action -from "
+            "training initiation to approval -is immutably recorded."
         )
 
         col_w = [35, 35, 30, 90]
