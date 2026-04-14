@@ -237,8 +237,15 @@ export default function ModelFactory() {
           )}
 
           {agentResult && !agentResult.success && (
-            <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 text-sm">
-              AI analysis failed: {agentResult.error || 'Unknown error'}. The demo works normally without it.
+            <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm">
+              <p className="text-red-700 font-medium">AI analysis could not parse recommendations.</p>
+              <p className="text-red-600 mt-1">{agentResult.error || 'The LLM responded but the output was not valid JSON.'}</p>
+              {agentResult.raw_response_preview && (
+                <pre className="mt-2 text-xs bg-white border rounded p-2 max-h-32 overflow-auto whitespace-pre-wrap text-gray-600">
+                  {agentResult.raw_response_preview}
+                </pre>
+              )}
+              <p className="text-gray-500 mt-2 text-xs">The demo works normally without AI assistance. Try running again.</p>
             </div>
           )}
         </div>

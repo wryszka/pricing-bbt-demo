@@ -201,10 +201,11 @@ Requirements:
     )
 
     return {
-        "success": llm_success,
+        "success": llm_success and recommendations is not None,
         "endpoint": endpoint,
         "token_usage": token_usage,
         "recommendations": recommendations,
+        "raw_response_preview": llm_response_text[:500] if not recommendations else None,
         "profile": {
             "table": upt_table,
             "row_count": row_count,
