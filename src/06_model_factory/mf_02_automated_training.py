@@ -182,21 +182,8 @@ from sklearn.metrics import (
 import math
 import traceback
 
-# Ensure training log table exists
-spark.sql(f"""
-    CREATE TABLE IF NOT EXISTS {fqn}.mf_training_log (
-        factory_run_id STRING,
-        model_config_id STRING,
-        mlflow_run_id STRING,
-        mlflow_experiment_id STRING,
-        training_start_ts STRING,
-        training_end_ts STRING,
-        status STRING,
-        error_message STRING,
-        train_rows INT,
-        test_rows INT
-    )
-""")
+# mf_training_log is created by write below with consistent types.
+# No CREATE TABLE — prevents INT/None merge issues on serverless.
 
 training_results = []
 
@@ -594,8 +581,29 @@ for i, config in enumerate(plan_rows):
 
 # COMMAND ----------
 
-log_df = spark.createDataFrame(training_results)
-log_df.write.mode("append").saveAsTable(f"{fqn}.mf_training_log")
+# Ensure consistent types (None in int columns causes merge failures)
+from pyspark.sql.types import StructType, StructField, StringType, IntegerType
+log_schema = StructType([
+    StructField("factory_run_id", StringType()),
+    StructField("model_config_id", StringType()),
+    StructField("mlflow_run_id", StringType()),
+    StructField("mlflow_experiment_id", StringType()),
+    StructField("training_start_ts", StringType()),
+    StructField("training_end_ts", StringType()),
+    StructField("status", StringType()),
+    StructField("error_message", StringType()),
+    StructField("train_rows", StringType()),
+    StructField("test_rows", StringType()),
+])
+for r in training_results:
+    r["train_rows"] = str(r.get("train_rows", "")) if r.get("train_rows") is not None else ""
+    r["test_rows"] = str(r.get("test_rows", "")) if r.get("test_rows") is not None else ""
+    r["mlflow_run_id"] = r.get("mlflow_run_id") or ""
+    r["mlflow_experiment_id"] = r.get("mlflow_experiment_id") or ""
+    r["error_message"] = r.get("error_message") or ""
+
+log_df = spark.createDataFrame(training_results, schema=log_schema)
+log_df.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(f"{fqn}.mf_training_log")
 
 display(
     spark.table(f"{fqn}.mf_training_log")
