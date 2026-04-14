@@ -171,27 +171,8 @@ spark.sql(f"""
     )
 """)
 
-spark.sql(f"""
-    CREATE TABLE IF NOT EXISTS {fqn}.mf_feature_profile (
-        factory_run_id STRING,
-        feature_name STRING,
-        feature_group STRING,
-        dtype STRING,
-        null_pct DOUBLE,
-        unique_count INT,
-        mean DOUBLE,
-        std DOUBLE,
-        min_val DOUBLE,
-        max_val DOUBLE,
-        median_val DOUBLE,
-        skew DOUBLE,
-        kurtosis DOUBLE,
-        corr_claim_count DOUBLE,
-        corr_total_incurred DOUBLE,
-        vif DOUBLE,
-        profiled_at STRING
-    )
-""")
+# mf_feature_profile is created by the write.mode("overwrite") below
+# with an explicit schema derived from pandas dtypes. No CREATE TABLE needed.
 
 spark.sql(f"""
     CREATE TABLE IF NOT EXISTS {fqn}.mf_training_plan (
