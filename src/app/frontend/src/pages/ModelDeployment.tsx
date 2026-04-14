@@ -1,12 +1,39 @@
 import { useEffect, useState } from 'react';
-import { Rocket, ExternalLink, CheckCircle2, Clock, XCircle, User, Calendar, Tag } from 'lucide-react';
+import { Rocket, ExternalLink, CheckCircle2, Clock, XCircle, User, Calendar, Tag, Play, Loader2 } from 'lucide-react';
 import { api } from '../lib/api';
+
+// Default features for the demand model (currently deployed)
+const DEFAULT_FEATURES: Record<string, { value: number; label: string }> = {
+  log_premium: { value: 8.5, label: 'Log Premium' },
+  log_si: { value: 14.0, label: 'Log Sum Insured' },
+  log_turnover: { value: 13.5, label: 'Log Turnover' },
+  competitor_flag: { value: 0, label: 'Competitor Quoted (0/1)' },
+  quote_to_market_ratio: { value: 1.1, label: 'Quote/Market Ratio' },
+  flood_zone_rating: { value: 5, label: 'Flood Zone (1-10)' },
+  crime_theft_index: { value: 45, label: 'Crime Index (0-100)' },
+  subsidence_risk: { value: 3, label: 'Subsidence Risk (0-10)' },
+  composite_location_risk: { value: 4.5, label: 'Location Risk Score' },
+  market_median_rate: { value: 6.5, label: 'Market Median Rate' },
+  competitor_a_min_premium: { value: 4.2, label: 'Competitor Min Rate' },
+  price_index_trend: { value: 2.5, label: 'Price Trend (%)' },
+  credit_default_probability: { value: 0.05, label: 'Default Probability' },
+  business_stability_score: { value: 75, label: 'Business Stability (0-100)' },
+  population_density_per_km2: { value: 5000, label: 'Population Density' },
+  distance_to_coast_km: { value: 50, label: 'Distance to Coast (km)' },
+};
 
 export default function ModelDeployment() {
   const [models, setModels] = useState<any[]>([]);
   const [endpoints, setEndpoints] = useState<any[]>([]);
   const [latency, setLatency] = useState<any>({});
   const [loading, setLoading] = useState(true);
+
+  // Scoring form state
+  const [features, setFeatures] = useState<Record<string, number>>(
+    Object.fromEntries(Object.entries(DEFAULT_FEATURES).map(([k, v]) => [k, v.value]))
+  );
+  const [scoring, setScoring] = useState(false);
+  const [scoreResult, setScoreResult] = useState<any>(null);
 
   useEffect(() => {
     Promise.all([
@@ -108,6 +135,80 @@ export default function ModelDeployment() {
           <Rocket className="w-8 h-8 text-gray-300 mx-auto mb-2" />
           <p className="text-gray-500 text-sm">No serving endpoints deployed yet</p>
           <p className="text-gray-400 text-xs mt-1">Run the deploy_model_endpoint job to create one</p>
+        </div>
+      )}
+
+      {/* Live Scoring Form */}
+      {endpoints.length > 0 && (
+        <div className="bg-white border border-gray-200 rounded-lg p-5 mb-8">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-lg font-semibold text-gray-900">Test Pricing Model</h3>
+              <p className="text-sm text-gray-500">Send a scoring request to the live endpoint with custom feature values</p>
+            </div>
+            <button
+              onClick={async () => {
+                setScoring(true);
+                setScoreResult(null);
+                try {
+                  const r = await api.scoreModel(endpoints[0].name, features);
+                  setScoreResult(r);
+                } catch (e: any) {
+                  setScoreResult({ success: false, error: e.message });
+                } finally {
+                  setScoring(false);
+                }
+              }}
+              disabled={scoring}
+              className="px-5 py-2.5 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50 flex items-center gap-2"
+            >
+              {scoring ? <><Loader2 className="w-4 h-4 animate-spin" /> Scoring...</> : <><Play className="w-4 h-4" /> Score Policy</>}
+            </button>
+          </div>
+
+          {/* Feature grid */}
+          <div className="grid grid-cols-4 gap-3 mb-4">
+            {Object.entries(DEFAULT_FEATURES).map(([key, meta]) => (
+              <div key={key}>
+                <label className="block text-[10px] font-medium text-gray-500 mb-0.5">{meta.label}</label>
+                <input
+                  type="number"
+                  step="any"
+                  value={features[key]}
+                  onChange={(e) => setFeatures(prev => ({ ...prev, [key]: parseFloat(e.target.value) || 0 }))}
+                  className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none"
+                />
+              </div>
+            ))}
+          </div>
+
+          {/* Result */}
+          {scoreResult && (
+            <div className={`rounded-lg p-4 border ${scoreResult.success ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
+              {scoreResult.success ? (
+                <div className="flex items-center justify-between">
+                  <div>
+                    <span className="text-sm text-gray-500">Prediction:</span>
+                    <span className="text-2xl font-bold text-green-700 ml-3">
+                      {Array.isArray(scoreResult.predictions)
+                        ? scoreResult.predictions.map((p: any) => typeof p === 'number' ? p.toFixed(4) : String(p)).join(', ')
+                        : String(scoreResult.predictions)}
+                    </span>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-xs text-gray-500">Latency</div>
+                    <div className="text-lg font-bold text-gray-700">{scoreResult.latency_ms}ms</div>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-red-700 text-sm">Error: {scoreResult.error}</p>
+              )}
+            </div>
+          )}
+
+          <p className="text-[10px] text-gray-400 mt-2">
+            Endpoint: {endpoints[0].name} | Model: {endpoints[0].entities?.[0]?.model} v{endpoints[0].entities?.[0]?.version} | Scale-to-zero enabled (first call may take longer)
+          </p>
         </div>
       )}
 

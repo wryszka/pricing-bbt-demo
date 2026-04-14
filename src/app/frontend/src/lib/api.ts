@@ -80,6 +80,11 @@ export const api = {
   getRegisteredModels: () => fetchJson<any[]>('/deployment/models'),
   getServingEndpoints: () => fetchJson<any[]>('/deployment/endpoints'),
   getEndpointLatency: () => fetchJson<any>('/deployment/latency'),
+  scoreModel: (endpointName: string, features: Record<string, number>) =>
+    fetchJson<any>('/deployment/score', {
+      method: 'POST',
+      body: JSON.stringify({ endpoint_name: endpointName, features }),
+    }),
 
   // Governance
   getGovernanceSummary: () => fetchJson<any>('/governance/summary'),
