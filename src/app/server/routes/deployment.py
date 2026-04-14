@@ -160,33 +160,20 @@ async def score_model(req: ScoreRequest):
     """Send a scoring request to a serving endpoint and return the prediction + latency."""
     try:
         w = get_workspace_client()
-        host = w.config.host.rstrip("/")
-        token = w.config._header_factory()
 
         start = time.time()
-        resp = requests.post(
-            f"{host}/serving-endpoints/{req.endpoint_name}/invocations",
-            headers={**token, "Content-Type": "application/json"},
-            json={"dataframe_records": [req.features]},
-            timeout=60,
+        resp = w.serving_endpoints.query(
+            name=req.endpoint_name,
+            dataframe_records=[req.features],
         )
         latency_ms = round((time.time() - start) * 1000)
 
-        if resp.status_code != 200:
-            return {
-                "success": False,
-                "error": resp.text[:300],
-                "status_code": resp.status_code,
-                "latency_ms": latency_ms,
-            }
-
-        data = resp.json()
         return {
             "success": True,
-            "predictions": data.get("predictions"),
+            "predictions": resp.predictions,
             "latency_ms": latency_ms,
             "endpoint": req.endpoint_name,
             "input_features": req.features,
         }
     except Exception as e:
-        return {"success": False, "error": str(e)[:200]}
+        return {"success": False, "error": str(e)[:300]}

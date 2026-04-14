@@ -6,6 +6,8 @@ resources:
       name: "pricing-ingestion-review"
       description: "HITL review and approval of external pricing data before merging into the Unified Pricing Table"
       source_code_path: ../src/app
+      # Note: Databricks Apps don't auto-stop. Run `databricks apps stop pricing-ingestion-review`
+      # when not demoing. Start with `databricks apps start pricing-ingestion-review`.
 
       resources:
         - name: sql-warehouse
