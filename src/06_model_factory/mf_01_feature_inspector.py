@@ -427,7 +427,7 @@ profile_schema = StructType(spark_fields)
 rows = [tuple(None if (isinstance(v, float) and np.isnan(v)) else v for v in row) for row in profile_pdf.itertuples(index=False, name=None)]
 
 # Overwrite profile for this factory run (idempotent re-runs)
-spark.createDataFrame(rows, schema=profile_schema).write.mode("overwrite").saveAsTable(f"{fqn}.mf_feature_profile")
+spark.createDataFrame(rows, schema=profile_schema).write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(f"{fqn}.mf_feature_profile")
 # Re-insert in append mode partitioned by factory_run_id for history
 # (For simplicity in the demo, we overwrite — in production, partition by run_id)
 
@@ -813,7 +813,7 @@ for m in training_plan:
         m["features"] = []
 
 plan_df = spark.createDataFrame(training_plan, schema=plan_schema)
-plan_df.write.mode("overwrite").saveAsTable(f"{fqn}.mf_training_plan")
+plan_df.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(f"{fqn}.mf_training_plan")
 
 display(
     spark.table(f"{fqn}.mf_training_plan")
