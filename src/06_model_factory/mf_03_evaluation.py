@@ -317,7 +317,9 @@ for log_row in training_log:
         print(f"  Gini={gini:.4f}, Lift@D1={lift_d1:.2f}, PSI={psi:.4f}")
 
     except Exception as e:
+        import traceback
         print(f"  Error evaluating {config_id}: {e}")
+        traceback.print_exc()
 
 # COMMAND ----------
 
@@ -430,8 +432,15 @@ for row in leaderboard_rows:
         if v is None and k not in ("mlflow_run_id", "recommended_action", "evaluated_at"):
             row[k] = 0.0
 
-leaderboard_df = spark.createDataFrame(leaderboard_rows)
-leaderboard_df.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(f"{fqn}.mf_leaderboard")
+if not leaderboard_rows:
+    print("WARNING: No models were successfully evaluated. Check error messages above.")
+    print(f"Training log had {len(training_log)} successful runs but 0 could be evaluated.")
+    # Create an empty leaderboard so downstream tasks don't fail
+    spark.sql(f"CREATE TABLE IF NOT EXISTS {fqn}.mf_leaderboard (factory_run_id STRING) USING DELTA")
+else:
+    leaderboard_df = spark.createDataFrame(leaderboard_rows)
+    leaderboard_df.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(f"{fqn}.mf_leaderboard")
+    print(f"✓ Leaderboard: {len(leaderboard_rows)} models ranked")
 
 # COMMAND ----------
 
