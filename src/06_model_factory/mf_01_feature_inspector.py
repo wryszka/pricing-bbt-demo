@@ -437,14 +437,29 @@ else:
 
 # COMMAND ----------
 
-# Ensure consistent numeric types (prevent int/float merge errors)
-for col in profile_pdf.select_dtypes(include=["int64", "int32"]).columns:
-    profile_pdf[col] = profile_pdf[col].astype(float)
-# Fill NaN with None for clean Delta serialisation
-profile_pdf = profile_pdf.where(profile_pdf.notna(), None)
+# Ensure consistent numeric types (prevent int/float merge errors on serverless)
+import numpy as np
+for c in profile_pdf.select_dtypes(include=["int64", "int32"]).columns:
+    profile_pdf[c] = profile_pdf[c].astype("float64")
+# Ensure string columns don't have mixed types
+for c in profile_pdf.select_dtypes(include=["object"]).columns:
+    profile_pdf[c] = profile_pdf[c].astype(str).replace("nan", None).replace("None", None)
+
+# Build explicit Spark schema from pandas dtypes to avoid inference issues
+from pyspark.sql.types import StructType, StructField, StringType, DoubleType
+spark_fields = []
+for c in profile_pdf.columns:
+    if profile_pdf[c].dtype in ("float64", "float32"):
+        spark_fields.append(StructField(c, DoubleType(), True))
+    else:
+        spark_fields.append(StructField(c, StringType(), True))
+profile_schema = StructType(spark_fields)
+
+# Convert to list of tuples for createDataFrame with explicit schema
+rows = [tuple(None if (isinstance(v, float) and np.isnan(v)) else v for v in row) for row in profile_pdf.itertuples(index=False, name=None)]
 
 # Overwrite profile for this factory run (idempotent re-runs)
-spark.createDataFrame(profile_pdf).write.mode("overwrite").saveAsTable(f"{fqn}.mf_feature_profile")
+spark.createDataFrame(rows, schema=profile_schema).write.mode("overwrite").saveAsTable(f"{fqn}.mf_feature_profile")
 # Re-insert in append mode partitioned by factory_run_id for history
 # (For simplicity in the demo, we overwrite — in production, partition by run_id)
 
