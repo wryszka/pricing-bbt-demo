@@ -2,15 +2,13 @@ import { useEffect, useState } from 'react';
 import { Code, ExternalLink, FlaskConical, TrendingUp, GitCompare, Shield, ArrowUpRight } from 'lucide-react';
 import { api } from '../lib/api';
 
+const GITHUB_REPO_URL = 'https://github.com/wryszka/pricing-bbt-demo';
+
 export default function ModelDevelopment() {
-  const [config, setConfig] = useState<any>(null);
   const [challenger, setChallenger] = useState<any>(null);
   useEffect(() => {
-    api.getConfig().then(setConfig).catch(() => {});
     api.getChallengerComparison().then(setChallenger).catch(() => {});
   }, []);
-
-  const host = config?.workspace_host || '';
 
   const notebooks = [
     {
@@ -101,7 +99,7 @@ export default function ModelDevelopment() {
         </div>
       </div>
 
-      <ChallengerPanel data={challenger} host={host} />
+      <ChallengerPanel data={challenger} />
 
       <div className="grid gap-4">
         {notebooks.map((nb) => {
@@ -113,13 +111,11 @@ export default function ModelDevelopment() {
                   <nb.icon className={`w-5 h-5 ${c.icon}`} />
                   <h3 className="font-semibold text-gray-900">{nb.title}</h3>
                 </div>
-                {host && (
-                  <a href={`${host}/editor/notebooks`} target="_blank" rel="noopener noreferrer"
-                    className="flex items-center gap-1 px-3 py-1 bg-white border border-gray-300 rounded text-xs font-medium text-gray-700 hover:bg-gray-50 transition-colors">
-                    <Code className="w-3 h-3" /> Open in Databricks
-                    <ExternalLink className="w-3 h-3" />
-                  </a>
-                )}
+                <a href={`${GITHUB_REPO_URL}/blob/main/${nb.path}`} target="_blank" rel="noopener noreferrer"
+                  className="flex items-center gap-1 px-3 py-1 bg-white border border-gray-300 rounded text-xs font-medium text-gray-700 hover:bg-gray-50 transition-colors">
+                  <Code className="w-3 h-3" /> View source
+                  <ExternalLink className="w-3 h-3" />
+                </a>
               </div>
               <p className="text-sm text-gray-600 mb-3">{nb.description}</p>
               <div className="flex items-center justify-between">
@@ -159,7 +155,7 @@ export default function ModelDevelopment() {
 // Challenger comparison: baseline vs +urban_score vs +both factors
 // -------------------------------------------------------------
 
-function ChallengerPanel({ data, host }: { data: any; host: string }) {
+function ChallengerPanel({ data }: { data: any }) {
   // Empty state — table doesn't exist yet or no rows
   if (!data || !data.cohorts || data.cohorts.length === 0) {
     return (
@@ -240,12 +236,11 @@ function ChallengerPanel({ data, host }: { data: any; host: string }) {
           <div>
             Ablation: each factor's lift is the Gini delta when it's added to the previous model.
           </div>
-          {host && (
-            <a href={`${host}/editor/notebooks`} target="_blank" rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-emerald-600 hover:text-emerald-800 font-medium">
-              Open challenger_comparison.py <ArrowUpRight className="w-3 h-3" />
-            </a>
-          )}
+          <a href={`${GITHUB_REPO_URL}/blob/main/src/04_models/challenger_comparison.py`}
+            target="_blank" rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 text-emerald-600 hover:text-emerald-800 font-medium">
+            View challenger_comparison.py <ArrowUpRight className="w-3 h-3" />
+          </a>
         </div>
       </div>
     </div>
