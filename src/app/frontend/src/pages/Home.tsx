@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 import {
   Database, FlaskConical, Table2, Shield, ArrowRight, Receipt, BookOpen, ExternalLink,
-  Phone, CheckSquare, AlertTriangle, Clock,
+  Phone, AlertTriangle, Clock, CheckSquare,
 } from 'lucide-react';
 
 const GITHUB_REPO_URL = 'https://github.com/wryszka/pricing-workbench';
@@ -44,9 +44,9 @@ export default function Home() {
           to="/pricing-table"
           icon={Table2}
           color="green"
-          title="Training Feature Store"
-          description="One row per policy, with features at inception plus observed claim outcomes. This is what the frequency and severity GLMs learn from. Promote to the online store for sub-10ms lookups at serving time."
-          features={["Policy-level · 50K rows × 88 features", "Feature catalog + lineage", "Offline ↔ Online toggle"]}
+          title="Pricing Feature Table"
+          description="Engineered from every approved source — policies, claims, vendor feeds (market + geo + credit), plus the real UK postcode enrichment. Rebuild pipeline, feature catalog with per-feature provenance, and promotable online store."
+          features={["8 contributing sources", "Feature catalog + lineage", "Offline ↔ Online toggle"]}
         />
         <SectionCard
           to="/models"
@@ -109,10 +109,18 @@ function FlowDiagram() {
       <div className="flex items-stretch gap-2 overflow-x-auto pb-2">
         <FlowStep
           icon={Database}
-          title="External data"
-          subtitle="enrichment, joined on postcode + company"
+          title="Sources"
+          subtitle="approved vendor feeds + internal systems + enrichment"
           color="blue"
           to="/datasets"
+        />
+        <FlowArrow label="build" />
+        <FlowStep
+          icon={Table2}
+          title="Feature table"
+          subtitle="engineered from every approved source"
+          color="green"
+          to="/pricing-table"
         />
         <FlowArrow />
         <FlowStep
@@ -155,11 +163,13 @@ function FlowDiagram() {
         />
       </div>
       <p className="text-xs text-gray-500 mt-4 leading-relaxed">
-        <strong className="text-gray-700">Training</strong> uses the policy-level feature store
-        (labelled outcomes) to train frequency and severity models.{' '}
-        <strong className="text-gray-700">Serving</strong> runs each new quote's feature vector
-        through the model — looking up existing features via the online store for renewals, or
-        scoring the vector directly for new business.
+        The <strong className="text-gray-700">Feature Table</strong> is an engineered artifact —
+        built by the <code className="bg-gray-100 px-1 rounded">build_upt</code> pipeline from every
+        approved source. Policies is just one contributor; market, geo, credit, the real UK postcode
+        enrichment, and derived factors all join together.{' '}
+        <strong className="text-gray-700">Training</strong> reads the feature table with observed
+        outcomes attached. <strong className="text-gray-700">Serving</strong> reads the same table
+        (online, via Lakebase) for renewals, or takes the feature vector directly for fresh business.
       </p>
     </div>
   );

@@ -87,10 +87,12 @@ def _set_model_comment(model: str, comment: str) -> None:
 
 SCHEMA_COMMENT = (
     "Pricing Workbench demo — end-to-end commercial P&C pricing on Databricks. "
-    "Contains the training feature store (UPT), the quote stream, the real UK "
-    "postcode enrichment, the Model Factory artefacts, and the New Data Impact "
-    "study tables. Synthetic data throughout (Bricksurance SE is fictional); the "
-    "postcode enrichment is built from real UK public data (ONSPD + IMD 2019)."
+    "The Pricing Feature Table (unified_pricing_table_live) is built from every "
+    "approved source in this schema: the 3 ingested vendor feeds (silver_*), "
+    "2 internal systems of record (policies + claims), the real UK postcode "
+    "enrichment (ONSPD + IMD 2019 + ONS RUC), plus derived factors. Also contains "
+    "the quote stream, Model Factory artefacts, and the New Data Impact notebook "
+    "study tables. Synthetic data throughout — Bricksurance SE is fictional."
 )
 try:
     spark.sql(f"COMMENT ON SCHEMA {fqn} IS '{_esc(SCHEMA_COMMENT)}'")
@@ -180,9 +182,12 @@ TABLES = {
 
     # ── Gold / Training feature store ───────────────────────────────────
     "unified_pricing_table_live":
-        "TRAINING FEATURE STORE — one row per policy, with features at inception + observed "
-        "claim outcomes. 50K rows × ~100 columns. PK policy_id (UC feature table). "
-        "Consumed by all Frequency/Severity GLM and GBM training notebooks + the challenger "
+        "PRICING FEATURE TABLE — engineered artifact built from every approved source by the "
+        "build_upt pipeline. Policies is just one of 8 contributing sources alongside claims, "
+        "market pricing benchmark, geospatial hazard, credit bureau, real UK postcode "
+        "enrichment, derived factors, and quotes. policy_id is the grain (one feature vector "
+        "per policy), not the identity. 50K rows x ~100 columns, PK policy_id (registered UC "
+        "feature table). Consumed by Frequency/Severity GLMs, GBMs, and the challenger "
         "comparison. Can be promoted to the online store (Lakebase) for sub-10ms serving.",
     "derived_factors":
         "Postcode-sector-level derived factors sourced from real UK public data: "

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   Database, Zap, ExternalLink, AlertTriangle, Tag,
   BookOpen, Shield, Loader2, PlayCircle, PauseCircle, CheckCircle2, XCircle,
+  FileInput, Briefcase, Globe2, RefreshCw, ArrowRight,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import GenieChat from '../components/GenieChat';
@@ -35,21 +36,37 @@ export default function FeatureStore() {
   const [loading, setLoading] = useState(true);
 
   const [catalog, setCatalog] = useState<{ features: Feature[]; counts_by_group: Record<string, number>; total: number; error?: string } | null>(null);
+  const [sources, setSources] = useState<any>(null);
 
   const [promoting, setPromoting] = useState(false);
   const [pausing, setPausing] = useState(false);
+  const [rebuilding, setRebuilding] = useState(false);
   const [lifecycleMsg, setLifecycleMsg] = useState<string | null>(null);
   const [lifecycleTone, setLifecycleTone] = useState<'ok' | 'err'>('ok');
+  const [rebuildMsg, setRebuildMsg] = useState<{ tone: 'ok' | 'err'; text: string; url?: string } | null>(null);
 
   useEffect(() => {
     Promise.all([
       api.getFeatureStoreStatus(),
       api.getConfig(),
       api.getFeatureCatalog().catch(() => ({ features: [], counts_by_group: {}, total: 0 })),
-    ]).then(([d, c, cat]) => {
-      setData(d); setConfig(c); setCatalog(cat);
+      api.getFeatureSources().catch(() => null),
+    ]).then(([d, c, cat, src]) => {
+      setData(d); setConfig(c); setCatalog(cat); setSources(src);
     }).finally(() => setLoading(false));
   }, []);
+
+  const rebuild = async () => {
+    setRebuilding(true); setRebuildMsg(null);
+    try {
+      const r = await api.rebuildFeatureTable();
+      setRebuildMsg({ tone: 'ok', text: r.message || 'Rebuild kicked off.', url: r.run_url });
+    } catch (e: any) {
+      setRebuildMsg({ tone: 'err', text: String(e?.message || e) });
+    } finally {
+      setRebuilding(false);
+    }
+  };
 
   if (loading) return <div className="p-8 text-center text-gray-500">Loading feature store…</div>;
   if (!data)   return <div className="p-8 text-center text-red-500">Failed to load feature store status</div>;
@@ -96,14 +113,36 @@ export default function FeatureStore() {
 
   return (
     <div className="max-w-7xl mx-auto px-6 py-8">
-      <div className="mb-5">
-        <h2 className="text-2xl font-bold text-gray-900">Training Feature Store</h2>
-        <p className="text-gray-500 mt-1">
-          One row per policy, with features at policy inception plus observed claim outcomes —
-          what the frequency and severity models learn from. Promote to the online store for
-          sub-10ms lookups at serving time.
-        </p>
+      <div className="mb-5 flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900">Pricing Feature Table</h2>
+          <p className="text-gray-500 mt-1">
+            Engineered feature table built from every approved source — the policies system-of-record is
+            just one input alongside market benchmarks, geospatial hazard, credit bureau, and real UK
+            postcode enrichment. <code className="text-xs bg-gray-100 px-1 rounded">policy_id</code> is
+            the <em>grain</em> (one feature vector per policy), not the identity.
+          </p>
+        </div>
+        <button onClick={rebuild} disabled={rebuilding}
+          className="shrink-0 flex items-center gap-2 px-4 py-2 bg-gray-900 text-white rounded-lg text-sm hover:bg-black disabled:opacity-50">
+          {rebuilding ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+          {rebuilding ? 'Triggering…' : 'Rebuild from sources'}
+        </button>
       </div>
+
+      {rebuildMsg && (
+        <div className={`mb-4 rounded-lg border px-4 py-2.5 text-sm ${
+          rebuildMsg.tone === 'ok'
+            ? 'bg-green-50 border-green-200 text-green-800'
+            : 'bg-red-50 border-red-200 text-red-700'}`}>
+          {rebuildMsg.text}
+          {rebuildMsg.url && (
+            <> — <a href={rebuildMsg.url} target="_blank" rel="noopener noreferrer" className="underline">
+              open the job run <ExternalLink className="w-3 h-3 inline" />
+            </a></>
+          )}
+        </div>
+      )}
 
       {/* Role-in-the-flow banner */}
       <div className="mb-6 bg-gradient-to-r from-green-50 to-teal-50 border border-green-200 rounded-lg p-5 text-sm text-green-900">
@@ -112,7 +151,7 @@ export default function FeatureStore() {
           <div>
             <p>
               <strong>Training:</strong> this offline Delta table feeds every GLM and GBM run on the Model Factory.
-              Each row is a labelled example — features at policy inception plus the observed claim outcomes.
+              Each row is a labelled example — the feature vector at policy inception plus the observed claim outcomes.
             </p>
             <p className="mt-1.5">
               <strong>Serving:</strong> promote the same feature table to the online store (Lakebase) and models logged with
@@ -122,6 +161,10 @@ export default function FeatureStore() {
           </div>
         </div>
       </div>
+
+      {/* Sources — every upstream that contributes */}
+      <SourcesPanel sources={sources} targetLabel="Pricing Feature Table" />
+
 
       {/* Offline + Online status */}
       <div className="grid grid-cols-2 gap-5 mb-6">
@@ -452,4 +495,112 @@ function asBool(v: any): boolean {
   if (typeof v === 'boolean') return v;
   if (typeof v === 'string')  return v.toLowerCase() === 'true';
   return !!v;
+}
+
+// ---------------------------------------------------------------------------
+// Sources panel — every upstream that feeds the Pricing Feature Table
+// ---------------------------------------------------------------------------
+
+function SourcesPanel({ sources, targetLabel }: { sources: any; targetLabel: string }) {
+  if (!sources || !sources.sources) {
+    return (
+      <div className="mb-6 bg-amber-50 border border-amber-200 rounded-lg p-4 text-xs text-amber-800">
+        Sources panel unavailable — feature_catalog or dataset_approvals tables are empty.
+      </div>
+    );
+  }
+  const list: any[] = sources.sources || [];
+  const ingested   = list.filter(s => s.kind === 'ingested');
+  const internal   = list.filter(s => s.kind === 'internal');
+  const enrichment = list.filter(s => s.kind === 'enrichment');
+  return (
+    <div className="mb-6 bg-white border border-gray-200 rounded-lg overflow-hidden">
+      <div className="px-5 py-3 bg-gray-50 border-b flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <ArrowRight className="w-4 h-4 text-gray-600" />
+          <h3 className="font-semibold text-gray-800 text-sm">Sources → {targetLabel}</h3>
+        </div>
+        <span className="text-[11px] text-gray-500">{list.length} contributing sources</span>
+      </div>
+
+      <div className="p-5 space-y-4">
+        <SourcesColumn title="External vendor feeds (HITL-approved)" subtitle="Data Ingestion tab" icon={FileInput} items={ingested} tone="blue" showApproval />
+        <SourcesColumn title="Internal systems of record"            subtitle="Authoritative transactional tables" icon={Briefcase} items={internal} tone="gray" />
+        <SourcesColumn title="Reference / enrichment"                 subtitle="Real UK public data + derived factors" icon={Globe2} items={enrichment} tone="indigo" />
+
+        <div className="flex items-center gap-3 pt-3 border-t border-gray-100 text-xs text-gray-600">
+          <div className="flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-gray-900" />
+            Joined + transformed by <code className="bg-gray-100 px-1.5 rounded">build_upt</code> pipeline
+          </div>
+          <ArrowRight className="w-3 h-3 text-gray-400" />
+          <div className="font-medium text-gray-900">{targetLabel}</div>
+          <span className="text-gray-500">({sources.target_table})</span>
+        </div>
+
+        <p className="text-[11px] text-gray-500 leading-snug">
+          {sources.note}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function SourcesColumn({ title, subtitle, icon: Icon, items, tone, showApproval }: {
+  title: string; subtitle: string; icon: any; items: any[]; tone: 'blue' | 'gray' | 'indigo';
+  showApproval?: boolean;
+}) {
+  if (items.length === 0) return null;
+  const toneMap = {
+    blue:   'bg-blue-50 border-blue-200 text-blue-700',
+    gray:   'bg-gray-50 border-gray-200 text-gray-700',
+    indigo: 'bg-indigo-50 border-indigo-200 text-indigo-700',
+  } as const;
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-1.5">
+        <Icon className="w-4 h-4 text-gray-500" />
+        <span className="text-[11px] font-semibold text-gray-600 uppercase tracking-wide">{title}</span>
+        <span className="text-[11px] text-gray-400">· {subtitle}</span>
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        {items.map(s => {
+          const appr = s.approval || {};
+          const approved = showApproval && String(appr.decision || '').toLowerCase() === 'approved';
+          const pending  = showApproval && !appr.decision;
+          const rejected = showApproval && String(appr.decision || '').toLowerCase() === 'rejected';
+          return (
+            <div key={s.id} className={`rounded-lg border p-3 ${toneMap[tone]}`}>
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <div className="text-xs font-semibold text-gray-900 truncate">{s.title}</div>
+                {showApproval && (
+                  approved
+                    ? <span className="inline-flex items-center gap-0.5 text-[10px] text-green-700"><CheckCircle2 className="w-3 h-3" /> approved</span>
+                    : rejected
+                      ? <span className="inline-flex items-center gap-0.5 text-[10px] text-red-700"><XCircle className="w-3 h-3" /> rejected</span>
+                      : pending
+                        ? <span className="inline-flex items-center gap-0.5 text-[10px] text-amber-700"><AlertTriangle className="w-3 h-3" /> pending</span>
+                        : null
+                )}
+              </div>
+              <div className="text-[10px] text-gray-500 font-mono truncate">{s.table}</div>
+              <div className="text-[10px] text-gray-500 mt-0.5">
+                {s.row_count != null ? `${s.row_count.toLocaleString()} rows` : 'row count unknown'}
+              </div>
+              {s.features_feed && s.features_feed.length > 0 && (
+                <div className="mt-1.5 flex flex-wrap gap-1">
+                  {s.features_feed.slice(0, 3).map((f: string) => (
+                    <span key={f} className="px-1.5 py-0.5 text-[9px] bg-white/80 border border-gray-200 rounded text-gray-700 font-mono">{f}</span>
+                  ))}
+                  {s.features_feed.length > 3 && (
+                    <span className="px-1.5 py-0.5 text-[9px] text-gray-500">+{s.features_feed.length - 3} more</span>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
