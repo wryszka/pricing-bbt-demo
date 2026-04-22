@@ -71,14 +71,20 @@ BASELINE_FEATURES = [
     "employee_count_est", "distance_to_coast_km", "population_density_per_km2",
     "elevation_metres", "annual_rainfall_mm",
 ]
-FACTOR_URBAN = "urban_score"
-FACTOR_CLAIM = "neighbourhood_claim_frequency"
 
-all_cols = ["policy_id", "claim_count_5y"] + BASELINE_FEATURES + [FACTOR_URBAN, FACTOR_CLAIM]
+# Real-UK-data derived factors, added in ablation order
+REAL_FACTORS = [
+    "urban_score",             # ONS RUC 2011 + IMD living-env
+    "is_coastal",              # ONS local authority coastal flag
+    "deprivation_composite",   # IMD crime + income + health + living-env
+    "neighbourhood_claim_frequency",  # Bühlmann credibility on internal claims
+]
+
+all_cols = ["policy_id", "claim_count_5y"] + BASELINE_FEATURES + REAL_FACTORS
 
 # Check the derived factors exist in the UPT; fail loudly if not
 upt_cols = set(upt.columns)
-missing = [c for c in [FACTOR_URBAN, FACTOR_CLAIM] if c not in upt_cols]
+missing = [c for c in REAL_FACTORS if c not in upt_cols]
 if missing:
     raise ValueError(
         f"Derived factors {missing} not in UPT. "
@@ -87,7 +93,7 @@ if missing:
 
 pdf = upt.select(*all_cols).toPandas()
 pdf["claim_frequency"] = pdf["claim_count_5y"].fillna(0).astype(float)
-for c in BASELINE_FEATURES + [FACTOR_URBAN, FACTOR_CLAIM]:
+for c in BASELINE_FEATURES + REAL_FACTORS:
     pdf[c] = pd.to_numeric(pdf[c], errors="coerce").fillna(0)
 
 # Deterministic 80/20 split by policy_id hash
@@ -135,16 +141,21 @@ def gini(y_true, y_pred):
 
 # COMMAND ----------
 
+# Each cohort adds one real-data factor on top of the previous — letting us attribute
+# lift factor-by-factor via the Gini delta between consecutive cohorts. The last
+# cohort `plus_claim_freq` carries the full real-data feature set.
 COHORTS = [
-    ("baseline",   BASELINE_FEATURES),
-    ("plus_urban", BASELINE_FEATURES + [FACTOR_URBAN]),
-    ("plus_both",  BASELINE_FEATURES + [FACTOR_URBAN, FACTOR_CLAIM]),
+    ("baseline",         BASELINE_FEATURES,                               None),
+    ("plus_urban",       BASELINE_FEATURES + REAL_FACTORS[:1],            REAL_FACTORS[0]),
+    ("plus_coastal",     BASELINE_FEATURES + REAL_FACTORS[:2],            REAL_FACTORS[1]),
+    ("plus_deprivation", BASELINE_FEATURES + REAL_FACTORS[:3],            REAL_FACTORS[2]),
+    ("plus_claim_freq",  BASELINE_FEATURES + REAL_FACTORS[:4],            REAL_FACTORS[3]),
 ]
 
 results = []
 run_ids = {}
 
-for cohort_name, features in COHORTS:
+for cohort_name, features, attribution in COHORTS:
     X_train = sm.add_constant(train_pdf[features].values)
     X_test  = sm.add_constant(test_pdf[features].values)
 
@@ -155,6 +166,7 @@ for cohort_name, features in COHORTS:
         mlflow.log_param("model_type",        "GLM_Poisson")
         mlflow.log_param("n_features",        len(features))
         mlflow.log_param("cohort",            cohort_name)
+        mlflow.log_param("attribution_factor", attribution)
         mlflow.log_param("upt_delta_version", upt_delta_version)
         mlflow.log_param("train_rows",        len(train_pdf))
         mlflow.log_param("test_rows",         len(test_pdf))
@@ -172,33 +184,36 @@ for cohort_name, features in COHORTS:
         mlflow.log_metric("aic",            float(fit.aic))
 
         run_ids[cohort_name] = run.info.run_id
-        results.append({"cohort": cohort_name, "gini": g, "rmse": rmse, "aic": float(fit.aic), "run_id": run.info.run_id})
-        print(f"  {cohort_name:12s}  features={len(features):3d}  Gini={g:.4f}  RMSE={rmse:.4f}")
+        results.append({
+            "cohort":              cohort_name,
+            "n_features":          len(features),
+            "gini":                g,
+            "rmse":                rmse,
+            "aic":                 float(fit.aic),
+            "run_id":              run.info.run_id,
+            "attribution_factor":  attribution,
+        })
+        print(f"  {cohort_name:18s}  features={len(features):3d}  Gini={g:.4f}  RMSE={rmse:.4f}")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Attribution
+# MAGIC ## Attribution — per-factor lift via consecutive Gini deltas
 
 # COMMAND ----------
 
-by_cohort = {r["cohort"]: r for r in results}
-gini_baseline   = by_cohort["baseline"]["gini"]
-gini_plus_urban = by_cohort["plus_urban"]["gini"]
-gini_plus_both  = by_cohort["plus_both"]["gini"]
+gini_baseline = results[0]["gini"]
+gini_full     = results[-1]["gini"]
+lift_total    = gini_full - gini_baseline
+lift_total_pct = (lift_total / gini_baseline * 100.0) if gini_baseline > 0 else 0.0
 
-lift_urban        = gini_plus_urban - gini_baseline
-lift_claim_freq   = gini_plus_both  - gini_plus_urban
-lift_total        = gini_plus_both  - gini_baseline
-# Relative lift vs baseline (handles tiny baselines without divide-by-zero)
-lift_total_pct    = (lift_total / gini_baseline * 100.0) if gini_baseline > 0 else 0.0
-
-print(f"""
-Baseline Gini:         {gini_baseline:.4f}
-+ urban_score:         {gini_plus_urban:.4f}  (+{lift_urban:+.4f})
-+ neigh_claim_freq:    {gini_plus_both:.4f}   (+{lift_claim_freq:+.4f})
-Total lift:            {lift_total:+.4f}  ({lift_total_pct:+.2f}% vs baseline)
-""")
+print(f"Baseline Gini:    {gini_baseline:.4f}")
+prev_gini = gini_baseline
+for r in results[1:]:
+    lift_prev = r["gini"] - prev_gini
+    print(f"+ {r['attribution_factor']:30s}  Gini={r['gini']:.4f}  (+{lift_prev:+.4f})")
+    prev_gini = r["gini"]
+print(f"Total lift:       {lift_total:+.4f}  ({lift_total_pct:+.2f}% vs baseline)")
 
 # COMMAND ----------
 
@@ -222,12 +237,19 @@ summary_schema = StructType([
 ])
 
 now = datetime.now(timezone.utc).replace(tzinfo=None)
-rows = [
-    ("baseline",   len(BASELINE_FEATURES),                         gini_baseline,   by_cohort["baseline"]["rmse"],   by_cohort["baseline"]["aic"],   0.0,            0.0,            None,                    run_ids["baseline"],   str(upt_delta_version), now),
-    ("plus_urban", len(BASELINE_FEATURES) + 1,                     gini_plus_urban, by_cohort["plus_urban"]["rmse"], by_cohort["plus_urban"]["aic"], lift_urban,     lift_urban,     FACTOR_URBAN,            run_ids["plus_urban"], str(upt_delta_version), now),
-    ("plus_both",  len(BASELINE_FEATURES) + 2,                     gini_plus_both,  by_cohort["plus_both"]["rmse"],  by_cohort["plus_both"]["aic"],  lift_total,     lift_claim_freq, FACTOR_CLAIM,           run_ids["plus_both"],  str(upt_delta_version), now),
-]
-summary_df = spark.createDataFrame(rows, schema=summary_schema)
+summary_rows = []
+prev_gini = gini_baseline
+for r in results:
+    lift_vs_baseline = r["gini"] - gini_baseline
+    lift_vs_prev     = r["gini"] - prev_gini
+    summary_rows.append((
+        r["cohort"], r["n_features"], r["gini"], r["rmse"], r["aic"],
+        lift_vs_baseline, lift_vs_prev, r["attribution_factor"],
+        r["run_id"], str(upt_delta_version), now,
+    ))
+    prev_gini = r["gini"]
+
+summary_df = spark.createDataFrame(summary_rows, schema=summary_schema)
 
 summary_table = f"{fqn}.challenger_comparison_latest"
 summary_df.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(summary_table)

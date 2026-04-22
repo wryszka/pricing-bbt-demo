@@ -22,8 +22,6 @@ resources:
             path: ../src/02_silver/silver_geospatial_hazard.sql
         - notebook:
             path: ../src/02_silver/silver_credit_bureau.sql
-        - notebook:
-            path: ../src/02_silver/silver_ons_reference.sql
 
   jobs:
     ingest_external_data:
@@ -65,22 +63,12 @@ resources:
               volume_name: ${var.volume_name}
           environment_key: default
 
-        - task_key: ingest_ons_reference
-          notebook_task:
-            notebook_path: ../src/01_ingestion/ingest_ons_reference.py
-            base_parameters:
-              catalog_name: ${var.catalog_name}
-              schema_name: ${var.schema_name}
-              volume_name: ${var.volume_name}
-          environment_key: default
-
         # Step 2: DLT pipeline — Raw → Silver (runs after all ingestion completes)
         - task_key: build_silver
           depends_on:
             - task_key: ingest_market_pricing
             - task_key: ingest_geospatial_hazard
             - task_key: ingest_credit_bureau
-            - task_key: ingest_ons_reference
           pipeline_task:
             pipeline_id: ${resources.pipelines.silver_external_data.id}
             full_refresh: true

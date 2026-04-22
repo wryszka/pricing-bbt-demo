@@ -174,11 +174,11 @@ function ChallengerPanel({ data }: { data: any }) {
   }
 
   const baseline = data.baseline_gini || 0;
-  const plusUrban = data.plus_urban_gini || 0;
-  const plusBoth = data.plus_both_gini || 0;
+  const fullGini = data.full_gini || data.plus_both_gini || 0;
   const totalLift = data.total_lift || 0;
   const totalLiftPct = data.total_lift_pct || 0;
   const attribution = data.attribution || [];
+  const cohorts = data.cohorts || [];
   const positive = totalLift >= 0;
 
   return (
@@ -187,9 +187,9 @@ function ChallengerPanel({ data }: { data: any }) {
         <div className="flex items-center gap-2">
           <GitCompare className="w-5 h-5 text-emerald-700" />
           <div>
-            <h3 className="font-semibold text-emerald-800">Adding factors → model lift</h3>
+            <h3 className="font-semibold text-emerald-800">Adding real UK data → model lift</h3>
             <p className="text-xs text-emerald-700">
-              Baseline GLM vs challenger with the derived factors — Gini on held-out sample
+              Baseline vs challenger with real ONSPD / IMD / coastal factors — Gini on held-out sample
             </p>
           </div>
         </div>
@@ -198,10 +198,9 @@ function ChallengerPanel({ data }: { data: any }) {
         </span>
       </div>
 
-      <div className="p-5 grid grid-cols-4 gap-4">
-        <GiniCard label="Baseline"        value={baseline} />
-        <GiniCard label="+ urban_score"   value={plusUrban} delta={plusUrban - baseline} />
-        <GiniCard label="+ both factors"  value={plusBoth} delta={plusBoth - baseline} highlight />
+      <div className="p-5 grid grid-cols-3 gap-4">
+        <GiniCard label="Baseline (synthetic features)" value={baseline} />
+        <GiniCard label={`Full challenger (${cohorts.length} cohorts)`} value={fullGini} delta={fullGini - baseline} highlight />
         <div className={`rounded-lg p-3 border ${positive ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
           <div className="text-xs text-gray-500">Total lift</div>
           <div className={`text-2xl font-bold mt-1 ${positive ? 'text-green-700' : 'text-red-700'}`}>

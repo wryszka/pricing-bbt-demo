@@ -79,7 +79,9 @@ async def ensure_model_factory_tables():
 async def get_challenger_comparison():
     """Return the latest baseline-vs-challenger comparison produced by
     `04_models/challenger_comparison.py`. Used by the "Adding factors → lift"
-    panel on the Model Development page."""
+    panel on the Model Development page. Supports an N-step ablation ladder:
+    the first cohort is the baseline, the last is the fully-enriched challenger,
+    and each intermediate cohort adds one real-UK-data factor."""
     try:
         rows = await execute_query(f"""
             SELECT
@@ -95,40 +97,42 @@ async def get_challenger_comparison():
                 upt_delta_version,
                 computed_at
             FROM {fqn('challenger_comparison_latest')}
-            ORDER BY CASE cohort
-                WHEN 'baseline' THEN 0
-                WHEN 'plus_urban' THEN 1
-                WHEN 'plus_both' THEN 2
-                ELSE 99 END
+            ORDER BY n_features
         """)
+        if not rows:
+            return {"cohorts": [], "error": "no challenger comparison rows"}
 
-        by_cohort = {r["cohort"]: r for r in rows}
-        baseline = by_cohort.get("baseline", {})
-        plus_urban = by_cohort.get("plus_urban", {})
-        plus_both = by_cohort.get("plus_both", {})
+        baseline_row = rows[0]
+        full_row     = rows[-1]
+        gini_baseline = float(baseline_row.get("gini") or 0.0)
+        gini_full     = float(full_row.get("gini") or 0.0)
 
-        gini_baseline = float(baseline.get("gini") or 0.0)
-        gini_plus_urban = float(plus_urban.get("gini") or 0.0)
-        gini_plus_both = float(plus_both.get("gini") or 0.0)
-
-        total_lift = gini_plus_both - gini_baseline
-        urban_lift = gini_plus_urban - gini_baseline
-        claim_freq_lift = gini_plus_both - gini_plus_urban
+        total_lift     = gini_full - gini_baseline
         total_lift_pct = (total_lift / gini_baseline * 100.0) if gini_baseline > 0 else 0.0
 
+        # Attribution — the delta between each intermediate cohort and the previous,
+        # labelled by the factor that was just added.
+        attribution = []
+        for row in rows[1:]:
+            lift_prev = float(row.get("lift_vs_prev") or 0.0)
+            attribution.append({
+                "factor":    row.get("attribution_factor"),
+                "lift":      lift_prev,
+                "share_pct": (lift_prev / total_lift * 100.0) if total_lift > 0 else 0.0,
+            })
+
         return {
-            "cohorts": rows,
+            "cohorts":          rows,
             "baseline_gini":    gini_baseline,
-            "plus_urban_gini":  gini_plus_urban,
-            "plus_both_gini":   gini_plus_both,
+            "full_gini":        gini_full,
+            # Legacy keys kept for any old clients expecting plus_urban_gini / plus_both_gini.
+            "plus_urban_gini":  float(rows[1]["gini"]) if len(rows) > 1 else gini_baseline,
+            "plus_both_gini":   gini_full,
             "total_lift":       total_lift,
             "total_lift_pct":   total_lift_pct,
-            "attribution": [
-                {"factor": "urban_score",                   "lift": urban_lift,      "share_pct": (urban_lift / total_lift * 100.0) if total_lift > 0 else 0.0},
-                {"factor": "neighbourhood_claim_frequency", "lift": claim_freq_lift, "share_pct": (claim_freq_lift / total_lift * 100.0) if total_lift > 0 else 0.0},
-            ],
-            "computed_at": str(baseline.get("computed_at") or ""),
-            "upt_delta_version": baseline.get("upt_delta_version"),
+            "attribution":      attribution,
+            "computed_at":      str(baseline_row.get("computed_at") or ""),
+            "upt_delta_version": baseline_row.get("upt_delta_version"),
         }
     except Exception as e:
         logger.warning("Failed to load challenger comparison: %s", e)

@@ -1,5 +1,7 @@
 import { Link } from 'react-router-dom';
-import { Database, FlaskConical, Zap, Shield, ArrowRight, Receipt } from 'lucide-react';
+import { Database, FlaskConical, Zap, Shield, ArrowRight, Receipt, BookOpen, ExternalLink } from 'lucide-react';
+
+const GITHUB_REPO_URL = 'https://github.com/wryszka/pricing-workbench';
 
 export default function Home() {
   return (
@@ -58,6 +60,29 @@ export default function Home() {
           features={["Unity Catalog lineage", "Immutable audit log", "Regulatory export (PDF + JSON)"]}
         />
       </div>
+
+      {/* For data scientists / actuaries */}
+      <a href={`${GITHUB_REPO_URL}/tree/main/src/new_data_impact`} target="_blank" rel="noopener noreferrer"
+        className="block bg-indigo-50 border border-indigo-200 rounded-lg p-5 mb-6 hover:shadow-md transition-all group">
+        <div className="flex items-center gap-3 mb-2">
+          <BookOpen className="w-5 h-5 text-indigo-600" />
+          <h3 className="font-semibold text-gray-900 group-hover:text-indigo-700 transition-colors">
+            New Data Impact — notebook study for data scientists / actuaries
+          </h3>
+          <ExternalLink className="w-4 h-4 text-gray-400 ml-auto" />
+        </div>
+        <p className="text-sm text-gray-700 mb-3">
+          Six notebooks that answer the question every pricing team has: <em>does adding real external
+          data actually make pricing models better, and by how much?</em> Builds a ~1.5M postcode
+          enrichment table from ONSPD + IMD 2019 + ONS RUC, trains standard vs enriched frequency +
+          severity models, shows the lift with coefficients, loss-ratio stability, and a governance PDF.
+        </p>
+        <div className="flex flex-wrap gap-1.5">
+          {["Gini 0.11 → 0.25", "Deviance Explained 1.0% → 5.3%", "50-spec Model Factory", "Claude review agent", "Governance PDF"].map(f => (
+            <span key={f} className="px-2 py-0.5 rounded text-[10px] font-medium bg-indigo-100 text-indigo-700">{f}</span>
+          ))}
+        </div>
+      </a>
 
       {/* About */}
       <div className="bg-gray-50 border border-gray-200 rounded-lg p-5">

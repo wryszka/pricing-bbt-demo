@@ -1,0 +1,29 @@
+# Postcode Enrichment — one-shot job to build the real UK public-data reference
+# table used across the Pricing Workbench (derived_factors, challenger comparison)
+# and the standalone new_data_impact notebook study.
+#
+# Downloads ONSPD + IMD 2019 (~2.3 GB + 5 MB), processes, writes ~1.5M row
+# `postcode_enrichment` table. Idempotent — re-runs skip downloads if cached.
+
+resources:
+  jobs:
+    build_postcode_enrichment:
+      name: "Build Postcode Enrichment (real UK public data)"
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+
+      tasks:
+        - task_key: build_postcode_enrichment
+          notebook_task:
+            notebook_path: ../src/new_data_impact/00a_build_postcode_enrichment.py
+          environment_key: default
+
+      environments:
+        - environment_key: default
+          spec:
+            client: "5"
+            dependencies:
+              - requests

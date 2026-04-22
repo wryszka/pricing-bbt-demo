@@ -65,8 +65,7 @@ print("✓ Step 1b: Quote stream built (quotes + quote_payload_* tables)")
 # Run ingestion notebooks in sequence (DLT handles silver)
 for nb in ["../01_ingestion/ingest_market_pricing",
            "../01_ingestion/ingest_geospatial_hazard",
-           "../01_ingestion/ingest_credit_bureau",
-           "../01_ingestion/ingest_ons_reference"]:
+           "../01_ingestion/ingest_credit_bureau"]:
     dbutils.notebook.run(nb, 300, {
         "catalog_name": catalog,
         "schema_name": schema,

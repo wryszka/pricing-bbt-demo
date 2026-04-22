@@ -197,13 +197,20 @@ upt =(policies_enriched
     .drop("postcode_prefix", "market_join_key", "match_key_sic_region")
 )
 
-# Derived factors (urban_score, neighbourhood_claim_frequency) — postcode-level
-# Joined here so downstream models automatically pick them up. If the table
-# doesn't exist yet, skip silently so the initial UPT build still works.
+# Derived factors (urban_score, is_coastal, deprivation_composite, IMD sub-deciles,
+# neighbourhood_claim_frequency). Sourced from real UK public data (postcode_enrichment).
 try:
     derived = spark.table(f"{fqn}.derived_factors")
     upt = upt.join(
-        derived.select("postcode_sector", "urban_score", "neighbourhood_claim_frequency"),
+        derived.select(
+            "postcode_sector",
+            "urban_score",
+            "is_coastal",
+            "deprivation_composite",
+            "imd_decile",
+            "crime_decile",
+            "neighbourhood_claim_frequency",
+        ),
         "postcode_sector",
         "left",
     )
@@ -439,7 +446,11 @@ column_comments = {
     "combined_risk_score": "Blended risk score combining location, credit, industry, claims",
     "rate_per_1k_si": "Current premium rate per £1,000 sum insured",
     "industry_risk_tier": "Industry risk classification: High/Medium/Low",
-    "urban_score": "Derived factor (0-1): weighted composite of population density, ONS urban class, GP density",
+    "urban_score": "Derived factor (0-1) from real UK data — ONS RUC 2011 urban fraction + IMD living-environment decile",
+    "is_coastal": "Coastal flag (0/1) derived from real UK ONS local authority codes",
+    "deprivation_composite": "Derived factor (0-1) — equal-weighted IMD crime/income/health/living-env composite",
+    "imd_decile": "Real IMD 2019 decile averaged across the postcode area (1=most deprived, 10=least)",
+    "crime_decile": "Real IMD 2019 crime sub-decile averaged across the postcode area",
     "neighbourhood_claim_frequency": "Derived factor: credibility-weighted postcode-level claim frequency (Buhlmann K=100)",
     # Audit
     "last_updated_by": "User or system that last modified this row",
