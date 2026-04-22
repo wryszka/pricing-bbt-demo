@@ -53,6 +53,16 @@ resources:
               schema_name: ${var.schema_name}
           environment_key: default
 
+        # Step 4: Challenger comparison — baseline vs +urban_score vs +both factors
+        # Independent of the core models; just needs a UPT with derived factors.
+        - task_key: challenger_comparison
+          notebook_task:
+            notebook_path: ../src/04_models/challenger_comparison.py
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name: ${var.schema_name}
+          environment_key: default
+
       environments:
         - environment_key: default
           spec:

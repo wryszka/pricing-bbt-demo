@@ -1,10 +1,14 @@
 import { useEffect, useState } from 'react';
-import { Code, ExternalLink, FlaskConical, TrendingUp, GitCompare, Shield } from 'lucide-react';
+import { Code, ExternalLink, FlaskConical, TrendingUp, GitCompare, Shield, ArrowUpRight } from 'lucide-react';
 import { api } from '../lib/api';
 
 export default function ModelDevelopment() {
   const [config, setConfig] = useState<any>(null);
-  useEffect(() => { api.getConfig().then(setConfig).catch(() => {}); }, []);
+  const [challenger, setChallenger] = useState<any>(null);
+  useEffect(() => {
+    api.getConfig().then(setConfig).catch(() => {});
+    api.getChallengerComparison().then(setChallenger).catch(() => {});
+  }, []);
 
   const host = config?.workspace_host || '';
 
@@ -97,6 +101,8 @@ export default function ModelDevelopment() {
         </div>
       </div>
 
+      <ChallengerPanel data={challenger} host={host} />
+
       <div className="grid gap-4">
         {notebooks.map((nb) => {
           const c = colorMap[nb.color] || colorMap.blue;
@@ -145,6 +151,119 @@ export default function ModelDevelopment() {
           <span className="text-gray-800">Model Serving (auto feature lookup)</span>
         </div>
       </div>
+    </div>
+  );
+}
+
+// -------------------------------------------------------------
+// Challenger comparison: baseline vs +urban_score vs +both factors
+// -------------------------------------------------------------
+
+function ChallengerPanel({ data, host }: { data: any; host: string }) {
+  // Empty state — table doesn't exist yet or no rows
+  if (!data || !data.cohorts || data.cohorts.length === 0) {
+    return (
+      <div className="mb-6 bg-amber-50 border border-amber-200 rounded-lg p-5">
+        <div className="flex items-center gap-2 mb-1">
+          <GitCompare className="w-5 h-5 text-amber-600" />
+          <h3 className="font-semibold text-amber-800">Adding factors → model lift</h3>
+        </div>
+        <p className="text-sm text-amber-700">
+          Run <code className="bg-white px-1.5 py-0.5 rounded text-xs">src/04_models/challenger_comparison.py</code>{' '}
+          to populate this panel. It trains baseline vs +urban_score vs +both, and attributes
+          the Gini lift to each derived factor.
+        </p>
+      </div>
+    );
+  }
+
+  const baseline = data.baseline_gini || 0;
+  const plusUrban = data.plus_urban_gini || 0;
+  const plusBoth = data.plus_both_gini || 0;
+  const totalLift = data.total_lift || 0;
+  const totalLiftPct = data.total_lift_pct || 0;
+  const attribution = data.attribution || [];
+  const positive = totalLift >= 0;
+
+  return (
+    <div className="mb-6 bg-white border border-gray-200 rounded-lg overflow-hidden">
+      <div className="px-5 py-3 bg-emerald-50 border-b border-emerald-200 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <GitCompare className="w-5 h-5 text-emerald-700" />
+          <div>
+            <h3 className="font-semibold text-emerald-800">Adding factors → model lift</h3>
+            <p className="text-xs text-emerald-700">
+              Baseline GLM vs challenger with the derived factors — Gini on held-out sample
+            </p>
+          </div>
+        </div>
+        <span className="text-xs text-gray-500">
+          UPT v{data.upt_delta_version ?? '—'}
+        </span>
+      </div>
+
+      <div className="p-5 grid grid-cols-4 gap-4">
+        <GiniCard label="Baseline"        value={baseline} />
+        <GiniCard label="+ urban_score"   value={plusUrban} delta={plusUrban - baseline} />
+        <GiniCard label="+ both factors"  value={plusBoth} delta={plusBoth - baseline} highlight />
+        <div className={`rounded-lg p-3 border ${positive ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
+          <div className="text-xs text-gray-500">Total lift</div>
+          <div className={`text-2xl font-bold mt-1 ${positive ? 'text-green-700' : 'text-red-700'}`}>
+            {positive ? '+' : ''}{totalLift.toFixed(4)}
+          </div>
+          <div className={`text-xs mt-0.5 ${positive ? 'text-green-600' : 'text-red-600'}`}>
+            {positive ? '+' : ''}{totalLiftPct.toFixed(2)}% vs baseline
+          </div>
+        </div>
+      </div>
+
+      <div className="px-5 pb-5">
+        <div className="text-xs font-medium text-gray-600 mb-2">Lift attribution</div>
+        <div className="space-y-1.5">
+          {attribution.map((a: any) => {
+            const share = Math.max(0, Math.min(100, a.share_pct || 0));
+            return (
+              <div key={a.factor} className="flex items-center gap-3">
+                <div className="w-60 text-xs font-mono text-gray-700">{a.factor}</div>
+                <div className="flex-1 bg-gray-100 rounded-full h-2 overflow-hidden">
+                  <div className="bg-emerald-500 h-full" style={{ width: `${share}%` }} />
+                </div>
+                <div className="w-32 text-right text-xs text-gray-600">
+                  <span className="font-medium">{a.lift >= 0 ? '+' : ''}{Number(a.lift).toFixed(4)}</span>
+                  <span className="text-gray-400 ml-1">({share.toFixed(0)}% share)</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div className="flex items-center justify-between mt-3 text-xs text-gray-500">
+          <div>
+            Ablation: each factor's lift is the Gini delta when it's added to the previous model.
+          </div>
+          {host && (
+            <a href={`${host}/editor/notebooks`} target="_blank" rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-emerald-600 hover:text-emerald-800 font-medium">
+              Open challenger_comparison.py <ArrowUpRight className="w-3 h-3" />
+            </a>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GiniCard({ label, value, delta, highlight }: { label: string; value: number; delta?: number; highlight?: boolean }) {
+  return (
+    <div className={`rounded-lg p-3 border ${highlight ? 'bg-emerald-50 border-emerald-200' : 'bg-gray-50 border-gray-200'}`}>
+      <div className="text-xs text-gray-500">{label}</div>
+      <div className={`text-2xl font-bold mt-1 ${highlight ? 'text-emerald-700' : 'text-gray-800'}`}>
+        {value.toFixed(4)}
+      </div>
+      {delta !== undefined && (
+        <div className={`text-xs mt-0.5 ${delta >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+          {delta >= 0 ? '+' : ''}{delta.toFixed(4)}
+        </div>
+      )}
     </div>
   );
 }

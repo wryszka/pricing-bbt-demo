@@ -11,7 +11,19 @@ resources:
           default: ${var.schema_name}
 
       tasks:
+        # Derived factors (urban_score, neighbourhood_claim_frequency) at postcode level.
+        # Must run before build_upt so the UPT picks them up via the left join.
+        - task_key: derive_factors
+          notebook_task:
+            notebook_path: ../src/03_gold/derive_factors.py
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name: ${var.schema_name}
+          environment_key: default
+
         - task_key: build_upt
+          depends_on:
+            - task_key: derive_factors
           notebook_task:
             notebook_path: ../src/03_gold/build_upt.py
             base_parameters:

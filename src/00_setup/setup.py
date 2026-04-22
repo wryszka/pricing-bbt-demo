@@ -431,6 +431,51 @@ print(f"✓ economic_indicators — {len(econ_rows)} rows")
 
 # COMMAND ----------
 
+# --- 5. ONS Reference Data (postcode-level free/public data) ---
+# Mimics ONS + NHS open data at postcode sector level:
+#   - population_density_per_km2 (ONS)
+#   - urban_classification_score  (ONS rural-urban classification, 1=rural .. 6=urban conurbation)
+#   - gp_density_per_10k          (NHS GP practices per 10k population)
+#   - deprivation_score           (IMD decile, 1=most deprived .. 10=least deprived)
+# These are the raw inputs the "urban score" derived factor is built from.
+ons_rows = []
+for pc in POSTCODES:
+    region = POSTCODE_REGION.get(pc, "Unknown")
+    # London postcodes: dense, urban, GP-served, varied deprivation
+    # Regional cities (M/B/LS/L/G): medium-high density, mostly urban
+    # Rest: lower density, more rural mix
+    if region == "London":
+        pop_density = round(random.gauss(9500, 3500), 0)
+        urban_base = 6
+        gp_density = round(random.gauss(6.5, 1.5), 2)
+        imd_base = random.randint(3, 8)
+    elif region in ("North West", "Midlands", "Yorkshire", "Scotland"):
+        pop_density = round(random.gauss(4200, 2000), 0)
+        urban_base = random.choice([4, 5, 5, 6])
+        gp_density = round(random.gauss(5.5, 1.2), 2)
+        imd_base = random.randint(2, 7)
+    else:
+        pop_density = round(random.gauss(2200, 1200), 0)
+        urban_base = random.choice([2, 3, 4, 4, 5])
+        gp_density = round(random.gauss(4.8, 1.4), 2)
+        imd_base = random.randint(4, 9)
+    # Clip
+    pop_density = max(100, min(20000, pop_density))
+    urban_class = max(1, min(6, urban_base + random.choice([-1, 0, 0, 0, 1])))
+    gp_density = max(1.5, min(12.0, gp_density))
+    imd_decile = max(1, min(10, imd_base + random.choice([-1, 0, 0, 1])))
+    # Dirty data — occasional nulls and out-of-range values (caught by DQ)
+    if random.random() < 0.02: pop_density = None
+    if random.random() < 0.02: gp_density = -1.0
+    ons_rows.append((pc, pop_density, urban_class, gp_density, imd_decile))
+
+pdf_ons = spark.createDataFrame(ons_rows,
+    ["postcode_sector", "population_density_per_km2", "urban_classification_score", "gp_density_per_10k", "deprivation_decile"])
+pdf_ons.coalesce(1).write.mode("overwrite").option("header", "true").csv(f"{volume_path}/ons_reference")
+print(f"✓ ons_reference — {len(ons_rows)} rows")
+
+# COMMAND ----------
+
 print(f"""
 Setup complete (scale_factor={SCALE}x).
   Schema:  {fqn}
@@ -446,6 +491,7 @@ Setup complete (scale_factor={SCALE}x).
     - geospatial_hazard_enrichment/ ({len(geo_rows)} rows)
     - credit_bureau_summary/       ({len(bureau_rows):,} rows)
     - economic_indicators/         ({len(econ_rows)} rows)
+    - ons_reference/               ({len(ons_rows)} rows)
 
   Postcodes: {len(POSTCODES)} across {len(REGIONS)} regions
   SIC codes: {len(SIC_CODES)} industries

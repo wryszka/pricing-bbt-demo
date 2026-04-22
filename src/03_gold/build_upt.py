@@ -197,6 +197,20 @@ upt =(policies_enriched
     .drop("postcode_prefix", "market_join_key", "match_key_sic_region")
 )
 
+# Derived factors (urban_score, neighbourhood_claim_frequency) — postcode-level
+# Joined here so downstream models automatically pick them up. If the table
+# doesn't exist yet, skip silently so the initial UPT build still works.
+try:
+    derived = spark.table(f"{fqn}.derived_factors")
+    upt = upt.join(
+        derived.select("postcode_sector", "urban_score", "neighbourhood_claim_frequency"),
+        "postcode_sector",
+        "left",
+    )
+    print(f"✓ Joined derived_factors ({derived.count()} postcodes)")
+except Exception as e:
+    print(f"Note: derived_factors not available, skipping — run 03_gold/derive_factors.py to enable. ({e})")
+
 print(f"UPT columns: {len(upt.columns)}")
 upt.printSchema()
 
@@ -425,6 +439,8 @@ column_comments = {
     "combined_risk_score": "Blended risk score combining location, credit, industry, claims",
     "rate_per_1k_si": "Current premium rate per £1,000 sum insured",
     "industry_risk_tier": "Industry risk classification: High/Medium/Low",
+    "urban_score": "Derived factor (0-1): weighted composite of population density, ONS urban class, GP density",
+    "neighbourhood_claim_frequency": "Derived factor: credibility-weighted postcode-level claim frequency (Buhlmann K=100)",
     # Audit
     "last_updated_by": "User or system that last modified this row",
     "approval_timestamp": "Timestamp of the last approved data merge",

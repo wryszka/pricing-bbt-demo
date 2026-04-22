@@ -57,7 +57,8 @@ print("✓ Step 1: Setup complete")
 # Run ingestion notebooks in sequence (DLT handles silver)
 for nb in ["../01_ingestion/ingest_market_pricing",
            "../01_ingestion/ingest_geospatial_hazard",
-           "../01_ingestion/ingest_credit_bureau"]:
+           "../01_ingestion/ingest_credit_bureau",
+           "../01_ingestion/ingest_ons_reference"]:
     dbutils.notebook.run(nb, 300, {
         "catalog_name": catalog,
         "schema_name": schema,
@@ -71,15 +72,23 @@ print("  databricks bundle run ingest_external_data")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 3: Build Gold (Unified Pricing Table)
+# MAGIC ## Step 3: Derived factors + Gold (Unified Pricing Table)
 
 # COMMAND ----------
+
+# Derived factors (urban_score, neighbourhood_claim_frequency) — postcode-level.
+# Must run before build_upt so the UPT picks them up.
+dbutils.notebook.run("../03_gold/derive_factors", 300, {
+    "catalog_name": catalog,
+    "schema_name": schema,
+})
+print("✓ Step 3a: Derived factors built")
 
 dbutils.notebook.run("../03_gold/build_upt", 600, {
     "catalog_name": catalog,
     "schema_name": schema,
 })
-print("✓ Step 3: Gold UPT built")
+print("✓ Step 3b: Gold UPT built")
 
 # COMMAND ----------
 
