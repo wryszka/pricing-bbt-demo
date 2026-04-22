@@ -235,7 +235,7 @@ summary_df.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable
 spark.sql(f"""
     ALTER TABLE {summary_table}
     SET TBLPROPERTIES (
-        'comment' = 'Latest challenger vs baseline comparison — consumed by the Pricing Governance app.'
+        'comment' = 'Latest challenger vs baseline comparison — consumed by the Pricing Workbench app.'
     )
 """)
 print(f"✓ {summary_table} — {summary_df.count()} rows")

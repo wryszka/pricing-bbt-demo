@@ -1,11 +1,11 @@
-# P&C Insurance Pricing — Databricks Accelerator
+# Pricing Workbench — Databricks Accelerator
 
-End-to-end pricing data transformation for commercial property & casualty
-insurance, from raw vendor data to live pricing decisions with full governance.
+End-to-end commercial P&C pricing on Databricks, from raw vendor data to live
+pricing decisions with full governance and investigation.
 
 ## What this is
 
-A reusable demo/accelerator showing the complete pricing lifecycle on Databricks:
+A reusable accelerator showing the complete pricing lifecycle on Databricks:
 
 - **Medallion architecture:** External data → Bronze → Silver (DLT) → Gold (UPT)
 - **6 pricing models:** GLM frequency/severity, GBM demand/uplift/fraud/retention
@@ -20,8 +20,8 @@ A reusable demo/accelerator showing the complete pricing lifecycle on Databricks
 
 ```bash
 # 1. Clone
-git clone https://github.com/wryszka/pricing-bbt-demo.git
-cd pricing-bbt-demo
+git clone https://github.com/wryszka/pricing-workbench.git
+cd pricing-workbench
 
 # 2. Configure (edit databricks.yml with your workspace)
 #    Change catalog_name and workspace host

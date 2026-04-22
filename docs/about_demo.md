@@ -63,8 +63,8 @@ Governance layer: Unity Catalog lineage + audit_log + Delta Time Travel
 
 1. **Clone the repo:**
    ```bash
-   git clone https://github.com/wryszka/pricing-bbt-demo.git
-   cd pricing-bbt-demo
+   git clone https://github.com/wryszka/pricing-workbench.git
+   cd pricing-workbench
    ```
 
 2. **Configure your workspace:**

@@ -1,13 +1,13 @@
-# Databricks App — Pricing Data Ingestion Review
+# Databricks App — Pricing Workbench
 
 resources:
   apps:
-    pricing_ingestion_review:
-      name: "pricing-ingestion-review"
-      description: "HITL review and approval of external pricing data before merging into the Unified Pricing Table"
+    pricing_workbench:
+      name: "pricing-workbench"
+      description: "End-to-end commercial pricing workbench — data ingestion HITL, feature store, model factory, quote review, governance"
       source_code_path: ../src/app
-      # Note: Databricks Apps don't auto-stop. Run `databricks apps stop pricing-ingestion-review`
-      # when not demoing. Start with `databricks apps start pricing-ingestion-review`.
+      # Note: Databricks Apps don't auto-stop. Run `databricks apps stop pricing-workbench`
+      # when not demoing. Start with `databricks apps start pricing-workbench`.
 
       resources:
         - name: sql-warehouse

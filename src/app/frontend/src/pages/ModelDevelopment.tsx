@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Code, ExternalLink, FlaskConical, TrendingUp, GitCompare, Shield, ArrowUpRight } from 'lucide-react';
 import { api } from '../lib/api';
 
-const GITHUB_REPO_URL = 'https://github.com/wryszka/pricing-bbt-demo';
+const GITHUB_REPO_URL = 'https://github.com/wryszka/pricing-workbench';
 
 export default function ModelDevelopment() {
   const [challenger, setChallenger] = useState<any>(null);

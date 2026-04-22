@@ -268,7 +268,7 @@ pdf.cell(0, 8, f"{full_model_name} v{latest.version}", align="C", new_x="LMARGIN
 pdf.ln(5)
 pdf.set_font("Helvetica", "I", 9)
 pdf.cell(0, 5, f"Generated: {datetime.now(timezone.utc).strftime('%d %B %Y %H:%M UTC')}", align="C", new_x="LMARGIN", new_y="NEXT")
-pdf.cell(0, 5, "Bricksurance SE — Pricing Governance Platform", align="C", new_x="LMARGIN", new_y="NEXT")
+pdf.cell(0, 5, "Bricksurance SE — Pricing Workbench", align="C", new_x="LMARGIN", new_y="NEXT")
 
 # 1. Model Identity
 pdf.add_page()

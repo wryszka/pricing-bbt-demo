@@ -58,7 +58,7 @@ spark.sql(f"""
         details         STRING      COMMENT 'JSON blob with flexible metadata',
         source          STRING      COMMENT 'app, notebook, api'
     )
-    COMMENT 'Unified audit trail for all pricing governance events'
+    COMMENT 'Unified audit trail for all Pricing Workbench events'
 """)
 print(f"✓ {fqn}.audit_log")
 

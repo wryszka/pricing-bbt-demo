@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS {fqn}.audit_log (
     details         STRING      COMMENT 'JSON blob with flexible metadata',
     source          STRING      COMMENT 'app, notebook, api'
 )
-COMMENT 'Unified audit trail for all pricing governance events'
+COMMENT 'Unified audit trail for all Pricing Workbench events'
 """
 
 

@@ -21,7 +21,7 @@ FRONTEND_DIR = Path(__file__).parent / "frontend" / "dist"
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    logger.info("Starting Pricing UPT Ingestion Review App")
+    logger.info("Starting Pricing Workbench")
     try:
         await datasets.ensure_approvals_table()
         await models.ensure_model_factory_tables()
@@ -33,7 +33,7 @@ async def lifespan(application: FastAPI):
 
 
 app = FastAPI(
-    title="Pricing Data Ingestion Review",
+    title="Pricing Workbench",
     version="1.0.0",
     lifespan=lifespan,
 )

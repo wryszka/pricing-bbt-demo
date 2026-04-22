@@ -33,7 +33,7 @@ function Sidebar() {
       <Link to="/" className="px-4 py-5 flex items-center gap-3 hover:opacity-90 transition-opacity border-b border-white/10">
         <Database className="w-7 h-7 text-blue-400" />
         <div>
-          <h1 className="text-sm font-bold tracking-tight leading-tight">Pricing Governance</h1>
+          <h1 className="text-sm font-bold tracking-tight leading-tight">Pricing Workbench</h1>
           <p className="text-[10px] text-gray-400">Bricksurance SE</p>
         </div>
       </Link>
