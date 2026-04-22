@@ -1,12 +1,7 @@
-import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Database, FlaskConical, Zap, Shield, MessageCircle, ArrowRight, ExternalLink } from 'lucide-react';
-import { api } from '../lib/api';
+import { Database, FlaskConical, Zap, Shield, ArrowRight } from 'lucide-react';
 
 export default function Home() {
-  const [config, setConfig] = useState<any>(null);
-  useEffect(() => { api.getConfig().then(setConfig).catch(() => {}); }, []);
-
   return (
     <div className="max-w-7xl mx-auto px-6 py-8">
       {/* Hero */}
@@ -23,7 +18,7 @@ export default function Home() {
       {/* Section cards */}
       <div className="grid grid-cols-2 gap-5 mb-8">
         <SectionCard
-          to="/"
+          to="/datasets"
           icon={Database}
           color="blue"
           title="Data Ingestion"

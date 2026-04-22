@@ -356,7 +356,7 @@ print(f"Final UPT columns: {len(upt.columns)}")
 # COMMAND ----------
 
 table_name = f"{fqn}.unified_pricing_table_live"
-upt.write.mode("overwrite").saveAsTable(table_name)
+upt.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(table_name)
 
 row_count = spark.table(table_name).count()
 col_count = len(spark.table(table_name).columns)

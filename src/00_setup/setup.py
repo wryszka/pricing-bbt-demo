@@ -459,18 +459,24 @@ for pc in POSTCODES:
         urban_base = random.choice([2, 3, 4, 4, 5])
         gp_density = round(random.gauss(4.8, 1.4), 2)
         imd_base = random.randint(4, 9)
-    # Clip
-    pop_density = max(100, min(20000, pop_density))
-    urban_class = max(1, min(6, urban_base + random.choice([-1, 0, 0, 0, 1])))
-    gp_density = max(1.5, min(12.0, gp_density))
-    imd_decile = max(1, min(10, imd_base + random.choice([-1, 0, 0, 1])))
+    # Clip — always float for densities, int for categorical scores
+    pop_density = float(max(100.0, min(20000.0, pop_density)))
+    urban_class = int(max(1, min(6, urban_base + random.choice([-1, 0, 0, 0, 1]))))
+    gp_density = float(max(1.5, min(12.0, gp_density)))
+    imd_decile = int(max(1, min(10, imd_base + random.choice([-1, 0, 0, 1]))))
     # Dirty data — occasional nulls and out-of-range values (caught by DQ)
     if random.random() < 0.02: pop_density = None
     if random.random() < 0.02: gp_density = -1.0
     ons_rows.append((pc, pop_density, urban_class, gp_density, imd_decile))
 
-pdf_ons = spark.createDataFrame(ons_rows,
-    ["postcode_sector", "population_density_per_km2", "urban_classification_score", "gp_density_per_10k", "deprivation_decile"])
+ons_schema = StructType([
+    StructField("postcode_sector",             StringType()),
+    StructField("population_density_per_km2",  DoubleType()),
+    StructField("urban_classification_score",  IntegerType()),
+    StructField("gp_density_per_10k",          DoubleType()),
+    StructField("deprivation_decile",          IntegerType()),
+])
+pdf_ons = spark.createDataFrame(ons_rows, schema=ons_schema)
 pdf_ons.coalesce(1).write.mode("overwrite").option("header", "true").csv(f"{volume_path}/ons_reference")
 print(f"✓ ons_reference — {len(ons_rows)} rows")
 
