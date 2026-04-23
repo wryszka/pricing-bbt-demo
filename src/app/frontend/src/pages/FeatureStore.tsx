@@ -21,6 +21,10 @@ type Feature = {
   pii: boolean | string;
 };
 
+// Lakeview dashboard that powers the Dashboard tab. Created via
+// /api/2.0/lakeview/dashboards — see git log for the build script.
+const DASHBOARD_ID = '01f13edd547b1d528507be6f200b7ebc';
+
 const GROUP_COLORS: Record<string, string> = {
   rating_factor: 'bg-blue-100 text-blue-700 border-blue-200',
   enrichment:    'bg-indigo-100 text-indigo-700 border-indigo-200',
@@ -39,7 +43,7 @@ export default function FeatureStore() {
   const [catalog, setCatalog] = useState<{ features: Feature[]; counts_by_group: Record<string, number>; total: number; error?: string } | null>(null);
   const [sources, setSources] = useState<any>(null);
 
-  const [tab, setTab] = useState<'overview' | 'details'>('overview');
+  const [tab, setTab] = useState<'overview' | 'dashboard' | 'details'>('overview');
   const [profile, setProfile] = useState<any>(null);
   const [promoting, setPromoting] = useState(false);
   const [pausing, setPausing] = useState(false);
@@ -113,11 +117,12 @@ export default function FeatureStore() {
         </p>
       </div>
 
-      {/* Tab bar — Overview (dashboard) | Details (sources + catalog + state) */}
+      {/* Tab bar — Overview (app-rendered) | Dashboard (Databricks embedded) | Details */}
       <div className="flex gap-1 border-b border-gray-200 mb-6">
         {[
-          { id: 'overview' as const, label: 'Overview', icon: LayoutDashboard },
-          { id: 'details'  as const, label: 'Details',  icon: ListTree },
+          { id: 'overview'  as const, label: 'Overview',  icon: LayoutDashboard },
+          { id: 'dashboard' as const, label: 'Dashboard', icon: TrendingUp },
+          { id: 'details'   as const, label: 'Details',   icon: ListTree },
         ].map((t) => (
           <button
             key={t.id}
@@ -134,10 +139,35 @@ export default function FeatureStore() {
         ))}
       </div>
 
-      {/* Overview tab — dashboard */}
-      {tab === 'overview' && <OverviewTab profile={profile} />}
+      {/* Overview — app-rendered dashboard + Genie card anchored below */}
+      {tab === 'overview' && (
+        <>
+          <OverviewTab profile={profile} />
+          {config?.genie_space_id && (
+            <div className="mt-6">
+              <GenieChat
+                spaceId={config.genie_space_id}
+                fullScreenUrl={config.genie_url}
+                variant="card"
+                height={560}
+                suggestions={[
+                  "What is the total gross written premium by industry risk tier?",
+                  "Show average 5-year claim count by construction type",
+                  "Which 10 postcode sectors generate the most premium?",
+                  "How many policies are in flood zones 7 and above?",
+                  "Compare average claim severity — London vs North East",
+                  "Which SIC codes have the highest 5-year loss ratio?",
+                ]}
+              />
+            </div>
+          )}
+        </>
+      )}
 
-      {/* Details tab — lineage, catalog, offline/online state, tags */}
+      {/* Dashboard — embedded Databricks Lakeview dashboard */}
+      {tab === 'dashboard' && <DashboardTab dashboardId={DASHBOARD_ID} host={config?.workspace_host} />}
+
+      {/* Details — lineage, catalog, offline/online state, tags. No Genie here. */}
       {tab === 'details' && (
         <DetailsTab
           sources={sources} catalog={catalog} upt={upt} os={os} storeActive={storeActive} tags={tags}
@@ -146,27 +176,43 @@ export default function FeatureStore() {
           lifecycleMsg={lifecycleMsg} lifecycleTone={lifecycleTone}
         />
       )}
+    </div>
+  );
+}
 
-      {/* AI/BI Genie panel — uses the Conversation API, not an iframe, so the
-          replies (SQL, charts, tables) land inline in the app. */}
-      {config?.genie_space_id && (
-        <div className="mt-6">
-          <GenieChat
-            spaceId={config.genie_space_id}
-            fullScreenUrl={config.genie_url}
-            variant="card"
-            height={560}
-            suggestions={[
-              "What is the total gross written premium by industry risk tier?",
-              "Show average 5-year claim count by construction type",
-              "Which 10 postcode sectors generate the most premium?",
-              "How many policies are in flood zones 7 and above?",
-              "Compare average claim severity — London vs North East",
-              "Which SIC codes have the highest 5-year loss ratio?",
-            ]}
-          />
+// ---------------------------------------------------------------------------
+// Dashboard tab — embed the Lakeview dashboard. The iframe sits on the
+// workspace's /embed/dashboardsv3/{id} route which handles SSO inside the app.
+// ---------------------------------------------------------------------------
+
+function DashboardTab({ dashboardId, host }: { dashboardId?: string; host?: string }) {
+  if (!dashboardId) {
+    return (
+      <div className="bg-amber-50 border border-amber-200 rounded-lg p-5 text-sm text-amber-800">
+        Dashboard not configured. Set <code>DASHBOARD_ID</code> in <code>FeatureStore.tsx</code>.
+      </div>
+    );
+  }
+  const workspaceHost = host || '';
+  const embedUrl = `${workspaceHost}/embed/dashboardsv3/${dashboardId}`;
+  const openUrl  = `${workspaceHost}/dashboardsv3/${dashboardId}`;
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-3">
+        <div className="text-xs text-gray-500">
+          Powered by Databricks AI/BI Dashboards · the same embed your execs open in-workspace
         </div>
-      )}
+        <a href={openUrl} target="_blank" rel="noopener noreferrer"
+           className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800">
+          Open in Databricks <ExternalLink className="w-3 h-3" />
+        </a>
+      </div>
+      <iframe
+        src={embedUrl}
+        title="Modelling Mart — Overview"
+        className="w-full rounded-lg border border-gray-200 bg-white"
+        style={{ height: 1400 }}
+      />
     </div>
   );
 }
@@ -270,18 +316,20 @@ function OverviewTab({ profile }: { profile: any }) {
           <Tile compact label="Total claims (5y)"   value={fmt(claims.total_claims)} />
           <Tile compact label="Avg freq / policy"   value={Number(claims.avg_freq_5y || 0).toFixed(2)} hint="over 5 years" />
           <Tile compact label="Mean severity"       value={`£${fmt(Math.round(claims.mean_severity || 0))}`} />
-          <Tile compact label="Avg loss ratio"      value={`${(Number(claims.avg_loss_ratio || 0) * 100).toFixed(1)}%`} />
+          <Tile compact label="Portfolio loss ratio"
+                value={`${(Number(claims.portfolio_loss_ratio_5y || 0) * 100).toFixed(1)}%`}
+                hint="5-yr claims £ ÷ premium £" />
         </div>
         {lrByTier.length > 0 && (
           <div>
-            <div className="text-xs text-gray-500 uppercase tracking-wide mb-2">Loss ratio by industry tier</div>
+            <div className="text-xs text-gray-500 uppercase tracking-wide mb-2">Loss ratio by industry tier (premium-weighted)</div>
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-xs text-gray-500 border-b">
                   <th className="text-left py-1.5 pr-3 font-medium">Tier</th>
                   <th className="text-right py-1.5 pr-3 font-medium">Policies</th>
                   <th className="text-right py-1.5 pr-3 font-medium">Claims (5y)</th>
-                  <th className="text-right py-1.5 font-medium">Avg loss ratio</th>
+                  <th className="text-right py-1.5 font-medium">Loss ratio</th>
                 </tr>
               </thead>
               <tbody>
@@ -291,8 +339,8 @@ function OverviewTab({ profile }: { profile: any }) {
                     <td className="py-1.5 pr-3 text-right">{fmt(r.n)}</td>
                     <td className="py-1.5 pr-3 text-right">{fmt(r.total_claims)}</td>
                     <td className={`py-1.5 text-right font-mono ${
-                      Number(r.avg_loss_ratio) > 0.8 ? 'text-red-700' : Number(r.avg_loss_ratio) < 0.4 ? 'text-amber-600' : 'text-gray-700'
-                    }`}>{(Number(r.avg_loss_ratio || 0) * 100).toFixed(1)}%</td>
+                      Number(r.loss_ratio) > 0.8 ? 'text-red-700' : Number(r.loss_ratio) < 0.4 ? 'text-amber-600' : 'text-gray-700'
+                    }`}>{(Number(r.loss_ratio || 0) * 100).toFixed(1)}%</td>
                   </tr>
                 ))}
               </tbody>

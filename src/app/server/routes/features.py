@@ -494,17 +494,25 @@ async def mart_profile():
         by_tier = []
 
     # ----- claims sanity: totals, frequency, severity, loss ratio per tier -----
+    # IMPORTANT: use the AGGREGATE (premium-weighted) loss ratio, not the mean
+    # of per-policy ratios. Per-policy `loss_ratio_5y` has extreme outliers (a
+    # £100 policy with £10M claims → LR = 100,000%) that blow up the mean.
+    # The actuarially correct portfolio number is total claims £ / total premium £.
     try:
         claims = await execute_query(f"""
             SELECT
                 SUM(COALESCE(claim_count_5y, 0))        AS total_claims,
                 SUM(COALESCE(total_incurred_5y, 0))     AS total_incurred,
+                SUM(COALESCE(current_premium, 0))       AS total_premium,
                 AVG(COALESCE(claim_count_5y, 0))        AS avg_freq_5y,
                 CASE WHEN SUM(COALESCE(claim_count_5y, 0)) > 0
                      THEN SUM(COALESCE(total_incurred_5y, 0)) * 1.0 / SUM(COALESCE(claim_count_5y, 0))
                      ELSE 0
                 END AS mean_severity,
-                AVG(COALESCE(loss_ratio_5y, 0))         AS avg_loss_ratio
+                CASE WHEN SUM(COALESCE(current_premium, 0)) > 0
+                     THEN SUM(COALESCE(total_incurred_5y, 0)) * 1.0 / SUM(COALESCE(current_premium, 0))
+                     ELSE 0
+                END AS portfolio_loss_ratio_5y
             FROM {upt_table}
         """)
         c = claims[0] if claims else {}
@@ -512,10 +520,18 @@ async def mart_profile():
         c = {}
 
     try:
+        # Per-tier aggregate loss ratio — same premium-weighted formula
         lr_by_tier = await execute_query(f"""
             SELECT COALESCE(industry_risk_tier, 'Unknown') AS tier,
                    COUNT(*)                              AS n,
-                   ROUND(AVG(COALESCE(loss_ratio_5y, 0)), 3) AS avg_loss_ratio,
+                   SUM(COALESCE(total_incurred_5y, 0))   AS total_incurred,
+                   SUM(COALESCE(current_premium, 0))     AS total_premium,
+                   ROUND(
+                       CASE WHEN SUM(COALESCE(current_premium, 0)) > 0
+                            THEN SUM(COALESCE(total_incurred_5y, 0)) * 1.0 / SUM(COALESCE(current_premium, 0))
+                            ELSE 0
+                       END, 4
+                   ) AS loss_ratio,
                    SUM(COALESCE(claim_count_5y, 0))      AS total_claims
             FROM {upt_table}
             GROUP BY industry_risk_tier
@@ -537,12 +553,13 @@ async def mart_profile():
             "by_industry_tier": by_tier,
         },
         "claims": {
-            "total_claims":        int(c.get("total_claims") or 0),
-            "total_incurred":      float(c.get("total_incurred") or 0),
-            "avg_freq_5y":         float(c.get("avg_freq_5y") or 0),
-            "mean_severity":       float(c.get("mean_severity") or 0),
-            "avg_loss_ratio":      float(c.get("avg_loss_ratio") or 0),
-            "loss_ratio_by_tier":  lr_by_tier,
+            "total_claims":            int(c.get("total_claims") or 0),
+            "total_incurred":          float(c.get("total_incurred") or 0),
+            "total_premium":           float(c.get("total_premium") or 0),
+            "avg_freq_5y":             float(c.get("avg_freq_5y") or 0),
+            "mean_severity":           float(c.get("mean_severity") or 0),
+            "portfolio_loss_ratio_5y": float(c.get("portfolio_loss_ratio_5y") or 0),
+            "loss_ratio_by_tier":      lr_by_tier,
         },
         "recent_activity": {
             "refreshes": [
