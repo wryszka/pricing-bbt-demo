@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from server.routes import datasets, models, agent, features, deployment, governance, quote_stream, genie
+from server.routes import datasets, models, agent, features, deployment, governance, quote_stream, genie, development
 import os
 from server.config import get_workspace_host
 
@@ -46,6 +46,7 @@ app.include_router(deployment.router)
 app.include_router(governance.router)
 app.include_router(quote_stream.router)
 app.include_router(genie.router)
+app.include_router(development.router)
 
 
 @app.get("/api/health")

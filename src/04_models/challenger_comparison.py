@@ -43,7 +43,7 @@ from pyspark.sql.types import StructType, StructField, StringType, DoubleType, I
 
 try:
     user = dbutils.notebook.entry_point.getDbutils().notebook().getContext().userName().get()
-    mlflow.set_experiment(f"/Workspace/Users/{user}/pricing_upt_challenger_comparison")
+    mlflow.set_experiment(f"/Workspace/Users/{user}/pricing_workbench_challenger_comparison")
 except Exception:
     pass
 

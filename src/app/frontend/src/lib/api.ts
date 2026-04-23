@@ -91,6 +91,13 @@ export const api = {
     method: 'POST', body: JSON.stringify(payload),
   }),
 
+  // Model Development
+  getDevelopmentNotebooks: () => fetchJson<any>('/development/notebooks'),
+  getRecentMlflowRuns:     (limit = 10) => fetchJson<any>(`/development/recent-runs?limit=${limit}`),
+  openNotebook:            (notebookId: string) => fetchJson<any>('/development/open-notebook', {
+    method: 'POST', body: JSON.stringify({ notebook_id: notebookId }),
+  }),
+
   // Modelling Mart
   getFeatureStoreStatus: () => fetchJson<any>('/features/status'),
   getFeatureSources:     () => fetchJson<any>('/features/sources'),

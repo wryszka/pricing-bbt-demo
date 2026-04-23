@@ -32,7 +32,7 @@ from databricks.feature_engineering import FeatureEngineeringClient, FeatureLook
 mlflow.set_registry_uri("databricks-uc")
 try:
     user = dbutils.notebook.entry_point.getDbutils().notebook().getContext().userName().get()
-    mlflow.set_experiment(f"/Workspace/Users/{user}/pricing_upt_severity_glm")
+    mlflow.set_experiment(f"/Workspace/Users/{user}/pricing_workbench_severity_glm")
 except Exception:
     pass
 
