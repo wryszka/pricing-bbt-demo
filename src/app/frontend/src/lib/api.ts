@@ -91,10 +91,11 @@ export const api = {
     method: 'POST', body: JSON.stringify(payload),
   }),
 
-  // Feature Store
+  // Modelling Mart
   getFeatureStoreStatus: () => fetchJson<any>('/features/status'),
   getFeatureSources:     () => fetchJson<any>('/features/sources'),
   getFeatureCatalog:     () => fetchJson<any>('/features/catalog'),
+  getMartProfile:        () => fetchJson<any>('/features/mart-profile'),
   rebuildFeatureTable:   () => fetchJson<any>('/features/rebuild',        { method: 'POST', body: JSON.stringify({}) }),
   promoteOnline:         () => fetchJson<any>('/features/online/promote', { method: 'POST', body: JSON.stringify({}) }),
   pauseOnline:           () => fetchJson<any>('/features/online/pause',   { method: 'POST', body: JSON.stringify({}) }),

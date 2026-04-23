@@ -341,3 +341,215 @@ async def pause_online():
             "message":      "Online store was not provisioned; nothing to pause.",
             "error":        str(e)[:200],
         }
+
+
+# ---------------------------------------------------------------------------
+# Mart Profile — one-shot payload for the Modelling Mart Overview tab.
+#
+# Returns:
+#   • headline tiles (row count, policy count, date range, last refresh,
+#     column count, contributing upstream feeds)
+#   • factor-group composition (from feature_catalog)
+#   • top-10 features by missingness (null rate) on the live mart
+#   • coverage breakdown: policies by region + industry_risk_tier
+#   • claims sanity block: total claims, frequency, mean severity, loss
+#     ratio per industry tier
+#   • recent refresh activity (last 5 Delta commits)
+#
+# All SQL runs through the shared warehouse; designed to complete inside
+# the app's fetch timeout even on a cold warehouse.
+# ---------------------------------------------------------------------------
+
+# The 6 vendor/internal feeds that compose the mart.
+UPT_CONTRIBUTING_FEEDS = [
+    "internal_commercial_policies",
+    "internal_claims_history",
+    "silver_market_pricing_benchmark",
+    "silver_geospatial_hazard_enrichment",
+    "silver_credit_bureau_summary",
+    "postcode_enrichment",
+]
+
+
+@router.get("/mart-profile")
+async def mart_profile():
+    """Dashboard payload for the Overview tab on the Modelling Mart page."""
+    upt_table = fqn("unified_pricing_table_live")
+    catalog_name, schema_name = get_catalog(), get_schema()
+
+    # ----- headline tiles (single round-trip) -----
+    try:
+        headline = await execute_query(f"""
+            SELECT
+                COUNT(*)                               AS total_rows,
+                COUNT(DISTINCT policy_id)              AS unique_policies,
+                MIN(TRY_CAST(inception_date AS DATE))  AS policy_date_min,
+                MAX(TRY_CAST(renewal_date   AS DATE))  AS policy_date_max
+            FROM {upt_table}
+        """)
+        head = headline[0] if headline else {}
+    except Exception as e:
+        logger.exception("mart-profile headline failed")
+        head = {"error": str(e)[:200]}
+
+    # Column count from information_schema
+    try:
+        col_stat = await execute_query(f"""
+            SELECT COUNT(*) AS n
+            FROM system.information_schema.columns
+            WHERE table_catalog = '{catalog_name}'
+              AND table_schema  = '{schema_name}'
+              AND table_name    = 'unified_pricing_table_live'
+              AND column_name NOT LIKE '\\_%'
+        """)
+        head["column_count"] = int(col_stat[0]["n"]) if col_stat else 0
+    except Exception:
+        head["column_count"] = 0
+
+    # Last refresh timestamp + version from Delta history
+    try:
+        hist = await execute_query(f"""
+            SELECT version, timestamp, userName, operation
+            FROM (DESCRIBE HISTORY {upt_table})
+            ORDER BY version DESC
+            LIMIT 5
+        """)
+        head["last_refresh"]         = hist[0]["timestamp"]          if hist else None
+        head["last_refresh_version"] = hist[0]["version"]            if hist else None
+        head["last_refresh_user"]    = hist[0].get("userName")       if hist else None
+    except Exception:
+        hist = []
+
+    head["upstream_feeds_count"] = len(UPT_CONTRIBUTING_FEEDS)
+
+    # ----- factor-group composition -----
+    try:
+        groups = await execute_query(f"""
+            SELECT feature_group, COUNT(*) AS n
+            FROM {fqn('feature_catalog')}
+            GROUP BY feature_group
+            ORDER BY n DESC
+        """)
+    except Exception:
+        groups = []
+
+    # ----- top-10 features by missingness -----
+    # Build a dynamic SELECT that counts nulls for each column; exclude
+    # metadata/audit cols and pure identifier cols.
+    try:
+        col_rows = await execute_query(f"""
+            SELECT column_name
+            FROM system.information_schema.columns
+            WHERE table_catalog = '{catalog_name}'
+              AND table_schema  = '{schema_name}'
+              AND table_name    = 'unified_pricing_table_live'
+              AND column_name NOT LIKE '\\_%'
+              AND column_name NOT IN ('policy_id')
+            ORDER BY ordinal_position
+        """)
+        cols = [r["column_name"] for r in col_rows][:90]
+        if cols:
+            select_parts = ", ".join(
+                [f"SUM(CASE WHEN `{c}` IS NULL THEN 1 ELSE 0 END) AS `{c}`" for c in cols]
+            )
+            null_row = await execute_query(f"""
+                SELECT {select_parts}, COUNT(*) AS __total
+                FROM {upt_table}
+            """)
+            row = null_row[0] if null_row else {}
+            total = int(row.get("__total") or 0) or 1
+            feat_missing = sorted([
+                {
+                    "feature_name": c,
+                    "null_count":   int(row.get(c) or 0),
+                    "null_rate":    round((int(row.get(c) or 0) / total), 4),
+                }
+                for c in cols if (int(row.get(c) or 0) > 0)
+            ], key=lambda x: x["null_rate"], reverse=True)[:10]
+        else:
+            feat_missing = []
+    except Exception as e:
+        logger.warning("mart-profile missingness failed: %s", e)
+        feat_missing = []
+
+    # ----- coverage by region + by industry_risk_tier -----
+    try:
+        by_region = await execute_query(f"""
+            SELECT COALESCE(region, 'Unknown') AS region, COUNT(*) AS n
+            FROM {upt_table}
+            GROUP BY region
+            ORDER BY n DESC
+        """)
+    except Exception:
+        by_region = []
+
+    try:
+        by_tier = await execute_query(f"""
+            SELECT COALESCE(industry_risk_tier, 'Unknown') AS tier, COUNT(*) AS n
+            FROM {upt_table}
+            GROUP BY industry_risk_tier
+            ORDER BY n DESC
+        """)
+    except Exception:
+        by_tier = []
+
+    # ----- claims sanity: totals, frequency, severity, loss ratio per tier -----
+    try:
+        claims = await execute_query(f"""
+            SELECT
+                SUM(COALESCE(claim_count_5y, 0))        AS total_claims,
+                SUM(COALESCE(total_incurred_5y, 0))     AS total_incurred,
+                AVG(COALESCE(claim_count_5y, 0))        AS avg_freq_5y,
+                CASE WHEN SUM(COALESCE(claim_count_5y, 0)) > 0
+                     THEN SUM(COALESCE(total_incurred_5y, 0)) * 1.0 / SUM(COALESCE(claim_count_5y, 0))
+                     ELSE 0
+                END AS mean_severity,
+                AVG(COALESCE(loss_ratio_5y, 0))         AS avg_loss_ratio
+            FROM {upt_table}
+        """)
+        c = claims[0] if claims else {}
+    except Exception:
+        c = {}
+
+    try:
+        lr_by_tier = await execute_query(f"""
+            SELECT COALESCE(industry_risk_tier, 'Unknown') AS tier,
+                   COUNT(*)                              AS n,
+                   ROUND(AVG(COALESCE(loss_ratio_5y, 0)), 3) AS avg_loss_ratio,
+                   SUM(COALESCE(claim_count_5y, 0))      AS total_claims
+            FROM {upt_table}
+            GROUP BY industry_risk_tier
+            ORDER BY n DESC
+        """)
+    except Exception:
+        lr_by_tier = []
+
+    return {
+        "upt_table": upt_table,
+        "headline": head,
+        "factor_groups": groups,
+        "feature_health": {
+            "top_missingness": feat_missing,
+            "evaluated_columns": len(cols) if 'cols' in dir() else 0,
+        },
+        "coverage": {
+            "by_region": by_region,
+            "by_industry_tier": by_tier,
+        },
+        "claims": {
+            "total_claims":        int(c.get("total_claims") or 0),
+            "total_incurred":      float(c.get("total_incurred") or 0),
+            "avg_freq_5y":         float(c.get("avg_freq_5y") or 0),
+            "mean_severity":       float(c.get("mean_severity") or 0),
+            "avg_loss_ratio":      float(c.get("avg_loss_ratio") or 0),
+            "loss_ratio_by_tier":  lr_by_tier,
+        },
+        "recent_activity": {
+            "refreshes": [
+                {"version": h.get("version"),  "timestamp": h.get("timestamp"),
+                 "user": h.get("userName"),    "operation": h.get("operation")}
+                for h in hist
+            ],
+        },
+        "upstream_feeds": UPT_CONTRIBUTING_FEEDS,
+    }
