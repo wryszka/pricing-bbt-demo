@@ -236,12 +236,12 @@ export default function FeatureStore() {
             variant="card"
             height={560}
             suggestions={[
-              "What is the average loss ratio by industry?",
-              "Which construction types have the highest claim counts?",
-              "Show the top 10 postcodes by gross written premium",
+              "What is the total gross written premium by industry risk tier?",
+              "Show average 5-year claim count by construction type",
+              "Which 10 postcode sectors generate the most premium?",
               "How many policies are in flood zones 7 and above?",
-              "Compare average claim severity between London and the North East",
-              "Which SIC codes have the highest 5-year claim count?",
+              "Compare average claim severity — London vs North East",
+              "Which SIC codes have the highest 5-year loss ratio?",
             ]}
           />
         </div>
