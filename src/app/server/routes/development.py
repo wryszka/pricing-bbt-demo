@@ -34,6 +34,10 @@ _BUNDLE_BASE = "/Workspace/Users/laurence.ryszka@databricks.com/.bundle/pricing-
 
 NOTEBOOKS: list[dict[str, Any]] = [
     # ---- featured: the headline cards ----
+    # NOTE: paths are the deployed workspace paths WITHOUT the .py extension —
+    # Databricks strips it when it imports a source file as a notebook. We
+    # resolve each path to an object_id at open-time via workspace.get_status
+    # so the URL is /#notebook/{id}, which opens directly in the editor.
     {
         "id":          "hello_world_freq",
         "title":       "Hello, Pricing Workbench — Minimal Freq GLM",
@@ -41,7 +45,7 @@ NOTEBOOKS: list[dict[str, Any]] = [
         "tags":        ["GLM", "beginner", "~2 min"],
         "is_featured": True,
         "status":      "built",
-        "path":        f"{_BUNDLE_BASE}/hello_world_freq.py",
+        "path":        f"{_BUNDLE_BASE}/hello_world_freq",
     },
     {
         "id":          "model_01_glm_frequency",
@@ -50,7 +54,7 @@ NOTEBOOKS: list[dict[str, Any]] = [
         "tags":        ["GLM", "frequency", "production", "~4 min"],
         "is_featured": True,
         "status":      "built",
-        "path":        f"{_BUNDLE_BASE}/model_01_glm_frequency.py",
+        "path":        f"{_BUNDLE_BASE}/model_01_glm_frequency",
     },
     {
         "id":          "model_02_glm_severity",
@@ -59,7 +63,7 @@ NOTEBOOKS: list[dict[str, Any]] = [
         "tags":        ["GLM", "severity", "production", "~4 min"],
         "is_featured": True,
         "status":      "built",
-        "path":        f"{_BUNDLE_BASE}/model_02_glm_severity.py",
+        "path":        f"{_BUNDLE_BASE}/model_02_glm_severity",
     },
     {
         "id":          "model_03_gbm_demand",
@@ -68,7 +72,7 @@ NOTEBOOKS: list[dict[str, Any]] = [
         "tags":        ["GBM", "LightGBM", "demand", "~5 min"],
         "is_featured": True,
         "status":      "built",
-        "path":        f"{_BUNDLE_BASE}/model_03_gbm_demand.py",
+        "path":        f"{_BUNDLE_BASE}/model_03_gbm_demand",
     },
     # ---- model library: everything else, shown as compact tiles ----
     {
@@ -78,7 +82,7 @@ NOTEBOOKS: list[dict[str, Any]] = [
         "tags":        ["GBM", "two-stage", "uplift"],
         "is_featured": False,
         "status":      "built",
-        "path":        f"{_BUNDLE_BASE}/model_04_gbm_risk_uplift.py",
+        "path":        f"{_BUNDLE_BASE}/model_04_gbm_risk_uplift",
     },
     {
         "id":          "model_05_fraud_propensity",
@@ -87,7 +91,7 @@ NOTEBOOKS: list[dict[str, Any]] = [
         "tags":        ["classifier", "fraud"],
         "is_featured": False,
         "status":      "built",
-        "path":        f"{_BUNDLE_BASE}/model_05_fraud_propensity.py",
+        "path":        f"{_BUNDLE_BASE}/model_05_fraud_propensity",
     },
     {
         "id":          "model_06_retention",
@@ -96,7 +100,7 @@ NOTEBOOKS: list[dict[str, Any]] = [
         "tags":        ["classifier", "retention"],
         "is_featured": False,
         "status":      "built",
-        "path":        f"{_BUNDLE_BASE}/model_06_retention.py",
+        "path":        f"{_BUNDLE_BASE}/model_06_retention",
     },
     {
         "id":          "challenger_comparison",
@@ -105,7 +109,7 @@ NOTEBOOKS: list[dict[str, Any]] = [
         "tags":        ["comparison", "lift attribution"],
         "is_featured": False,
         "status":      "built",
-        "path":        f"{_BUNDLE_BASE}/challenger_comparison.py",
+        "path":        f"{_BUNDLE_BASE}/challenger_comparison",
     },
     # ---- on-request: model types the platform supports but no canned example ----
     {"id": "tweedie_glm",       "title": "Tweedie GLM (single-stage pure premium)",
@@ -163,19 +167,31 @@ RUNTIME_LIBRARIES = [
 # Endpoints
 # ---------------------------------------------------------------------------
 
+def _notebook_open_url(path: str) -> str:
+    """Build the workspace URL that opens the notebook in the user's browser.
+    Uses the /#workspace{path} fragment form — works as long as the logged-in
+    user (not the app SP) has access. We deliberately don't resolve to the
+    /#notebook/{object_id} form because that would require the app SP to have
+    read access on the user's personal bundle directory, which it doesn't.
+
+    Databricks workspace paths are prefixed with /Workspace internally but the
+    URL fragment doesn't include that prefix — strip it before building."""
+    host = get_workspace_host()
+    # Strip the /Workspace prefix; the URL fragment starts directly with /Users/...
+    rel = path[len("/Workspace"):] if path.startswith("/Workspace/") else path
+    return f"{host}/#workspace{rel}"
+
+
 @router.get("/notebooks")
 async def list_notebooks() -> dict:
     """Return the notebook catalogue — featured + model-library tiles — with each
-    card's workspace URL ready for the browser to navigate to."""
-    host = get_workspace_host()
+    card's workspace URL pre-resolved so the browser opens it directly."""
     out = []
     for nb in NOTEBOOKS:
         entry = {**nb}
         if nb.get("path"):
-            # Deep-link into the workspace file browser at this notebook's path.
-            entry["workspace_url"] = f"{host}/?#workspace{nb['path']}"
-            entry["git_url"] = f"https://github.com/wryszka/pricing-workbench/blob/main/{nb['path'].split('/src/')[-1].replace('4_models', '04_models')}"
-            entry["git_url"] = f"https://github.com/wryszka/pricing-workbench/blob/main/src/04_models/{nb['id']}.py"
+            entry["workspace_url"] = _notebook_open_url(nb["path"])
+            entry["git_url"]       = f"https://github.com/wryszka/pricing-workbench/blob/main/src/04_models/{nb['id']}.py"
         out.append(entry)
     return {"notebooks": out, "libraries": RUNTIME_LIBRARIES}
 
@@ -187,15 +203,14 @@ class OpenRequest(BaseModel):
 @router.post("/open-notebook")
 async def open_notebook(req: OpenRequest) -> dict:
     """Record an audit event then return the workspace URL the client navigates to.
-    The client is expected to open the URL in a new tab."""
+    The client opens the URL in a new tab."""
     nb = next((n for n in NOTEBOOKS if n["id"] == req.notebook_id), None)
     if not nb:
         raise HTTPException(404, f"Unknown notebook: {req.notebook_id}")
     if nb.get("status") != "built":
         raise HTTPException(400, "This model type is 'on request' — no runnable notebook yet.")
 
-    host = get_workspace_host()
-    url = f"{host}/?#workspace{nb['path']}"
+    url = _notebook_open_url(nb["path"])
 
     await log_audit_event(
         event_type  = "notebook_opened",
