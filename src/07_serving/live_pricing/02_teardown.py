@@ -66,7 +66,7 @@ except Exception as e:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 2. Delete the online table
+# MAGIC ## 2. Delete the online table (CONTINUOUS-published Lakebase table)
 
 # COMMAND ----------
 
@@ -80,6 +80,24 @@ except Exception as e:
         print(f"online table already absent: {upt_table}")
     else:
         print(f"online table delete error (continuing): {e}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 3. Delete the Lakebase online store
+
+# COMMAND ----------
+
+try:
+    w.feature_store.delete_online_store(online_store)
+    print(f"online store deleted: {online_store}")
+    removed["online_store"] = online_store
+except Exception as e:
+    msg = str(e).lower()
+    if "does not exist" in msg or "not found" in msg or "404" in msg:
+        print(f"online store already absent: {online_store}")
+    else:
+        print(f"online store delete error (continuing): {e}")
 
 # COMMAND ----------
 

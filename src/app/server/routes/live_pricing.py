@@ -99,30 +99,32 @@ async def status() -> dict:
             return {"present": False, "ready": None, "config_update": None,
                     "error": str(e)[:200]}
 
-    def _online_table_state() -> dict:
+    def _online_store_state() -> dict:
         try:
             w = get_workspace_client()
-            table_name = fqn("unified_pricing_table_live")
-            ot = w.online_tables.get(table_name)
-            state = (str(getattr(ot, "unity_catalog_provisioning_state", "") or "").split(".")[-1]
-                     or str(getattr(ot, "status", "")).split(".")[-1])
-            return {"present": True, "name": table_name, "state": state or "UNKNOWN"}
+            store = w.feature_store.get_online_store(ONLINE_STORE_NAME)
+            return {"present": True,
+                    "name":    ONLINE_STORE_NAME,
+                    "state":   str(getattr(store, "state", "")).split(".")[-1],
+                    "capacity": str(getattr(store, "capacity", ""))}
         except Exception as e:
-            return {"present": False, "name": fqn("unified_pricing_table_live"),
+            return {"present": False, "name": ONLINE_STORE_NAME,
                     "error": str(e)[:200]}
 
-    ep_state, table_state = await asyncio.gather(
+    ep_state, store_state = await asyncio.gather(
         asyncio.to_thread(_endpoint_state),
-        asyncio.to_thread(_online_table_state),
+        asyncio.to_thread(_online_store_state),
     )
 
     endpoint_ready = ep_state["present"] and ep_state.get("ready") == "READY" and \
                      (ep_state.get("config_update") in (None, "", "NOT_UPDATING"))
-    online_ready   = table_state["present"] and (table_state.get("state") or "").startswith("ACTIVE")
+    store_ready    = store_state["present"] and (store_state.get("state") or "") == "AVAILABLE"
 
-    if endpoint_ready and online_ready:
+    if endpoint_ready and store_ready:
         state = "on"
-    elif ep_state["present"] or table_state["present"]:
+    elif ep_state.get("config_update") == "UPDATE_FAILED":
+        state = "error"
+    elif ep_state["present"] or store_state["present"]:
         state = "starting"
     else:
         state = "off"
@@ -130,7 +132,7 @@ async def status() -> dict:
     return {
         "state":         state,
         "endpoint":      {"name": ENDPOINT_NAME, **ep_state},
-        "online_store":  table_state,
+        "online_store":  store_state,
         "metrics_table": fqn("live_pricing_metrics"),
     }
 

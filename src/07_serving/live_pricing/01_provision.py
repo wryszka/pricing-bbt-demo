@@ -64,38 +64,76 @@ mc = MlflowClient()
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 1. Online table — managed serverless online store
+# MAGIC ## 1. Lakebase online store
 # MAGIC
-# MAGIC `online_tables.create_and_wait` provisions a Databricks-managed online
-# MAGIC table on top of `unified_pricing_table_live` (which has `upt_pk` on
-# MAGIC policy_id). Continuous scheduling streams every Delta change into the
-# MAGIC online store, latency ~5-15s from MERGE to lookup. The Model Serving
-# MAGIC endpoint resolves features against this table automatically because
-# MAGIC the scorer was logged with `fe.log_model` + FeatureLookup.
+# MAGIC Provision the Lakebase instance + publish UPT to it in CONTINUOUS mode.
+# MAGIC Continuous publish requires Delta CDF on the source table — enable it
+# MAGIC idempotently before publishing, and register UPT as an FE feature
+# MAGIC table (UPT has `upt_pk` on policy_id, but `publish_table` requires
+# MAGIC the explicit `fe.create_table` registration too).
 
 # COMMAND ----------
 
-from databricks.sdk.service.catalog import (
-    OnlineTable, OnlineTableSpec, OnlineTableSpecContinuousSchedulingPolicy,
+from databricks.sdk.service.ml import (
+    OnlineStore, PublishSpec, PublishSpecPublishMode,
 )
+from databricks.feature_engineering import FeatureEngineeringClient
 
+fe = FeatureEngineeringClient()
+
+# 1a. Online store — provision Lakebase
 try:
-    existing = w.online_tables.get(upt_table)
-    state = getattr(existing, "unity_catalog_provisioning_state", None) \
-            or getattr(existing, "status", None)
-    print(f"online table already exists: {upt_table} (state={state})")
+    store = w.feature_store.get_online_store(online_store)
+    print(f"online store exists: {store.name} (state={store.state}, capacity={store.capacity})")
+except Exception:
+    print(f"creating online store {online_store} at {capacity}…")
+    w.feature_store.create_online_store(
+        online_store=OnlineStore(name=online_store, capacity=capacity)
+    )
+
+for i in range(60):
+    store = w.feature_store.get_online_store(online_store)
+    if str(store.state).endswith("AVAILABLE"):
+        print(f"online store AVAILABLE after {i*5}s")
+        break
+    print(f"  waiting… state={store.state}")
+    time.sleep(5)
+else:
+    raise RuntimeError(f"online store {online_store} not AVAILABLE in 5 min")
+
+# 1b. Enable CDF on UPT — required for CONTINUOUS publish
+print(f"enabling Delta CDF on {upt_table} (idempotent)…")
+spark.sql(f"ALTER TABLE {upt_table} SET TBLPROPERTIES (delta.enableChangeDataFeed = true)")
+
+# 1c. Register UPT as FE feature table — idempotent
+try:
+    fe.get_table(name=upt_table)
+    print(f"FE table already registered: {upt_table}")
+except Exception:
+    print(f"registering {upt_table} as FE table…")
+    fe.create_table(
+        name         = upt_table,
+        primary_keys = "policy_id",
+        df           = spark.table(upt_table),
+        description  = "Unified Pricing Table — feature table for live pricing FeatureLookup.",
+    )
+
+# 1d. Publish to Lakebase, CONTINUOUS — every Delta change streamed to online
+print(f"publishing {upt_table} → {online_store} (CONTINUOUS)…")
+try:
+    w.feature_store.publish_table(
+        source_table_name = upt_table,
+        publish_spec      = PublishSpec(
+            online_store      = online_store,
+            online_table_name = upt_table,
+            publish_mode      = PublishSpecPublishMode.CONTINUOUS,
+        ),
+    )
+    print("publish_table OK")
 except Exception as e:
-    msg = str(e).lower()
-    if "not found" in msg or "does not exist" in msg or "404" in msg:
-        print(f"creating online table {upt_table} (CONTINUOUS)…")
-        ot_spec = OnlineTableSpec(
-            source_table_full_name = upt_table,
-            primary_key_columns    = ["policy_id"],
-            run_continuously       = OnlineTableSpecContinuousSchedulingPolicy(),
-        )
-        ot = OnlineTable(name=upt_table, spec=ot_spec)
-        w.online_tables.create_and_wait(table=ot)
-        print(f"online table created: {upt_table}")
+    err = str(e).lower()
+    if "already published" in err or "already exists" in err:
+        print("already published — continuous sync is in place")
     else:
         raise
 
