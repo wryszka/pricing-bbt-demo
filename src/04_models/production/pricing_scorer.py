@@ -413,6 +413,14 @@ input_example = pd.DataFrame({"policy_id": sample_pids})
 # COMMAND ----------
 
 with mlflow.start_run(run_name="pricing_scorer_deploy") as run:
+    # NOTE: don't pass signature/input_example here. fe.log_model derives the
+    # outward-facing schema (policy_id input) from training_set automatically;
+    # the inner pyfunc receives the LOOKED-UP feature DataFrame, so an explicit
+    # signature with `policy_id` makes mlflow's schema enforcement reject the
+    # call inside the FE wrapper.
+    # NOTE: do NOT include databricks-feature-engineering — fe.log_model
+    # auto-adds databricks-feature-lookup==1.* for serving, and the two
+    # clients can't coexist in the same env (it's a startup assertion).
     fe.log_model(
         model                 = PricingScorer(),
         artifact_path         = "scorer",
@@ -420,11 +428,6 @@ with mlflow.start_run(run_name="pricing_scorer_deploy") as run:
         training_set          = training_set,
         registered_model_name = scorer_uc_name,
         artifacts             = artifact_paths,
-        input_example         = input_example,
-        signature             = signature,
-        # NOTE: do NOT include databricks-feature-engineering — fe.log_model
-        # auto-adds databricks-feature-lookup==1.* for serving, and the two
-        # clients can't coexist in the same env (it's a startup assertion).
         pip_requirements=[
             "mlflow>=2.12",
             "scikit-learn", "lightgbm", "statsmodels",
