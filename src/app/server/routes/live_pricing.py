@@ -80,6 +80,28 @@ def _find_job_by_name(name: str) -> int | None:
 # Status
 # ---------------------------------------------------------------------------
 
+@router.get("/_debug/visible-jobs")
+async def _debug_visible_jobs() -> dict:
+    """Diagnostic — list every job the app SP can see, with full names.
+    Helps debug why _find_job_by_name returns None when a job exists."""
+    def _list():
+        try:
+            w = get_workspace_client()
+            out = []
+            count = 0
+            for j in w.jobs.list(limit=200):
+                count += 1
+                settings = getattr(j, "settings", None)
+                jname = getattr(settings, "name", None) if settings else None
+                if jname and "Live pricing" in jname:
+                    out.append({"job_id": j.job_id, "name": jname,
+                                "name_repr": repr(jname)})
+            return {"count": count, "live_pricing_jobs": out}
+        except Exception as e:
+            return {"error": str(e)[:500]}
+    return await asyncio.to_thread(_list)
+
+
 @router.get("/status")
 async def status() -> dict:
     """Snapshot of the live pricing stack — feeds the on/off header in the UI.
