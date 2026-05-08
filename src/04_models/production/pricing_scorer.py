@@ -207,10 +207,18 @@ class PricingScorer(PythonModel):
         self.fraud  = mlflow.lightgbm.load_model(context.artifacts["fraud_gbm"])
 
     def _prep(self, df):
+        # Match the freq_glm / sev_glm training-time _prep_raw: object cols
+        # get '(null)' filling, numeric cols get NaN → 0.0 + float dtype.
+        # Without coercing numerics, FE-returned object-dtype columns
+        # (eg. decimal types, mixed-type cols with NULLs) fall through to
+        # the GLM wrapper's astype(float) and crash on '(null)' strings.
+        import pandas as pd
         out = df.copy()
         for c in out.columns:
             if out[c].dtype == "object":
                 out[c] = out[c].astype(str).where(out[c].notna(), "(null)")
+            else:
+                out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0.0).astype(float)
         return out
 
     def _pad_for_categoricals(self, df):
