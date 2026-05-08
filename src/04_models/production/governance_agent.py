@@ -473,14 +473,20 @@ except ImportError:
         _UCVolumeResource = None
 
 input_example = {
-    "messages": [{"role": "user", "content": "What fraud tier does this model target?"}],
-    "custom_inputs": {"pack_id": "GP-20260423112519-fraud_gbm-v41"},
+    "messages":      json.dumps([{"role": "user", "content": "What fraud tier does this model target?"}]),
+    "custom_inputs": json.dumps({"pack_id": "GP-20260423112519-fraud_gbm-v41"}),
 }
 
 signature = ModelSignature(
     inputs=Schema([
         ColSpec("string", "messages"),
         ColSpec("string", "custom_inputs"),
+    ]),
+    outputs=Schema([
+        ColSpec("string", "messages"),
+        ColSpec("string", "model"),
+        ColSpec("string", "trace"),
+        ColSpec("string", "usage"),
     ]),
 )
 
@@ -509,6 +515,7 @@ with mlflow.start_run(run_name="governance_agent_deploy"):
         python_model=GovernanceAgent(),
         artifacts={"config": cfg_path},
         resources=resources_list,
+        signature=signature,
         input_example=input_example,
         registered_model_name=agent_uc_name,
         pip_requirements=[
@@ -542,7 +549,7 @@ try:
     deployment = agents.deploy(
         model_name=agent_uc_name,
         model_version=latest,
-        scale_to_zero=True,
+        scale_to_zero=False,  # keep warm for demo cadence
         tags={"project": "pricing_workbench", "purpose": "governance_agent"},
     )
     print(f"databricks-agents deploy kicked off: {deployment}")
@@ -556,7 +563,7 @@ except Exception as e:
     served = [ServedEntityInput(
         entity_name=agent_uc_name,
         entity_version=str(latest),
-        scale_to_zero_enabled=True,
+        scale_to_zero_enabled=False,  # keep warm for demo cadence
         workload_size="Small",
     )]
     cfg = EndpointCoreConfigInput(

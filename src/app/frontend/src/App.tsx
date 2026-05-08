@@ -1,5 +1,5 @@
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
-import { Database, FlaskConical, Shield, Code, Rocket, Home as HomeIcon, Table2, Package, Sparkles } from 'lucide-react';
+import { Database, FlaskConical, Shield, Code, Rocket, Home as HomeIcon, Table2, Package, Sparkles, Calculator } from 'lucide-react';
 import Home from './pages/Home';
 import DatasetList from './pages/DatasetList';
 import DatasetDetail from './pages/DatasetDetail';
@@ -12,16 +12,18 @@ import QuoteReview from './pages/QuoteReview';
 import Addons from './pages/Addons';
 import NewDataImpact from './pages/NewDataImpact';
 import RatingEngineIntegration from './pages/RatingEngineIntegration';
-import RegulatoryAI from './pages/RegulatoryAI';
+import Supervisor from './pages/Supervisor';
+import PricingEngine from './pages/PricingEngine';
 
 const NAV_ITEMS = [
   { to: '/',              label: 'Home',              icon: HomeIcon,     match: (p: string) => p === '/' },
-  { to: '/datasets',      label: 'Ingestion',         icon: Database,     match: (p: string) => p.startsWith('/dataset') },
+  { to: '/datasets',      label: 'Data Ingestion',         icon: Database,     match: (p: string) => p.startsWith('/dataset') },
   { to: '/pricing-table', label: 'Modelling Mart',    icon: Table2,       match: (p: string) => p.startsWith('/pricing-table') },
   { to: '/development',   label: 'Model Development', icon: Code,         match: (p: string) => p.startsWith('/development') },
   { to: '/deployment',    label: 'Model Deployment',  icon: Rocket,       match: (p: string) => p.startsWith('/deployment') },
+  { to: '/pricing-engine',label: 'Pricing Engine',    icon: Calculator,   match: (p: string) => p.startsWith('/pricing-engine') },
   { to: '/governance',    label: 'Model Governance',  icon: Shield,       match: (p: string) => p.startsWith('/governance') },
-  { to: '/regulatory-ai', label: 'Regulatory AI',     icon: Sparkles,     match: (p: string) => p.startsWith('/regulatory-ai') },
+  { to: '/pricing-ai',    label: 'Pricing AI',        icon: Sparkles,     match: (p: string) => p.startsWith('/pricing-ai') || p.startsWith('/supervisor') || p.startsWith('/regulatory-ai') },
   { to: '/models',        label: 'Model Factory',     icon: FlaskConical, match: (p: string) => p.startsWith('/models') },
   { to: '/add-ons',       label: 'Add-ons',           icon: Package,      match: (p: string) => p.startsWith('/add-ons') || p.startsWith('/quote-review') },
 ];
@@ -78,8 +80,11 @@ export default function App() {
             <Route path="/development" element={<ModelDevelopment />} />
             <Route path="/models" element={<ModelFactory />} />
             <Route path="/deployment" element={<ModelDeployment />} />
+            <Route path="/pricing-engine" element={<PricingEngine />} />
             <Route path="/governance" element={<Governance />} />
-            <Route path="/regulatory-ai" element={<RegulatoryAI />} />
+            <Route path="/pricing-ai"   element={<Supervisor />} />
+            <Route path="/supervisor"   element={<Supervisor />} />  {/* legacy URL */}
+            <Route path="/regulatory-ai" element={<Supervisor />} />  {/* legacy URL */}
             <Route path="/add-ons" element={<Addons />} />
             <Route path="/add-ons/quote-review" element={<QuoteReview />} />
             <Route path="/add-ons/new-data-impact" element={<NewDataImpact />} />

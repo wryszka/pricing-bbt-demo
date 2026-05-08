@@ -43,9 +43,9 @@ export default function Addons() {
           icon={Radar}
           accent="emerald"
           title="Rating Engine Integration"
-          description="Placeholder preview. This workbench can act as an enrichment layer for commercial rating engines like Willis Towers Watson Radar and Earnix — delivering scored factors, features, and loading signals into the rating engine without disrupting the actuary's existing workflow."
+          description="The workbench acts as an enrichment layer for commercial rating engines like Willis Towers Watson Radar and Earnix — delivering scored factors, features, and loading signals into the rating engine without disrupting the actuary's existing workflow."
           audience="pricing actuaries · rating-engine administrators"
-          tags={['Radar / Earnix', 'Feature enrichment', 'Placeholder preview']}
+          tags={['Radar / Earnix', 'Feature enrichment', 'Reference architecture']}
         />
       </div>
     </div>

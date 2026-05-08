@@ -1,5 +1,6 @@
 """Model Deployment routes — registered models, serving endpoints, metrics, and live scoring."""
 
+import asyncio
 import json
 import logging
 from datetime import datetime
@@ -33,17 +34,16 @@ async def list_registered_models():
     catalog = get_catalog()
     schema = get_schema()
 
-    # Try SDK first, fall back to SQL
-    results = []
-    try:
+    # SDK-first path; SQL fallback if SDK errors. All blocking SDK calls run
+    # off the event loop on the thread pool — registered_models.list +
+    # model_versions.list × N families fan out concurrently.
+    def _sdk_pull() -> list[dict]:
         w = get_workspace_client()
-        models_list = list(w.registered_models.list(
-            catalog_name=catalog, schema_name=schema,
-        ))
-
+        out: list[dict] = []
+        models_list = list(w.registered_models.list(catalog_name=catalog, schema_name=schema))
         for m in models_list:
             full_name = f"{catalog}.{schema}.{m.name}"
-            versions = []
+            versions: list[dict] = []
             try:
                 vs = list(w.model_versions.list(full_name=full_name))
                 for v in sorted(vs, key=lambda x: int(x.version), reverse=True)[:5]:
@@ -56,8 +56,7 @@ async def list_registered_models():
                     })
             except Exception:
                 pass
-
-            results.append({
+            out.append({
                 "name": m.name,
                 "full_name": full_name,
                 "comment": m.comment,
@@ -69,6 +68,11 @@ async def list_registered_models():
                 "latest_version": versions[0] if versions else None,
                 "catalog_url": f"{host}/explore/data/models/{catalog}/{schema}/{m.name}",
             })
+        return out
+
+    results: list[dict] = []
+    try:
+        results = await asyncio.to_thread(_sdk_pull)
     except Exception as e:
         logger.warning("SDK model list failed (%s), trying SQL fallback", e)
         # SQL fallback — query information_schema for models
@@ -162,16 +166,15 @@ async def list_champions(require_pack: bool = True) -> dict:
     except Exception as e:
         logger.info("governance_packs_index not available yet: %s", e)
 
-    out = []
-    for fam in PRODUCTION_FAMILIES:
+    # Per-family SDK work runs in parallel on the thread pool — was 24 sync
+    # MLflow calls in series (4 families × 6 calls), now ~6 calls per family
+    # in their own threads.
+    def _family_block(fam: dict) -> dict:
         full_name = f"{catalog}.{schema}.{fam['key']}"
-        champion_v  = _get_alias_version(w, full_name, CHAMPION_ALIAS)
-        previous_v  = _get_alias_version(w, full_name, PREV_ALIAS)
-        champ_info  = _version_detail(w, full_name, champion_v)
-        prev_info   = _version_detail(w, full_name, previous_v)
-
-        # Fall back: if no champion alias, expose the highest-numbered version
-        # so the tab isn't empty — that's the implicit "latest" champion.
+        champion_v = _get_alias_version(w, full_name, CHAMPION_ALIAS)
+        previous_v = _get_alias_version(w, full_name, PREV_ALIAS)
+        champ_info = _version_detail(w, full_name, champion_v)
+        prev_info  = _version_detail(w, full_name, previous_v)
         fallback_latest = None
         if champ_info is None:
             try:
@@ -181,18 +184,33 @@ async def list_champions(require_pack: bool = True) -> dict:
                     fallback_latest = _version_detail(w, full_name, str(latest.version))
             except Exception as e:
                 logger.warning("fallback list for %s failed: %s", full_name, e)
+        return {
+            "family":            fam["key"],
+            "label":             fam["label"],
+            "uc_name":           full_name,
+            "catalog_url":       f"{host}/explore/data/models/{catalog}/{schema}/{fam['key']}",
+            "champ_info":        champ_info,
+            "fallback_latest":   fallback_latest,
+            "prev_info":         prev_info,
+        }
 
-        pack = packs_by_family.get(fam["key"])
+    family_blocks = await asyncio.gather(*[
+        asyncio.to_thread(_family_block, fam) for fam in PRODUCTION_FAMILIES
+    ])
+
+    out = []
+    for fb in family_blocks:
+        pack = packs_by_family.get(fb["family"])
         if require_pack and pack is None:
             continue
         out.append({
-            "family":             fam["key"],
-            "label":              fam["label"],
-            "uc_name":            full_name,
-            "catalog_url":        f"{host}/explore/data/models/{catalog}/{schema}/{fam['key']}",
-            "champion":           champ_info or fallback_latest,
-            "champion_is_alias":  champ_info is not None,
-            "previous_champion":  prev_info,
+            "family":             fb["family"],
+            "label":              fb["label"],
+            "uc_name":            fb["uc_name"],
+            "catalog_url":        fb["catalog_url"],
+            "champion":           fb["champ_info"] or fb["fallback_latest"],
+            "champion_is_alias":  fb["champ_info"] is not None,
+            "previous_champion":  fb["prev_info"],
             "latest_pack":        {
                 "pack_id":       pack["pack_id"],
                 "pdf_path":      pack["pdf_path"],
@@ -244,6 +262,70 @@ async def champion_history(family: str, limit: int = 10) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Inference-log backfill trigger — fire-and-forget when a champion changes
+# ---------------------------------------------------------------------------
+
+_BACKFILL_JOB_NAME = "v1 — Inference log backfill (score all UPT policies)"
+
+
+def _trigger_inference_backfill(w) -> dict[str, Any]:
+    """Kick off the inference_backfill job so `{fqn}.inference_logs` reflects
+    the new champion set. Returns a dict with run_id + run_page_url if the
+    job was found and submitted, or a `skipped` note otherwise. Never raises
+    — champion promotion must succeed even if the backfill trigger fails."""
+    try:
+        # Bundle prefixes job names with "[dev <user>] "; use suffix match.
+        job_id: int | None = None
+        try:
+            for j in w.jobs.list(name=_BACKFILL_JOB_NAME, limit=25):
+                job_id = j.job_id
+                break
+        except Exception:
+            pass
+        if job_id is None:
+            for j in w.jobs.list(limit=100):
+                if (j.settings.name or "").endswith(_BACKFILL_JOB_NAME):
+                    job_id = j.job_id
+                    break
+        if job_id is None:
+            logger.warning("inference_backfill job not found — skipping trigger")
+            return {"triggered": False, "reason": "job not found"}
+
+        run = w.jobs.run_now(job_id=job_id, job_parameters={
+            "catalog_name": get_catalog(),
+            "schema_name":  get_schema(),
+        })
+        run_id = getattr(run, "run_id", None)
+        host   = get_workspace_host()
+        return {
+            "triggered":    True,
+            "job_id":       job_id,
+            "run_id":       run_id,
+            "run_page_url": f"{host}/jobs/{job_id}/runs/{run_id}" if host and run_id else None,
+        }
+    except Exception as e:
+        logger.warning("inference_backfill trigger failed: %s", e)
+        return {"triggered": False, "reason": str(e)}
+
+
+@router.post("/inference-backfill/trigger")
+async def trigger_inference_backfill() -> dict:
+    """Manually fire the inference-backfill job. Useful after bulk operations,
+    or when the auto-trigger on a promotion failed for any reason."""
+    w = get_workspace_client()
+    result = _trigger_inference_backfill(w)
+    user = get_current_user()
+    await log_audit_event(
+        event_type="inference_backfill_triggered",
+        entity_type="table",
+        entity_id="inference_logs",
+        user_id=user,
+        details=result,
+    )
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Rollback — swap champion alias back to previous_champion
 # ---------------------------------------------------------------------------
 
@@ -264,28 +346,38 @@ async def rollback_champion(req: RollbackRequest) -> dict:
     schema  = get_schema()
     full_name = f"{catalog}.{schema}.{req.family}"
 
-    current_champion = _get_alias_version(w, full_name, CHAMPION_ALIAS)
-    previous         = _get_alias_version(w, full_name, PREV_ALIAS)
+    current_champion, previous = await asyncio.gather(
+        asyncio.to_thread(_get_alias_version, w, full_name, CHAMPION_ALIAS),
+        asyncio.to_thread(_get_alias_version, w, full_name, PREV_ALIAS),
+    )
     if not previous:
         raise HTTPException(400,
             "No previous champion set — nothing to roll back to. "
             "The `previous_champion` alias is only populated by a successful promotion.")
 
-    # Swap: new champion = previous, new previous = current_champion
-    try:
+    def _swap_aliases() -> None:
         w.registered_models.set_alias(full_name=full_name, alias=CHAMPION_ALIAS, version_num=int(previous))
         if current_champion:
             w.registered_models.set_alias(full_name=full_name, alias=PREV_ALIAS, version_num=int(current_champion))
         else:
-            # Remove the previous alias if there's no old champion to stash
             try:
                 w.registered_models.delete_alias(full_name=full_name, alias=PREV_ALIAS)
             except Exception:
                 pass
+    try:
+        await asyncio.to_thread(_swap_aliases)
     except Exception as e:
         raise HTTPException(500, f"Failed to swap aliases: {e}")
 
+    # Bust pricing.py's alias cache so /pricing/status sees the new champion.
+    try:
+        from server.routes.pricing import _bust_alias_cache
+        _bust_alias_cache()
+    except Exception:
+        pass
+
     user = get_current_user()
+    backfill = await asyncio.to_thread(_trigger_inference_backfill, w)
     await log_audit_event(
         event_type="model_rollback",
         entity_type="model",
@@ -296,6 +388,7 @@ async def rollback_champion(req: RollbackRequest) -> dict:
             "from_version": current_champion,
             "to_version":   previous,
             "note":         req.note,
+            "backfill":     backfill,
         },
     )
 
@@ -304,6 +397,7 @@ async def rollback_champion(req: RollbackRequest) -> dict:
         "new_champion":   previous,
         "prior_champion": current_champion,
         "user":           user,
+        "backfill":       backfill,
     }
 
 
@@ -315,22 +409,36 @@ async def set_champion(family: str, version: str) -> dict:
         raise HTTPException(400, f"Unknown family {family}")
     w = get_workspace_client()
     full_name = f"{get_catalog()}.{get_schema()}.{family}"
-    # If there is already a champion, demote it to previous_champion
-    current = _get_alias_version(w, full_name, CHAMPION_ALIAS)
-    try:
+    current = await asyncio.to_thread(_get_alias_version, w, full_name, CHAMPION_ALIAS)
+
+    def _set_aliases() -> None:
         if current and current != version:
             w.registered_models.set_alias(full_name=full_name, alias=PREV_ALIAS, version_num=int(current))
         w.registered_models.set_alias(full_name=full_name, alias=CHAMPION_ALIAS, version_num=int(version))
+    try:
+        await asyncio.to_thread(_set_aliases)
     except Exception as e:
         raise HTTPException(500, f"Alias set failed: {e}")
 
+    try:
+        from server.routes.pricing import _bust_alias_cache
+        _bust_alias_cache()
+    except Exception:
+        pass
+
     user = get_current_user()
+    backfill = await asyncio.to_thread(_trigger_inference_backfill, w)
     await log_audit_event(
         event_type="model_promoted",
         entity_type="model",
         entity_id=family,
         entity_version=str(version),
         user_id=user,
-        details={"previous_champion": current, "new_champion": version},
+        details={"previous_champion": current, "new_champion": version, "backfill": backfill},
     )
-    return {"family": family, "champion": version, "previous": current}
+    return {
+        "family":   family,
+        "champion": version,
+        "previous": current,
+        "backfill": backfill,
+    }

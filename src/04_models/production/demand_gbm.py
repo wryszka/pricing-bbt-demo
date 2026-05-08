@@ -109,7 +109,9 @@ training_set = fe.create_training_set(
     df              = labels_df,
     feature_lookups = [FeatureLookup(table_name=QUOTES_TABLE, feature_names=FEATURES, lookup_key="transaction_id")],
     label           = "converted",
-    exclude_columns = ["transaction_id"],
+    # Keep transaction_id on the pandas frame so the train/test mask stays
+    # aligned with the loaded rows (FeatureLookup may drop unmatched rows;
+    # deriving the mask from the quotes table directly causes a length mismatch).
 )
 pdf = training_set.load_df().toPandas()
 print(f"Rows: {len(pdf):,}  Conversion rate: {pdf['converted'].mean():.1%}")
@@ -122,8 +124,8 @@ for c in FEATURES:
     if pdf[c].dtype == "bool":
         pdf[c] = pdf[c].astype(int)
 
-hashes = spark.table(QUOTES_TABLE).select("transaction_id").toPandas()["transaction_id"].apply(lambda s: abs(hash(s)) % 100).values
-train_mask = hashes < 80
+# Build train/test mask from the SAME pdf that was loaded — guarantees alignment.
+train_mask = pdf["transaction_id"].apply(lambda s: abs(hash(s)) % 100 < 80).values
 X = pdf[FEATURES]
 y = pdf["converted"].astype(int)
 X_train, y_train = X[train_mask], y[train_mask]
@@ -197,12 +199,22 @@ with mlflow.start_run(run_name=f"demand_gbm_{run_name}", tags=tags) as run:
     except Exception as e:
         print(f"SHAP computation failed: {e}")
 
+    # Pin an explicit signature so serving / Compare & Test can pass plain
+    # rows from the quotes table — object cols become "category" in training,
+    # so reflect that in the input example and let MLflow infer types from it.
+    from mlflow.models.signature import infer_signature
+    sample_X    = X_train.head(5).copy()
+    sample_pred = model.predict(sample_X)
+    signature   = infer_signature(sample_X, sample_pred)
+
     fe.log_model(
         model                 = model,
         artifact_path         = "model",
         flavor                = mlflow.lightgbm,
         training_set          = training_set,
         registered_model_name = f"{fqn}.demand_gbm",
+        signature             = signature,
+        input_example         = sample_X,
     )
     print(f"UC model: {fqn}.demand_gbm")
 

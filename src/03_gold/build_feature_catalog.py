@@ -160,7 +160,7 @@ spark.sql(f"""
 """)
 tags = {
     "pricing_domain":   "feature_governance",
-    "refresh_cadence":  "on_demand",
+    "refresh_cadence":    "manual",
     "demo_environment": "true",
 }
 tag_sql = ", ".join(f"'{k}' = '{v}'" for k, v in tags.items())

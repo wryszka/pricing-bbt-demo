@@ -100,7 +100,9 @@ function FactoryFlow({ mode }: { mode: Mode }) {
   const [family, setFamily]   = useState<string>('freq_glm');
   const [plan, setPlan]       = useState<Variant[] | null>(null);
   const [narrative, setNarrative] = useState<string>('');
+  const [review, setReview] = useState<{ recommended_count: number; reasoning: string; breakdown: Record<string, number> } | null>(null);
   const [proposing, setProposing] = useState(false);
+  const [approving, setApproving] = useState(false);
   const [unsupportedMsg, setUnsupportedMsg] = useState<string | null>(null);
   const [runId, setRunId]     = useState<string | null>(null);
   const [runStatus, setRunStatus] = useState<any>(null);
@@ -118,6 +120,7 @@ function FactoryFlow({ mode }: { mode: Mode }) {
       } else {
         setPlan(r.plan);
         setNarrative(r.narrative);
+        setReview(r.review || null);
       }
     } catch (e: any) {
       setToast(`Plan failed: ${e.message}`);
@@ -127,13 +130,16 @@ function FactoryFlow({ mode }: { mode: Mode }) {
   };
 
   const approve = async () => {
-    if (!plan) return;
+    if (!plan || approving) return;
+    setApproving(true);
     try {
       const r = await apiSet.approve(family, plan, narrative);
       setRunId(r.run_id);
       setStep('train');
     } catch (e: any) {
       setToast(`Approve failed: ${e.message}`);
+    } finally {
+      setApproving(false);
     }
   };
 
@@ -194,8 +200,10 @@ function FactoryFlow({ mode }: { mode: Mode }) {
           propose={propose}
           plan={plan}
           narrative={narrative}
+          review={review}
           unsupported={unsupportedMsg}
           approve={approve}
+          approving={approving}
           supported={mode === 'demo' ? !!familyMeta?.supported : family === 'freq_glm'}
           mode={mode}
         />
@@ -274,13 +282,15 @@ function Stepper({ step }: { step: Step }) {
 // Step 1 — Analyse & plan
 // ---------------------------------------------------------------------------
 
-function StepPlan({ family, setFamily, proposing, propose, plan, narrative, unsupported, approve, supported, mode = 'demo' }:
+function StepPlan({ family, setFamily, proposing, propose, plan, narrative, review, unsupported, approve, approving = false, supported, mode = 'demo' }:
   {
     family: string; setFamily: (f: string) => void;
     proposing: boolean; propose: () => void;
     plan: Variant[] | null; narrative: string;
+    review: { recommended_count: number; reasoning: string; breakdown: Record<string, number> } | null;
     unsupported: string | null;
     approve: () => void;
+    approving?: boolean;
     supported: boolean;
     mode?: 'demo' | 'real';
   }) {
@@ -323,6 +333,18 @@ function StepPlan({ family, setFamily, proposing, propose, plan, narrative, unsu
 
       {plan && (
         <>
+          {review && review.recommended_count > 0 && (
+            <section className="bg-violet-50 border border-violet-200 rounded-lg p-4">
+              <h3 className="text-sm font-semibold text-violet-900 mb-2 flex items-center gap-1.5">
+                <Sparkles className="w-4 h-4 text-violet-600" /> Pricing AI · data review
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-200 text-violet-900 font-medium ml-1">
+                  {review.recommended_count} variants recommended
+                </span>
+              </h3>
+              <p className="text-sm text-violet-900 leading-relaxed">{review.reasoning}</p>
+            </section>
+          )}
+
           {/* Narrative */}
           <section className="bg-white border border-gray-200 rounded-lg p-4">
             <h3 className="text-sm font-semibold text-gray-800 mb-2 flex items-center gap-1.5">
@@ -389,9 +411,11 @@ function StepPlan({ family, setFamily, proposing, propose, plan, narrative, unsu
 
           <div className="flex justify-end">
             <button onClick={approve}
-                    className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 text-white rounded text-sm font-medium hover:bg-emerald-700">
-              <Check className="w-4 h-4" /> Approve plan &amp; train
-              <ArrowRight className="w-4 h-4" />
+                    disabled={approving}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 text-white rounded text-sm font-medium hover:bg-emerald-700 disabled:opacity-60">
+              {approving
+                ? <><Loader2 className="w-4 h-4 animate-spin" /> Starting training run…</>
+                : <><Check className="w-4 h-4" /> Approve plan &amp; train <ArrowRight className="w-4 h-4" /></>}
             </button>
           </div>
         </>
@@ -499,16 +523,17 @@ function StepReview({ runId, selected, setSelected, onPackFor, atPackStep, mode 
 
   return (
     <div className="space-y-4">
-      {/* Tier tabs */}
+      {/* Tier tabs — leaderboard → portfolio → shortlist (shortlist last so
+          the actuary lands on it after exploring the leaderboard + what-if). */}
       <div className="bg-white rounded-lg border border-gray-200 p-1 inline-flex gap-1">
         <TierButton active={tier === 'leaderboard'} onClick={() => setTier('leaderboard')}
                     icon={<Trophy className="w-3.5 h-3.5" />} label="Leaderboard" />
-        <TierButton active={tier === 'shortlist'}   onClick={() => setTier('shortlist')}
-                    icon={<Target className="w-3.5 h-3.5" />} label="Shortlist (top 5)" />
         {mode === 'demo' && (
           <TierButton active={tier === 'portfolio'}   onClick={() => setTier('portfolio')}
                       icon={<Layers className="w-3.5 h-3.5" />} label="Portfolio what-if" />
         )}
+        <TierButton active={tier === 'shortlist'}   onClick={() => setTier('shortlist')}
+                    icon={<Target className="w-3.5 h-3.5" />} label="Shortlist (top 5)" />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -727,7 +752,7 @@ function PortfolioCards({ portfolio }: { portfolio: any }) {
     <section className="bg-white rounded-lg border border-gray-200 overflow-hidden">
       <div className="px-4 py-2.5 bg-gray-50 border-b flex items-center justify-between">
         <h3 className="text-sm font-semibold text-gray-800 flex items-center gap-1.5">
-          <Layers className="w-4 h-4" /> Portfolio what-if · top 5 scored on 5000-policy sample
+          <Layers className="w-4 h-4" /> Portfolio what-if · top 5 scored on full portfolio
         </h3>
         <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-medium">
           Synthesised

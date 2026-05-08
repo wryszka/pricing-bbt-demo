@@ -133,60 +133,77 @@ async def ensure_approvals_table():
 # 1. List datasets
 # ---------------------------------------------------------------------------
 
+@router.get("/meta")
+async def list_datasets_meta():
+    """Static metadata for every dataset — no SQL. Instant response so the
+    Ingestion page can render its card frames before the slow stats come in
+    from the `/api/datasets` endpoint."""
+    return [
+        {"id": ds_id, **ds_info,
+         "raw_row_count":      None, "silver_row_count":   None,
+         "rows_dropped_by_dq": None, "last_ingested":      None,
+         "approval":           None}
+        for ds_id, ds_info in EXTERNAL_DATASETS.items()
+    ]
+
+
 @router.get("")
 async def list_datasets():
     """List all external datasets with their current status.
     Reference datasets (is_reference=True) are one-shot builds with no raw→silver
-    split and no approval workflow — they just report a row count."""
-    results = []
-    for ds_id, ds_info in EXTERNAL_DATASETS.items():
+    split and no approval workflow — they just report a row count.
+
+    Fans all per-dataset SQL queries out in parallel via asyncio.gather so the
+    response comes back in roughly the slowest-single-query time, not the sum."""
+    import asyncio
+
+    async def _stats_for(ds_id: str, ds_info: dict):
         is_reference = bool(ds_info.get("is_reference"))
         raw_count = silver_count = 0
         last_ingested = None
-        approval = []
-
+        approval_row: dict | None = None
         try:
             if is_reference:
-                # Single-table reference: no _ingested_at, no approval flow
                 stats = await execute_query(f"""
-                    SELECT count(*) as row_count
-                    FROM {fqn(ds_info['silver_table'])}
+                    SELECT count(*) as row_count FROM {fqn(ds_info['silver_table'])}
                 """)
                 raw_count = silver_count = int(stats[0]["row_count"]) if stats else 0
             else:
-                raw_stats = await execute_query(f"""
-                    SELECT count(*) as row_count,
-                           max(_ingested_at) as last_ingested
-                    FROM {fqn(ds_info['raw_table'])}
-                """)
-                silver_stats = await execute_query(f"""
-                    SELECT count(*) as row_count
-                    FROM {fqn(ds_info['silver_table'])}
-                """)
-                approval = await execute_query(f"""
-                    SELECT decision, reviewer, reviewed_at, reviewer_notes
-                    FROM {fqn('dataset_approvals')}
-                    WHERE dataset_name = '{ds_id}'
-                    ORDER BY reviewed_at DESC
-                    LIMIT 1
-                """)
-                raw_count = int(raw_stats[0]["row_count"]) if raw_stats else 0
-                silver_count = int(silver_stats[0]["row_count"]) if silver_stats else 0
-                last_ingested = raw_stats[0].get("last_ingested") if raw_stats else None
+                raw_stats, silver_stats, approvals = await asyncio.gather(
+                    execute_query(f"""
+                        SELECT count(*) as row_count,
+                               max(_ingested_at) as last_ingested
+                        FROM {fqn(ds_info['raw_table'])}
+                    """),
+                    execute_query(f"""
+                        SELECT count(*) as row_count FROM {fqn(ds_info['silver_table'])}
+                    """),
+                    execute_query(f"""
+                        SELECT decision, reviewer, reviewed_at, reviewer_notes
+                        FROM {fqn('dataset_approvals')}
+                        WHERE dataset_name = '{ds_id}'
+                        ORDER BY reviewed_at DESC LIMIT 1
+                    """),
+                )
+                raw_count      = int(raw_stats[0]["row_count"]) if raw_stats else 0
+                silver_count   = int(silver_stats[0]["row_count"]) if silver_stats else 0
+                last_ingested  = raw_stats[0].get("last_ingested") if raw_stats else None
+                approval_row   = approvals[0] if approvals else None
         except Exception as e:
             logger.warning("Failed to query stats for %s: %s", ds_id, e)
-
-        results.append({
+        return {
             "id": ds_id,
             **ds_info,
-            "raw_row_count": raw_count,
-            "silver_row_count": silver_count,
-            "rows_dropped_by_dq": max(0, raw_count - silver_count),
-            "last_ingested": last_ingested,
-            "approval": approval[0] if approval else None,
-        })
+            "raw_row_count":       raw_count,
+            "silver_row_count":    silver_count,
+            "rows_dropped_by_dq":  max(0, raw_count - silver_count),
+            "last_ingested":       last_ingested,
+            "approval":            approval_row,
+        }
 
-    return results
+    return await asyncio.gather(*[
+        _stats_for(ds_id, info) for ds_id, info in EXTERNAL_DATASETS.items()
+    ])
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +215,8 @@ async def get_dataset_diff(dataset_id: str):
     """Show difference between raw (pending) and silver (current approved) data."""
     if dataset_id not in EXTERNAL_DATASETS:
         raise HTTPException(404, f"Unknown dataset: {dataset_id}")
+
+    import asyncio
 
     ds = EXTERNAL_DATASETS[dataset_id]
     if ds.get("is_reference"):
@@ -211,17 +230,6 @@ async def get_dataset_diff(dataset_id: str):
     raw_table = fqn(ds["raw_table"])
     silver_table = fqn(ds["silver_table"])
 
-    # Get column lists (exclude metadata columns)
-    cols_result = await execute_query(f"""
-        SELECT column_name FROM information_schema.columns
-        WHERE table_catalog = '{raw_table.split('.')[0]}'
-          AND table_schema = '{raw_table.split('.')[1]}'
-          AND table_name = '{raw_table.split('.')[2]}'
-          AND column_name NOT LIKE '\\_%'
-        ORDER BY ordinal_position
-    """)
-    raw_columns = [r["column_name"] for r in cols_result]
-
     # Dataset-specific key and comparison logic
     if dataset_id == "market_pricing_benchmark":
         key_col = "match_key_sic_region"
@@ -233,55 +241,60 @@ async def get_dataset_diff(dataset_id: str):
         key_col = "policy_id"
         compare_cols = ["credit_score", "ccj_count", "years_trading", "director_changes"]
 
-    # Summary counts
-    summary = await execute_query(f"""
+    compare_conditions = " OR ".join(
+        f"CAST(r.{c} AS STRING) != CAST(s.{c} AS STRING)" for c in compare_cols
+    )
+    changed_select = ", ".join(
+        f"s.{c} as old_{c}, r.{c} as new_{c}" for c in compare_cols
+    )
+
+    sql_summary = f"""
         SELECT
-            (SELECT count(*) FROM {raw_table}) as raw_total,
+            (SELECT count(*) FROM {raw_table})    as raw_total,
             (SELECT count(*) FROM {silver_table}) as silver_total,
             (SELECT count(*) FROM {raw_table} r
              LEFT ANTI JOIN {silver_table} s ON r.{key_col} = s.{key_col}) as new_rows,
             (SELECT count(*) FROM {silver_table} s
              LEFT ANTI JOIN {raw_table} r ON s.{key_col} = r.{key_col}) as removed_rows
-    """)
-
-    # Sample of changed rows (where values differ)
-    compare_conditions = " OR ".join(
-        [f"CAST(r.{c} AS STRING) != CAST(s.{c} AS STRING)" for c in compare_cols]
-    )
-    changed_sample = await execute_query(f"""
-        SELECT r.{key_col},
-               {', '.join([f"s.{c} as old_{c}, r.{c} as new_{c}" for c in compare_cols])}
+    """
+    sql_changed = f"""
+        SELECT r.{key_col}, {changed_select}
         FROM {raw_table} r
         INNER JOIN {silver_table} s ON r.{key_col} = s.{key_col}
         WHERE {compare_conditions}
         LIMIT 50
-    """)
-
-    # Sample of new rows
-    new_sample = await execute_query(f"""
+    """
+    sql_new = f"""
         SELECT r.*
         FROM {raw_table} r
         LEFT ANTI JOIN {silver_table} s ON r.{key_col} = s.{key_col}
         LIMIT 20
-    """)
-
-    # Sample of removed rows
-    removed_sample = await execute_query(f"""
+    """
+    sql_removed = f"""
         SELECT s.*
         FROM {silver_table} s
         LEFT ANTI JOIN {raw_table} r ON s.{key_col} = r.{key_col}
         LIMIT 20
-    """)
+    """
+
+    async def _safe(q):
+        try: return await execute_query(q)
+        except Exception as e:
+            logger.warning("diff query failed: %s", str(e)[:120]); return None
+
+    summary, changed_sample, new_sample, removed_sample = await asyncio.gather(
+        _safe(sql_summary), _safe(sql_changed), _safe(sql_new), _safe(sql_removed),
+    )
 
     return {
         "dataset_id": dataset_id,
         "key_column": key_col,
         "compare_columns": compare_cols,
-        "summary": summary[0] if summary else {},
-        "changed_rows": changed_sample,
-        "new_rows": new_sample,
-        "removed_rows": removed_sample,
-        "changed_count": len(changed_sample),
+        "summary": (summary or [{}])[0] if summary else {},
+        "changed_rows":  changed_sample or [],
+        "new_rows":      new_sample     or [],
+        "removed_rows":  removed_sample or [],
+        "changed_count": len(changed_sample or []),
     }
 
 

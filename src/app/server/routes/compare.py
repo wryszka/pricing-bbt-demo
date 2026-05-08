@@ -13,6 +13,7 @@ All scoring happens inside the notebook (which loads models via
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -66,11 +67,19 @@ async def list_scenarios(family: str | None = None) -> dict:
 # ---------------------------------------------------------------------------
 
 def _find_job_id(w) -> int | None:
+    """Exact-match first, then suffix-match — the bundle adds a
+    `[dev <user>]` prefix to every job name, so exact lookup misses."""
     try:
         for j in w.jobs.list(name=COMPARE_JOB_NAME, limit=25):
             return j.job_id
     except Exception as e:
-        logger.warning("jobs.list for '%s' failed: %s", COMPARE_JOB_NAME, e)
+        logger.warning("jobs.list(name=%r) failed: %s", COMPARE_JOB_NAME, e)
+    try:
+        for j in w.jobs.list(limit=100):
+            if (j.settings.name or "").endswith(COMPARE_JOB_NAME):
+                return j.job_id
+    except Exception as e:
+        logger.warning("jobs.list suffix-match fallback failed: %s", e)
     return None
 
 
@@ -97,13 +106,14 @@ async def trigger_run(req: RunRequest) -> dict:
 
     user = get_current_user()
     w = get_workspace_client()
-    job_id = _find_job_id(w)
+    job_id = await asyncio.to_thread(_find_job_id, w)
     if not job_id:
         raise HTTPException(500,
             f"Job '{COMPARE_JOB_NAME}' not found. Deploy the bundle with `databricks bundle deploy`.")
 
     try:
-        run = w.jobs.run_now(
+        run = await asyncio.to_thread(
+            w.jobs.run_now,
             job_id=job_id,
             job_parameters={
                 "catalog_name":   get_catalog(),
@@ -150,7 +160,7 @@ async def trigger_run(req: RunRequest) -> dict:
 async def run_status(run_id: int) -> dict:
     w = get_workspace_client()
     try:
-        run = w.jobs.get_run(run_id=run_id)
+        run = await asyncio.to_thread(w.jobs.get_run, run_id=run_id)
     except Exception as e:
         raise HTTPException(500, f"Could not fetch run {run_id}: {e}")
 
@@ -162,7 +172,7 @@ async def run_status(run_id: int) -> dict:
     try:
         for t in run.tasks or []:
             if t.task_key == "score" and t.run_id:
-                out = w.jobs.get_run_output(run_id=t.run_id)
+                out = await asyncio.to_thread(w.jobs.get_run_output, run_id=t.run_id)
                 if out.notebook_output and out.notebook_output.result:
                     try:
                         exit_payload = json.loads(out.notebook_output.result)

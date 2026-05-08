@@ -1,0 +1,26 @@
+# Seed pricing_engine_releases with 5 monthly rate-book snapshots.
+resources:
+  jobs:
+    pricing_engine_releases_seed:
+      name: "v1 — Pricing engine releases seed (monthly rate book)"
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+      permissions:
+        - service_principal_name: ${var.app_service_principal_id}
+          level: CAN_MANAGE_RUN
+      tasks:
+        - task_key: seed
+          notebook_task:
+            notebook_path: ../src/04_models/production/pricing_engine_releases_seed.py
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name:  ${var.schema_name}
+          environment_key: env
+      environments:
+        - environment_key: env
+          spec:
+            client: "5"
+            dependencies: []

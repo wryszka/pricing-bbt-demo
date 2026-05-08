@@ -7,6 +7,7 @@ Sits on top of:
 - quote_payload_engine_response     (JSON from rating engine)
 """
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -212,7 +213,9 @@ async def save_payload(tx_id: str, req: SavePayloadRequest):
     try:
         w = get_workspace_client()
         content = json.dumps(req.payload, indent=2).encode("utf-8")
-        w.files.upload(file_path=path, contents=content, overwrite=True)
+        await asyncio.to_thread(
+            w.files.upload, file_path=path, contents=content, overwrite=True,
+        )
         return {"saved_to": path, "bytes": len(content)}
     except Exception as e:
         logger.exception("save_payload failed")

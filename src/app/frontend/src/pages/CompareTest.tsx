@@ -45,13 +45,41 @@ export default function CompareTest() {
     api.getReviewVersions(family).then(d => {
       const vs: Version[] = d.versions || [];
       setVersions(vs);
-      // Default A = current champion (not simulated), B = most recent simulated
-      const champion = vs.find(v => !v.simulated);
-      const nextCandidate = vs.find(v => v.simulated);
+      // Default selection: pick the two versions with the largest primary-metric
+      // gap among those that have a value. Maximises visible difference in the
+      // run-comparison pane — instead of comparing two near-identical runs.
+      const scored = vs.filter(v => v.primary_value != null);
       const pick: number[] = [];
-      if (champion) pick.push(champion.version);
-      if (nextCandidate && nextCandidate.version !== champion?.version) pick.push(nextCandidate.version);
+      if (scored.length >= 2) {
+        const sorted = [...scored].sort((a, b) => (b.primary_value as number) - (a.primary_value as number));
+        const best = sorted[0];
+        const worst = sorted[sorted.length - 1];
+        pick.push(best.version);
+        pick.push(worst.version);
+      } else {
+        const champion = vs.find(v => !v.simulated);
+        const nextCandidate = vs.find(v => v.simulated);
+        if (champion) pick.push(champion.version);
+        if (nextCandidate && nextCandidate.version !== champion?.version) pick.push(nextCandidate.version);
+      }
       setSelected(pick);
+
+      // Auto-hydrate the most recent cached run for this family so the demo
+      // landing state shows a populated comparison without needing a fresh job.
+      api.getCompareHistory(20).then((h: any) => {
+        const matching = (h.runs || []).find((r: any) => r.family === family && r.cache_key);
+        if (!matching) return;
+        // Sync selected versions to whatever the cached run used (so the chips
+        // light up consistent with the displayed result).
+        try {
+          const cachedVersions = String(matching.versions || '').split(',').map((s: string) => Number(s.trim())).filter(n => !isNaN(n));
+          if (cachedVersions.length >= 2) setSelected(cachedVersions);
+        } catch { /* fall back to best/worst */ }
+        setLoadingResult(true);
+        api.getCompareCache(matching.cache_key).then(setResult)
+          .catch(() => { /* silent — page still works */ })
+          .finally(() => setLoadingResult(false));
+      }).catch(() => { /* history endpoint not seeded; default UX still works */ });
     });
     api.listCompareScenarios(family).then(d => {
       setScenarios(d.scenarios || []);

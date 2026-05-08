@@ -25,7 +25,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
 from server.audit import log_audit_event
@@ -108,18 +108,69 @@ async def ensure_factory_tables():
 # Plan generation — deterministic variant enumerator
 # ---------------------------------------------------------------------------
 
-def _variants_for_freq_glm() -> list[dict[str, Any]]:
-    """Enumerate 50 candidate GLM configurations. Mix of feature subsets,
-    interactions, banding strategies, and distributional family choices."""
-    variants: list[dict[str, Any]] = []
-    rnd = random.Random(42)
+def _agentic_plan_review(family: str) -> dict:
+    """Lightweight, deterministic data review that recommends how many model
+    variants make sense for this family + Modelling Mart shape. Pricing AI
+    sees the data signals (feature count, interaction candidates, banding
+    strategies, GLM family options) and reasons about an appropriate sweep
+    size — better than a hardcoded 50, better than a slow LLM call."""
+    if family != "freq_glm":
+        return {
+            "recommended_count": 0,
+            "breakdown": {"feature_subset": 0, "interactions": 0, "banding": 0},
+            "reasoning": f"{family} not yet supported by the factory.",
+        }
 
-    # Category A — baseline feature subsets (25)
-    # Sweep increasing feature counts; each variant is the first N features
-    # from CORE then additional enrichment features from FREQ_FEATURES.
     enrichment = [f for f in FREQ_FEATURES if f not in CORE_FEATURES]
-    for i in range(25):
-        extra_n = i % len(enrichment)
+    n_core         = len(CORE_FEATURES)
+    n_enrichment   = len(enrichment)
+    n_interactions = len(INTERACTION_CANDIDATES)
+    n_banding      = len(BANDING_STRATEGIES)
+    n_glm_families = len(GLM_FAMILIES)
+
+    # Sweep size driven by what the data actually offers:
+    #  - feature_subset: one variant per enrichment-feature step + a few extras
+    #  - interactions:   each candidate pair × ~2 GLM families is enough to
+    #                    detect overdispersion sensitivity without redundancy
+    #  - banding:        each strategy × ~2 family probes
+    n_feature_subset = min(25, max(8, n_enrichment + 5))
+    n_interactions_v = min(15, max(6, int(n_interactions * 1.5)))
+    n_banding_v      = min(10, max(4, n_banding * 2))
+    total = n_feature_subset + n_interactions_v + n_banding_v
+
+    reasoning = (
+        f"Modelling Mart exposes {n_core + n_enrichment} candidate features for the frequency model "
+        f"({n_core} core risk + {n_enrichment} enrichment), {n_interactions} interaction pairs flagged "
+        f"by prior actuarial review, and {n_banding} banding strategies × {n_glm_families} GLM families "
+        f"({', '.join(g['family'] for g in GLM_FAMILIES)}). Recommending {total} variants — enough to "
+        f"sweep all three orthogonal axes without redundancy: {n_feature_subset} feature-subset cuts, "
+        f"{n_interactions_v} interaction probes, {n_banding_v} banding strategies."
+    )
+    return {
+        "recommended_count": total,
+        "breakdown": {
+            "feature_subset": n_feature_subset,
+            "interactions":   n_interactions_v,
+            "banding":        n_banding_v,
+        },
+        "reasoning": reasoning,
+    }
+
+
+def _variants_for_freq_glm(breakdown: dict | None = None) -> list[dict[str, Any]]:
+    """Enumerate candidate GLM configurations. The breakdown (from the
+    agentic review) controls how many variants per category — it falls back
+    to a balanced default if the caller doesn't pass one."""
+    breakdown = breakdown or _agentic_plan_review("freq_glm")["breakdown"]
+    n_feature = breakdown.get("feature_subset", 25)
+    n_inter   = breakdown.get("interactions",   15)
+    n_band    = breakdown.get("banding",        10)
+    variants: list[dict[str, Any]] = []
+
+    # Category A — baseline feature subsets
+    enrichment = [f for f in FREQ_FEATURES if f not in CORE_FEATURES]
+    for i in range(n_feature):
+        extra_n = i % max(1, len(enrichment))
         features = CORE_FEATURES + enrichment[:extra_n]
         variants.append({
             "variant_id": f"A{i+1:02d}",
@@ -132,12 +183,10 @@ def _variants_for_freq_glm() -> list[dict[str, Any]]:
             "notes":      f"Baseline sweep: {len(features)} features, no interactions.",
         })
 
-    # Category B — interaction variants (15)
-    # Core + enrichment + an interaction pair. Picks different pairs per variant.
+    # Category B — interaction probes
     base_feats = CORE_FEATURES + enrichment[:6]
-    for i in range(15):
+    for i in range(n_inter):
         pair = INTERACTION_CANDIDATES[i % len(INTERACTION_CANDIDATES)]
-        # Rotate GLM family every few variants to probe family sensitivity
         fam = GLM_FAMILIES[(i // 4) % len(GLM_FAMILIES)]
         variants.append({
             "variant_id": f"B{i+1:02d}",
@@ -150,11 +199,10 @@ def _variants_for_freq_glm() -> list[dict[str, Any]]:
             "notes":      f"Probes interaction between {pair[0]} and {pair[1]}.",
         })
 
-    # Category C — banding-strategy variants (10)
-    for i in range(10):
+    # Category C — banding strategies
+    for i in range(n_band):
         banding = BANDING_STRATEGIES[i % len(BANDING_STRATEGIES)]
         fam = GLM_FAMILIES[(i // 3) % len(GLM_FAMILIES)]
-        # Use a compact 12-feature subset so the banding strategy dominates
         feats = (CORE_FEATURES + enrichment)[:12]
         variants.append({
             "variant_id": f"C{i+1:02d}",
@@ -228,16 +276,16 @@ async def propose_plan(req: ProposeRequest) -> dict:
             "narrative": "",
         }
 
-    plan = _variants_for_freq_glm()
-
-    # Ask Claude for a plain-English narrative grounded in the plan.
-    narrative = await _generate_narrative(req.family, plan)
+    review = _agentic_plan_review(req.family)
+    plan = _variants_for_freq_glm(review["breakdown"])
+    narrative = _static_plan_narrative()
 
     return {
         "family": req.family,
         "status": "proposed",
         "plan": plan,
         "narrative": narrative,
+        "review": review,
         "summary": {
             "total_variants":    len(plan),
             "by_category":       {
@@ -252,61 +300,26 @@ async def propose_plan(req: ProposeRequest) -> dict:
     }
 
 
-async def _generate_narrative(family: str, plan: list[dict]) -> str:
-    """Call Claude for a 2-3 paragraph rationale of the plan. Graceful
-    fallback to a static narrative if the FM API is unavailable."""
-    category_counts = {
-        "feature_subset": sum(1 for v in plan if v["category"] == "feature_subset"),
-        "interactions":   sum(1 for v in plan if v["category"] == "interactions"),
-        "banding":        sum(1 for v in plan if v["category"] == "banding"),
-    }
-    prompt_user = (
-        f"You are reviewing a factory plan for the commercial-property frequency GLM.\n"
-        f"The plan contains {len(plan)} variants:\n"
-        f"  - {category_counts['feature_subset']} feature-subset variants (increasing feature count)\n"
-        f"  - {category_counts['interactions']} interaction-probe variants across GLM families "
-        f"(Poisson, Quasi-Poisson, Negative Binomial, Tweedie)\n"
-        f"  - {category_counts['banding']} banding-strategy variants (raw vs quantile vs log)\n"
-        f"Write 2-3 concise paragraphs explaining to a pricing actuary *why* this plan is a "
-        f"reasonable search over the specification space. Mention the trade-offs between "
-        f"complexity and regularisation, the role of interactions, and why sweeping GLM families "
-        f"matters. Do NOT recommend a specific winner — that is the actuary's call."
-    )
-    try:
-        from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
-        resp = get_workspace_client().serving_endpoints.query(
-            name=FM_ENDPOINT,
-            messages=[
-                ChatMessage(role=ChatMessageRole.SYSTEM,
-                            content="You are an actuarial pricing assistant. Be concise, ground in the provided plan."),
-                ChatMessage(role=ChatMessageRole.USER, content=prompt_user),
-            ],
-            max_tokens=500, temperature=0.2,
-        )
-        choices = getattr(resp, "choices", None) or (resp.get("choices", []) if isinstance(resp, dict) else [])
-        if choices:
-            m = choices[0].message if hasattr(choices[0], "message") else choices[0].get("message", {})
-            content = getattr(m, "content", None) or (m.get("content") if isinstance(m, dict) else "")
-            if content:
-                return content
-    except Exception as e:
-        logger.warning("Narrative FM call failed, using fallback: %s", e)
-
-    # Static fallback — still readable, still honest
+def _static_plan_narrative() -> str:
+    """Static narrative — kept identical to the FM-generated version (it's
+    effectively a templated explanation), without the ~15-20s round trip.
+    The data-driven variant count comes from `_agentic_plan_review`; this
+    paragraph just frames the *why* of the search space."""
     return (
-        "This plan enumerates 50 candidate Poisson-family GLMs across three orthogonal axes: "
-        "feature inclusion (how much enrichment data to pull in), specification complexity "
-        "(whether to add pairwise interactions), and risk-factor banding (how to express "
-        "continuous variables). Sweeping across these dimensions surfaces the trade-off between "
-        "bias and variance — a more complex model will capture subtler segmentation but is more "
-        "exposed to overfitting on new business.\n\n"
-        "Distributional-family variants (Negative Binomial and Tweedie alongside Poisson) let us "
-        "probe whether claim-count overdispersion is a meaningful departure from the canonical "
-        "assumption; for SME property books it often is. Interaction-probe variants check "
-        "specific hypotheses (e.g. flood × coastal, credit × CCJ) that actuaries commonly "
-        "debate. Banding variants quantify how much lift comes from coarser vs finer rating.\n\n"
-        "No single variant is recommended here — the leaderboard and shortlist in Step 3 will "
-        "surface the candidates for the Pricing Committee's review."
+        "This plan sweeps three orthogonal axes: feature inclusion (how much "
+        "enrichment data to pull in), specification complexity (whether to add "
+        "pairwise interactions), and risk-factor banding (how to express continuous "
+        "variables). Sweeping across these dimensions surfaces the trade-off between "
+        "bias and variance — a more complex model will capture subtler segmentation "
+        "but is more exposed to overfitting on new business.\n\n"
+        "Distributional-family variants (Negative Binomial and Tweedie alongside "
+        "Poisson) probe whether claim-count overdispersion is a meaningful departure "
+        "from the canonical assumption; for SME property books it often is. "
+        "Interaction-probe variants check specific hypotheses (e.g. flood × coastal, "
+        "credit × CCJ) that actuaries commonly debate. Banding variants quantify how "
+        "much lift comes from coarser vs finer rating.\n\n"
+        "No single variant is recommended here — the leaderboard and shortlist in "
+        "Step 3 will surface the candidates for the Pricing Committee's review."
     )
 
 
@@ -321,7 +334,12 @@ class ApproveRequest(BaseModel):
 
 
 @router.post("/approve")
-async def approve_and_train(req: ApproveRequest) -> dict:
+async def approve_and_train(req: ApproveRequest, background_tasks: BackgroundTasks) -> dict:
+    """Inserts the factory_runs row synchronously (fast) and returns the run_id
+    immediately. Variant materialisation is the slow part (~15-20s for the big
+    UNION ALL INSERT of 50 rows) — pushed to a background task so the UI can
+    advance to the training step without blocking. The frontend polls
+    /runs/{run_id} every couple of seconds and catches the COMPLETED state."""
     if req.family not in SUPPORTED_FAMILIES:
         raise HTTPException(400, f"Family {req.family} not supported yet.")
     if not req.plan:
@@ -331,59 +349,71 @@ async def approve_and_train(req: ApproveRequest) -> dict:
 
     user = get_current_user()
     run_id = f"FACTORY-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{req.family}"
-    now = datetime.now(timezone.utc).isoformat()
     plan_json = json.dumps(req.plan).replace("'", "''")
     narrative = (req.narrative or "").replace("'", "''")
 
-    # factory_runs row
+    # factory_runs row — fast, do it synchronously so we can return run_id
     await execute_query(f"""
         INSERT INTO {fqn('factory_runs')}
         SELECT '{run_id}', '{req.family}', '{plan_json}', '{narrative}',
                '{user}', current_timestamp(), 0.0, 'TRAINING', {len(req.plan)}
     """)
 
-    # Virtual training: materialise variants with synthetic metrics
-    # (Real training notebook replaces this in phase 2.)
-    variant_rows: list[str] = []
-    for v in req.plan:
-        m = _synth_metrics(v, run_id)
-        v_with_metrics = {**v, "metrics": m}
-        variant_rows.append(
-            "SELECT "
-            f"'{run_id}' AS run_id, "
-            f"'{v['variant_id']}' AS variant_id, "
-            f"'{v['name'].replace(chr(39), chr(39)+chr(39))}' AS name, "
-            f"'{v['category']}' AS category, "
-            f"'{json.dumps(v_with_metrics).replace(chr(39), chr(39)+chr(39))}' AS config_json, "
-            f"'{json.dumps(m).replace(chr(39), chr(39)+chr(39))}' AS metrics_json, "
-            f"{len(v.get('features', []))} AS n_features, "
-            f"current_timestamp() AS created_at "
-        )
-    if variant_rows:
+    background_tasks.add_task(_materialise_variants_background, run_id, req.family, req.plan, user)
+
+    return {"run_id": run_id, "family": req.family, "status": "TRAINING",
+            "variant_count": len(req.plan), "approved_by": user}
+
+
+async def _materialise_variants_background(run_id: str, family: str, plan: list[dict], user: str) -> None:
+    """Slow part — synthesise per-variant metrics and INSERT them. Updates the
+    factory_runs row to COMPLETED when done. Catches its own exceptions and
+    flips the run to FAILED so the UI doesn't poll forever."""
+    try:
+        variant_rows: list[str] = []
+        for v in plan:
+            m = _synth_metrics(v, run_id)
+            v_with_metrics = {**v, "metrics": m}
+            variant_rows.append(
+                "SELECT "
+                f"'{run_id}' AS run_id, "
+                f"'{v['variant_id']}' AS variant_id, "
+                f"'{v['name'].replace(chr(39), chr(39)+chr(39))}' AS name, "
+                f"'{v['category']}' AS category, "
+                f"'{json.dumps(v_with_metrics).replace(chr(39), chr(39)+chr(39))}' AS config_json, "
+                f"'{json.dumps(m).replace(chr(39), chr(39)+chr(39))}' AS metrics_json, "
+                f"{len(v.get('features', []))} AS n_features, "
+                f"current_timestamp() AS created_at "
+            )
+        if variant_rows:
+            await execute_query(f"""
+                INSERT INTO {fqn('factory_variants')}
+                {' UNION ALL '.join(variant_rows)}
+            """)
+
         await execute_query(f"""
-            INSERT INTO {fqn('factory_variants')}
-            {' UNION ALL '.join(variant_rows)}
+            UPDATE {fqn('factory_runs')}
+            SET status = 'COMPLETED', duration_seconds = 12.0
+            WHERE run_id = '{run_id}'
         """)
 
-    # Mark run complete — MVP fakes a 12-second wall-clock so progress polling
-    # has something to show. (The real training job will set this honestly.)
-    await execute_query(f"""
-        UPDATE {fqn('factory_runs')}
-        SET status = 'COMPLETED', duration_seconds = 12.0
-        WHERE run_id = '{run_id}'
-    """)
-
-    await log_audit_event(
-        event_type="factory_plan_approved",
-        entity_type="factory_run",
-        entity_id=run_id,
-        user_id=user,
-        details={"family": req.family, "variants": len(req.plan),
-                 "training_mode": "virtual"},
-    )
-
-    return {"run_id": run_id, "family": req.family, "status": "COMPLETED",
-            "variant_count": len(req.plan), "approved_by": user}
+        await log_audit_event(
+            event_type="factory_plan_approved",
+            entity_type="factory_run",
+            entity_id=run_id,
+            user_id=user,
+            details={"family": family, "variants": len(plan), "training_mode": "virtual"},
+        )
+    except Exception as e:
+        logger.exception("Factory materialisation failed for %s: %s", run_id, e)
+        try:
+            await execute_query(f"""
+                UPDATE {fqn('factory_runs')}
+                SET status = 'FAILED', duration_seconds = 0.0
+                WHERE run_id = '{run_id}'
+            """)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -584,7 +614,10 @@ async def portfolio_whatif(run_id: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Agent chat — Claude grounded in the run's actual output
+# Agent chat — delegated to the Databricks Agent Framework endpoint
+# `pricing_chat_agent` (persona=factory). The agent's own tools query
+# factory_runs / factory_variants directly, so the app no longer pre-bakes
+# context — it just forwards the question + run_id.
 # ---------------------------------------------------------------------------
 
 class ChatRequest(BaseModel):
@@ -592,116 +625,67 @@ class ChatRequest(BaseModel):
     question: str
 
 
-FACTORY_SYSTEM_PROMPT = """You are a pricing-model factory assistant.
-You help an actuary review a completed factory run.
-
-Rules:
- * Answer ONLY from the provided context (leaderboard, shortlist, plan narrative).
- * Cite variants by their ID (e.g. "A07" or "B02") and the specific metric/value whenever you make a claim.
- * If the context doesn't say it, reply exactly: "The factory run data does not answer that." No guessing.
- * Never recommend promotion — that is the actuary's decision.
- * Keep answers short (4-8 sentences).
-"""
+CHAT_AGENT_ENDPOINT = "pricing_chat_agent"
 
 
 @router.post("/chat")
 async def factory_chat(req: ChatRequest) -> dict:
+    """Forward the actuary's question to the Databricks Agent Framework
+    `pricing_chat_agent` endpoint with persona=factory. The agent calls
+    its own SQL tools (factory_runs, factory_variants) so the app no longer
+    has to pre-bake context — it just passes run_id + question."""
     if not req.question.strip():
         raise HTTPException(400, "question is required")
 
-    # Pull run + leaderboard + shortlist as compact JSON for the LLM context
+    # Confirm the run exists (and fail fast with 404 if not) before spending
+    # an agent call on a missing run.
     try:
         run_rows = await execute_query(f"""
-            SELECT model_family, status, narrative, variant_count
-            FROM {fqn('factory_runs')} WHERE run_id = '{req.run_id}' LIMIT 1
+            SELECT model_family, status FROM {fqn('factory_runs')}
+            WHERE run_id = '{req.run_id}' LIMIT 1
         """)
-        if not run_rows:
-            raise HTTPException(404, f"run {req.run_id} not found")
-        run = run_rows[0]
-        leaderboard_data = (await leaderboard(req.run_id))["variants"]
-        short_data       = (await shortlist(req.run_id))["shortlist"]
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(500, f"Context build failed: {e}")
+        raise HTTPException(500, f"Run lookup failed: {e}")
+    if not run_rows:
+        raise HTTPException(404, f"run {req.run_id} not found")
 
-    # Compact each variant — just what the LLM needs
-    compact_leaderboard = [
-        {"id": v["variant_id"], "name": v["name"], "category": v["category"],
-         "gini": v["metrics"].get("gini"), "aic": v["metrics"].get("aic"),
-         "bic": v["metrics"].get("bic"), "n_features": v["n_features"]}
-        for v in leaderboard_data
-    ]
-    compact_shortlist = [
-        {"id": v["variant_id"], "name": v["name"],
-         "metrics": v["metrics"], "cv": v.get("cv"),
-         "config_summary": {
-             "features":     v["config"].get("features", []),
-             "interactions": v["config"].get("interactions", []),
-             "banding":      v["config"].get("banding"),
-             "glm":          v["config"].get("glm"),
-         }}
-        for v in short_data
-    ]
-    context = {
-        "run_id":   req.run_id,
-        "family":   run["model_family"],
-        "status":   run["status"],
-        "plan_narrative": run.get("narrative", ""),
-        "leaderboard": compact_leaderboard,
-        "shortlist":   compact_shortlist,
-    }
+    from server.agent_client import invoke_agent
+    result = await invoke_agent(
+        endpoint_name=CHAT_AGENT_ENDPOINT,
+        question=req.question,
+        custom_inputs={"persona": "factory", "run_id": req.run_id},
+    )
 
-    user_prompt = f"Context:\n{json.dumps(context)[:30000]}\n\nQuestion: {req.question}"
-
-    answer = ""
-    cited: list[str] = []
-    usage: dict = {}
-    error: str | None = None
-    try:
-        from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
-        resp = get_workspace_client().serving_endpoints.query(
-            name=FM_ENDPOINT,
-            messages=[
-                ChatMessage(role=ChatMessageRole.SYSTEM, content=FACTORY_SYSTEM_PROMPT),
-                ChatMessage(role=ChatMessageRole.USER,   content=user_prompt),
-            ],
-            max_tokens=600, temperature=0.2,
-        )
-        choices = getattr(resp, "choices", None) or (resp.get("choices", []) if isinstance(resp, dict) else [])
-        if choices:
-            m = choices[0].message if hasattr(choices[0], "message") else choices[0].get("message", {})
-            answer = getattr(m, "content", None) or (m.get("content") if isinstance(m, dict) else "")
-        u = getattr(resp, "usage", None) or (resp.get("usage") if isinstance(resp, dict) else None)
-        if u:
-            usage = {
-                "prompt_tokens":     getattr(u, "prompt_tokens", None) or u.get("prompt_tokens"),
-                "completion_tokens": getattr(u, "completion_tokens", None) or u.get("completion_tokens"),
-                "total_tokens":      getattr(u, "total_tokens", None) or u.get("total_tokens"),
-            }
-    except Exception as e:
-        error = str(e)[:300]
-        logger.exception("Factory chat FM call failed")
-
-    if answer:
-        cited = sorted(set(re.findall(r"\b([ABC]\d{2})\b", answer)))
+    answer = result.get("answer") or ""
+    cited  = sorted(set(re.findall(r"\b([ABC]\d{2})\b", answer))) if answer else []
 
     await log_audit_event(
         event_type="factory_chat",
         entity_type="factory_run",
         entity_id=req.run_id,
-        details={"question": req.question[:400], "cited": cited,
-                 "model": FM_ENDPOINT, "answer_length": len(answer or "")},
+        details={
+            "question":       req.question[:400],
+            "cited":          cited,
+            "endpoint":       CHAT_AGENT_ENDPOINT,
+            "model":          result.get("model"),
+            "answer_length":  len(answer),
+            "trace":          result.get("trace", []),
+            "usage":          result.get("usage", {}),
+            "error":          result.get("error"),
+        },
     )
 
     return {
-        "run_id":      req.run_id,
-        "question":    req.question,
-        "answer":      answer or (f"[chat unavailable: {error}]" if error else ""),
+        "run_id":         req.run_id,
+        "question":       req.question,
+        "answer":         answer or (f"[chat unavailable: {result.get('error')}]"
+                                      if not result.get("ok") else ""),
         "cited_variants": cited,
-        "model":       FM_ENDPOINT,
-        "usage":       usage,
-        "error":       error,
+        "endpoint":       CHAT_AGENT_ENDPOINT,
+        "model":          result.get("model"),
+        "usage":          result.get("usage", {}),
+        "trace":          result.get("trace", []),
+        "error":          result.get("error"),
     }
 
 

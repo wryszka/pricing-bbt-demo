@@ -401,7 +401,7 @@ tags = {
     "business_line": "commercial_property",
     "pricing_domain": "commercial_pricing",
     "table_owner": "actuarial_pricing_team",
-    "refresh_cadence": "on_demand",
+    "refresh_cadence":    "manual",
     "demo_environment": "true",
     "contains_pii": "false",
 }

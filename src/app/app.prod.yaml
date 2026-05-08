@@ -1,0 +1,17 @@
+# Pricing Workbench — PROD env values.
+# This file is a template; deploy.sh copies it over app.yaml before
+# `databricks bundle deploy --target prod`.
+command: ["python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+env:
+  - name: CATALOG_NAME
+    value: "lr_serverless_aws_us_catalog"
+  - name: SCHEMA_NAME
+    value: "pricing_upt"
+  - name: WAREHOUSE_ID
+    value: "ab79eced8207d29b"
+  - name: GENIE_SPACE_ID
+    value: "01f134e996251f40bf521eac22ad10f1"
+  - name: GENIE_QUOTE_SPACE_ID
+    value: "01f13e30dcd418ae88295599f23780b8"
+  - name: BUNDLE_NOTEBOOKS_BASE
+    value: "/Workspace/Users/laurence.ryszka@databricks.com/.bundle/pricing-upt-demo/prod/files/src/04_models"

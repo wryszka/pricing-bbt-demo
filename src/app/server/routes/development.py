@@ -7,7 +7,9 @@ workspace during bundle deploy. Opening a notebook from the app:
   2) Returns the workspace URL the client navigates to.
 """
 from __future__ import annotations
+import asyncio
 import logging
+import os
 from typing import Any
 from datetime import datetime
 
@@ -30,7 +32,13 @@ router = APIRouter(prefix="/api/development", tags=["development"])
 # {host}/?o=WORKSPACE_ID#folder/{path_without_extension}.
 # ---------------------------------------------------------------------------
 
-_BUNDLE_BASE = "/Workspace/Users/laurence.ryszka@databricks.com/.bundle/pricing-upt-demo/dev/files/src/04_models"
+# Bundle deploy path: /Workspace/Users/<deployer>/.bundle/pricing-upt-demo/<target>/files/src/04_models
+# `BUNDLE_NOTEBOOKS_BASE` is set as an env var in resources/app.yml; falls back
+# to the prod path so legacy app instances still work without re-deploy.
+_BUNDLE_BASE = os.getenv(
+    "BUNDLE_NOTEBOOKS_BASE",
+    "/Workspace/Users/laurence.ryszka@databricks.com/.bundle/pricing-upt-demo/prod/files/src/04_models",
+)
 
 NOTEBOOKS: list[dict[str, Any]] = [
     # ---- featured: the headline cards ----
@@ -167,6 +175,35 @@ RUNTIME_LIBRARIES = [
 # Endpoints
 # ---------------------------------------------------------------------------
 
+# Workspace-local cache of resolved experiment IDs. The training notebooks
+# create experiments under each user's workspace folder; we look the IDs up
+# once and reuse for the lifetime of the process.
+_EXPERIMENT_ID_CACHE: dict[str, str | None] = {}
+
+
+def _resolve_experiment_ids(name_by_family: dict[str, str]) -> dict[str, str | None]:
+    """Look up MLflow experiment IDs by name suffix. Returns a family→id map."""
+    if all(f in _EXPERIMENT_ID_CACHE for f in name_by_family):
+        return {f: _EXPERIMENT_ID_CACHE[f] for f in name_by_family}
+    try:
+        from mlflow.tracking import MlflowClient
+        client = MlflowClient()
+        # search_experiments on a name-pattern; iterate up to a small limit.
+        all_exps = client.search_experiments(max_results=200)
+    except Exception as e:
+        logger.warning("experiment lookup failed: %s", e)
+        return {f: None for f in name_by_family}
+    out: dict[str, str | None] = {}
+    for fam, suffix in name_by_family.items():
+        match = next(
+            (e for e in all_exps if (e.name or "").endswith(suffix)),
+            None,
+        )
+        out[fam] = match.experiment_id if match else None
+        _EXPERIMENT_ID_CACHE[fam] = out[fam]
+    return out
+
+
 def _notebook_open_url(path: str) -> str:
     """Build the workspace URL that opens the notebook in the user's browser.
     Uses the /#workspace{path} fragment form — works as long as the logged-in
@@ -251,12 +288,17 @@ async def recent_runs(limit: int = 10) -> dict:
         logger.warning("recent_runs: audit_log query failed: %s", e)
         return {"runs": [], "error": str(e)[:300]}
 
-    EXP_ID_BY_FAMILY = {
-        "freq_glm":   "4011604052526442",
-        "sev_glm":    "4011604052526439",
-        "demand_gbm": "4011604052526440",
-        "fraud_gbm":  "4011604052526441",
+    # Resolve experiment IDs by NAME — workspace-portable. The training
+    # notebooks set the experiment to "/Workspace/Users/<user>/pricing_workbench_production_<short>",
+    # so we look up by the trailing name fragment. Cached after first hit so the
+    # SDK calls only fire once per family per process.
+    EXP_NAME_BY_FAMILY = {
+        "freq_glm":   "production_freq",
+        "sev_glm":    "production_sev",
+        "demand_gbm": "production_demand",
+        "fraud_gbm":  "production_fraud",
     }
+    EXP_ID_BY_FAMILY = await asyncio.to_thread(_resolve_experiment_ids, EXP_NAME_BY_FAMILY)
 
     out = []
     for r in rows:

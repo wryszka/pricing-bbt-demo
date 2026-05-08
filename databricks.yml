@@ -14,10 +14,49 @@ variables:
   entity_name:
     description: Name of the reporting undertaking
     default: "Bricksurance SE"
+  warehouse_id:
+    description: SQL warehouse used by the app for data queries
+    default: "ab79eced8207d29b"
+  app_service_principal_id:
+    description: Databricks App's service principal (used for CAN_MANAGE_RUN on app-triggered jobs)
+    default: "452a9d33-f698-4124-b573-912c6fe6e929"
+  genie_space_id:
+    description: AI/BI Genie space over the Modelling Mart
+    default: "01f134e996251f40bf521eac22ad10f1"
+  genie_quote_space_id:
+    description: AI/BI Genie space over the quote stream
+    default: "01f13e30dcd418ae88295599f23780b8"
 
-workspace:
-  host: https://fevm-lr-serverless-aws-us.cloud.databricks.com
-  profile: DEFAULT
+# Default target points at PROD only as a hard guard — explicitly pass
+# `--target dev` for any work-in-progress deploy. Prod is the live demo
+# environment; touch it only on cut releases.
+targets:
+  prod:
+    mode: production
+    default: true
+    workspace:
+      host: https://fevm-lr-serverless-aws-us.cloud.databricks.com
+      profile: DEFAULT
+    variables:
+      catalog_name:        lr_serverless_aws_us_catalog
+      warehouse_id:        "ab79eced8207d29b"
+      app_service_principal_id: "452a9d33-f698-4124-b573-912c6fe6e929"
+      genie_space_id:        "01f134e996251f40bf521eac22ad10f1"
+      genie_quote_space_id:  "01f13e30dcd418ae88295599f23780b8"
+
+  dev:
+    mode: development
+    workspace:
+      host: https://fevm-lr-dev-aws-us.cloud.databricks.com
+      profile: DEV
+    variables:
+      catalog_name:        lr_dev_aws_us_catalog
+      warehouse_id:        "a3b61648ea4809e3"
+      # App SP captured on first dev app creation (2026-05-07).
+      app_service_principal_id: "63890164-4191-4196-9682-5248098a59c5"
+      # Genie spaces don't exist in dev yet — leave blank so the UI hides them.
+      genie_space_id:       ""
+      genie_quote_space_id: ""
 
 sync:
   exclude:
@@ -26,14 +65,6 @@ sync:
     - docs/
     - "*.bak"
     - data/
-
-targets:
-  dev:
-    mode: development
-    default: true
-
-  prod:
-    mode: production
 
 include:
   - resources/*.yml

@@ -508,7 +508,7 @@ for t in ("quotes", "quote_payload_sales", "quote_payload_engine_request", "quot
         ALTER TABLE {fqn}.{t} SET TAGS (
             'business_line' = 'commercial_property',
             'pricing_domain' = 'quote_stream',
-            'refresh_cadence' = 'streaming_simulated',
+            'refresh_cadence' = 'realtime',
             'demo_environment' = 'true'
         )
     """)

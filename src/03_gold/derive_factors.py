@@ -308,7 +308,7 @@ for col_name, comment in column_comments.items():
 tags = {
     "factor_domain":      "real_uk_public_data",
     "factor_author":      "actuarial_pricing_team",
-    "refresh_cadence":    "on_demand",
+    "refresh_cadence":    "manual",
     "demo_environment":   "true",
 }
 tag_sql = ", ".join(f"'{k}' = '{v}'" for k, v in tags.items())

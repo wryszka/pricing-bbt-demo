@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   Rocket, ExternalLink, Loader2, Undo2, ChevronDown, ChevronRight,
-  FileCheck2, ShieldCheck, Server, AlertCircle, Zap,
+  FileCheck2, ShieldCheck, Server, AlertCircle, Zap, Clock, Database,
 } from 'lucide-react';
 import { api } from '../lib/api';
 
@@ -216,6 +216,9 @@ function ProductionModels() {
           </table>
         )}
       </div>
+
+      {/* Serving SLO tiles — what the rating engine sees at quote time */}
+      <ServingSLOs />
 
       {/* Live endpoint metrics — placeholder stream, simulated client-side */}
       {families.length > 0 && <LiveEndpointMetrics families={families} />}
@@ -726,4 +729,43 @@ function eventColor(t: string): string {
   if (t === 'model_promoted') return 'bg-emerald-100 text-emerald-700';
   if (t === 'governance_pack_generated') return 'bg-blue-100 text-blue-700';
   return 'bg-gray-100 text-gray-600';
+}
+
+// ---------------------------------------------------------------------------
+// Serving SLOs — what the rating engine sees at quote time
+// ---------------------------------------------------------------------------
+
+function ServingSLOs() {
+  const tiles = [
+    { icon: <Clock    className="w-4 h-4 text-emerald-600" />, label: 'Feature lookup p50',    value: '38 ms',  sub: 'online feature store',     tone: 'emerald' as const },
+    { icon: <Clock    className="w-4 h-4 text-emerald-600" />, label: 'Feature lookup p99',    value: '92 ms',  sub: 'sub-100ms target',         tone: 'emerald' as const },
+    { icon: <Database className="w-4 h-4 text-blue-600" />,    label: 'Features tested',       value: '3.0 M',  sub: 'across all candidates',    tone: 'blue'    as const },
+    { icon: <Zap      className="w-4 h-4 text-purple-600" />,  label: 'End-to-end quote',      value: '<500 ms',sub: '4 models + factor build-up', tone: 'purple'  as const },
+  ];
+  return (
+    <section className="mt-5 mb-5 bg-white border border-gray-200 rounded-lg p-4">
+      <div className="flex items-baseline justify-between mb-3">
+        <h3 className="text-sm font-semibold text-gray-900">Serving SLOs</h3>
+        <span className="text-[11px] text-gray-500 italic">
+          what the rating engine sees at quote time
+        </span>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {tiles.map(t => (
+          <div key={t.label} className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5">
+            <div className="flex items-center gap-1.5 mb-1">{t.icon}
+              <span className="text-[11px] uppercase tracking-wider text-gray-600 font-semibold">{t.label}</span>
+            </div>
+            <div className="text-2xl font-bold text-gray-900 leading-tight">{t.value}</div>
+            <div className="text-[11px] text-gray-500">{t.sub}</div>
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 text-[11px] text-gray-500 italic">
+        Targets representative of a Mosaic AI Model Serving + Online Feature Store deployment. Real
+        numbers populate when the endpoint receives production traffic — an Inference Table records
+        every request, latency, and feature snapshot for governance.
+      </div>
+    </section>
+  );
 }
