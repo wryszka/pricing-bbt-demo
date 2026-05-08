@@ -76,6 +76,10 @@ results: list[tuple[float, float, int]] = []  # (ts, latency_ms, status_code)
 
 async def _one(client: httpx.AsyncClient, pid: str):
     async with sem:
+        # Bucket by request fire time, not completion time — keeps the QPS
+        # curve aligned with target_qps and stops drain-phase responses
+        # piling into the final 1-2s wall-clock buckets.
+        request_ts = time.time()
         t0 = time.perf_counter()
         try:
             r = await client.post(url,
@@ -84,10 +88,10 @@ async def _one(client: httpx.AsyncClient, pid: str):
                 timeout=15.0,
             )
             dt = (time.perf_counter() - t0) * 1000.0
-            results.append((time.time(), dt, r.status_code))
+            results.append((request_ts, dt, r.status_code))
         except Exception:
             dt = (time.perf_counter() - t0) * 1000.0
-            results.append((time.time(), dt, 0))
+            results.append((request_ts, dt, 0))
 
 async def _run():
     period = 1.0 / target_qps
@@ -115,14 +119,18 @@ async def _run():
             await asyncio.wait(tasks, timeout=30.0)
     return n_fired
 
+test_start_wall = time.time()
 n_fired = asyncio.run(_run())
+test_end_wall = test_start_wall + duration_s
 print(f"fired {n_fired} requests, captured {len(results)} responses")
 
 # COMMAND ----------
 
-# Aggregate per-second so the chart writes are cheap.
+# Aggregate per-second, dropping anything outside the nominal test window.
 buckets: dict[int, list[tuple[float, int]]] = {}
 for ts, dt, status in results:
+    if ts < test_start_wall or ts > test_end_wall:
+        continue
     sec = int(ts)
     buckets.setdefault(sec, []).append((dt, status))
 
