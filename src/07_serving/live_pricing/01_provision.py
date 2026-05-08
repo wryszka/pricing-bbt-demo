@@ -57,12 +57,14 @@ from databricks.sdk.service.ml import (
 from databricks.sdk.service.serving import (
     EndpointCoreConfigInput, ServedEntityInput,
 )
+from databricks.feature_engineering import FeatureEngineeringClient
 from mlflow.tracking import MlflowClient
 import mlflow
 
 mlflow.set_registry_uri("databricks-uc")
 w  = WorkspaceClient()
 mc = MlflowClient()
+fe = FeatureEngineeringClient()
 
 # COMMAND ----------
 
@@ -102,6 +104,24 @@ else:
 # COMMAND ----------
 
 print(f"publishing {upt_table} → {online_store} (CONTINUOUS)…")
+
+# publish_table requires the source to be registered as an FE feature table.
+# UPT already has a PK (build_upt.py) but needs explicit fe.create_table to
+# satisfy the online publish API. Idempotent — get_table tells us if it's
+# already registered.
+try:
+    fe.get_table(name=upt_table)
+    print(f"FE table already registered: {upt_table}")
+except Exception:
+    print(f"registering {upt_table} as FE table…")
+    fe.create_table(
+        name         = upt_table,
+        primary_keys = "policy_id",
+        df           = spark.table(upt_table),
+        description  = "Unified Pricing Table — feature table for live pricing FeatureLookup.",
+    )
+    print(f"registered: {upt_table}")
+
 try:
     result = w.feature_store.publish_table(
         source_table_name=upt_table,
