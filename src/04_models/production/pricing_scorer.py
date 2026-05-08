@@ -207,18 +207,25 @@ class PricingScorer(PythonModel):
         self.fraud  = mlflow.lightgbm.load_model(context.artifacts["fraud_gbm"])
 
     def _prep(self, df):
-        # Match the freq_glm / sev_glm training-time _prep_raw: object cols
-        # get '(null)' filling, numeric cols get NaN → 0.0 + float dtype.
-        # Without coercing numerics, FE-returned object-dtype columns
-        # (eg. decimal types, mixed-type cols with NULLs) fall through to
-        # the GLM wrapper's astype(float) and crash on '(null)' strings.
+        # FE returns columns with whatever dtype Lakebase preserved (Int64,
+        # Arrow string, decimal, etc.). The downstream GLM wrapper does
+        # `if dtype == "object"` which MISSES Int64/StringDtype and falls
+        # through to astype(float) — crashing on '(null)' for nulls. Strictly
+        # normalize so what we hand the wrapper is either plain object-str
+        # (with '(null)' filling) or plain float64 (with NaN→0.0).
         import pandas as pd
         out = df.copy()
         for c in out.columns:
-            if out[c].dtype == "object":
-                out[c] = out[c].astype(str).where(out[c].notna(), "(null)")
+            s = out[c]
+            kind = getattr(s.dtype, "kind", "")
+            if kind in ("i", "u", "f"):
+                out[c] = pd.to_numeric(s, errors="coerce").fillna(0.0).astype(float)
+            elif kind == "b":
+                out[c] = s.fillna(False).astype(int).astype(float)
             else:
-                out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0.0).astype(float)
+                # object / category / string / Arrow string / decimal: stringify
+                # then replace original-NaN positions with '(null)'.
+                out[c] = s.astype(str).where(s.notna(), "(null)").astype(object)
         return out
 
     def _pad_for_categoricals(self, df):
