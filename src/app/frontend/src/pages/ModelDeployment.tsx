@@ -975,7 +975,17 @@ function LoadTest() {
         const r = await api.livePricingLoadTestMetrics(params);
         if (cancelled) return;
         setTableReady(r.table_ready !== false);
-        const newRows: LoadTestRow[] = (r.rows || []) as LoadTestRow[];
+        // Warehouse returns all values as strings — coerce numerics so .toFixed
+        // and arithmetic in the chart code don't crash the render.
+        const newRows: LoadTestRow[] = (r.rows || []).map((raw: any) => ({
+          ts:        String(raw.ts ?? ''),
+          run_id:    String(raw.run_id ?? ''),
+          qps:       Number(raw.qps) || 0,
+          p50_ms:    Number(raw.p50_ms) || 0,
+          p95_ms:    Number(raw.p95_ms) || 0,
+          p99_ms:    Number(raw.p99_ms) || 0,
+          error_pct: Number(raw.error_pct) || 0,
+        }));
         if (newRows.length > 0) {
           setRows(prev => {
             // Append only rows newer than the last known timestamp.
