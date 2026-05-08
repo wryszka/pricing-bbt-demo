@@ -129,6 +129,7 @@ resources:
             client: "5"
             dependencies:
               - httpx
+              - nest_asyncio
               - databricks-sdk
 
     live_pricing_realtime_feature_refresh:

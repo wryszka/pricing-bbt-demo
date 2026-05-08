@@ -22,15 +22,19 @@ dbutils.widgets.text("run_id",           "")
 
 # COMMAND ----------
 
-# MAGIC %pip install httpx databricks-sdk --quiet
+# MAGIC %pip install httpx databricks-sdk nest_asyncio --quiet
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
 
 import asyncio, json, time, uuid, statistics
 from datetime import datetime, timezone
-import httpx
+import httpx, nest_asyncio
 from databricks.sdk import WorkspaceClient
+
+# Databricks notebooks run inside an existing IPython event loop, so plain
+# asyncio.run() raises 'cannot be called from a running event loop'.
+nest_asyncio.apply()
 
 catalog       = dbutils.widgets.get("catalog_name")
 schema        = dbutils.widgets.get("schema_name")
