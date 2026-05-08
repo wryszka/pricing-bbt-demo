@@ -26,6 +26,12 @@ variables:
   genie_quote_space_id:
     description: AI/BI Genie space over the quote stream
     default: "01f13e30dcd418ae88295599f23780b8"
+  live_online_store_name:
+    description: Lakebase online store backing the Live Pricing System (provisioned and torn down on demand)
+    default: "pricing-upt-online-store-live"
+  live_endpoint_name:
+    description: Model Serving endpoint name for the unified pricing scorer (live + production share one endpoint)
+    default: "pricing_scorer"
 
 # Default target points at PROD only as a hard guard — explicitly pass
 # `--target dev` for any work-in-progress deploy. Prod is the live demo
