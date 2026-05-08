@@ -112,28 +112,29 @@ except Exception:
                     df=spark.table(upt_table),
                     description="UPT for live pricing FeatureLookup.")
 
-# 1c. Publish UPT to Lakebase, SNAPSHOT mode. Idempotent: if it's already
-# published, w.feature_store calls return the existing pipeline; we read it
-# back and capture the pipeline_id so the claim endpoint can trigger updates.
+# 1c. Publish UPT to Lakebase, SNAPSHOT mode.
+# Important: online_table_name MUST differ from the source table name —
+# publish_table rejects "table X is not a valid online feature table" when
+# both names match (an undocumented constraint we surfaced via the diag run).
+# Use the same schema with an `_online` suffix.
+online_table_name = f"{upt_table}_online"
 publish_pipeline_id = None
 try:
     res = w.feature_store.publish_table(
         source_table_name = upt_table,
         publish_spec      = PublishSpec(
             online_store      = online_store,
-            online_table_name = upt_table,
+            online_table_name = online_table_name,
             publish_mode      = PublishSpecPublishMode.SNAPSHOT,
         ),
     )
     publish_pipeline_id = getattr(res, "pipeline_id", None)
-    print(f"publish_table OK (SNAPSHOT) pipeline_id={publish_pipeline_id}")
+    print(f"publish_table OK (SNAPSHOT) → {online_table_name}  pipeline_id={publish_pipeline_id}")
 except Exception as e:
     if "already published" in str(e).lower() or "already exists" in str(e).lower():
         print("already published — fetching existing pipeline_id")
-        # No direct list method on feature_store; fall back to scanning
-        # pipelines for one whose name references our online table.
         for p in w.pipelines.list_pipelines():
-            if p.name and upt_table in p.name:
+            if p.name and online_table_name in p.name:
                 publish_pipeline_id = p.pipeline_id
                 break
         print(f"  resolved pipeline_id={publish_pipeline_id}")
