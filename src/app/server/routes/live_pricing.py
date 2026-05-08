@@ -50,7 +50,7 @@ router = APIRouter(prefix="/api/live-pricing", tags=["live-pricing"])
 
 ENDPOINT_NAME       = "pricing_scorer"
 ONLINE_STORE_NAME   = "pricing-upt-online-store-live"
-PROVISION_JOB_NAME  = "v1 — Live pricing: provision (online store + endpoint + warm-up)"
+PROVISION_JOB_NAME  = "v1 — Live pricing: provision (endpoint + warm-up)"
 TEARDOWN_JOB_NAME   = "v1 — Live pricing: teardown (delete endpoint + online store)"
 LOAD_TEST_JOB_NAME  = "v1 — Live pricing: load test (sustained QPS against scorer)"
 REFRESH_JOB_NAME    = "v1 — Live pricing: file claim + refresh UPT"
@@ -63,14 +63,16 @@ def _find_job_by_name(name: str) -> int | None:
     try:
         for j in w.jobs.list(name=name, limit=25):
             return j.job_id
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("jobs.list(name=...) failed: %s", str(e)[:200])
     try:
         for j in w.jobs.list(limit=200):
-            if (j.settings.name or "").endswith(name):
+            settings = getattr(j, "settings", None)
+            jname = getattr(settings, "name", None) if settings else None
+            if jname and jname.endswith(name):
                 return j.job_id
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("jobs.list() iter failed: %s", str(e)[:200])
     return None
 
 
