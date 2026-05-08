@@ -1,33 +1,37 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Pricing Scorer — unified live pricing endpoint with FeatureLookup
+# MAGIC # Pricing Scorer — unified live pricing endpoint
 # MAGIC
 # MAGIC One Model Serving endpoint (`pricing_scorer`) that takes a `policy_id`
 # MAGIC and returns the final premium plus all intermediate predictions and
 # MAGIC rating-engine components in a single round-trip.
 # MAGIC
-# MAGIC Logged with `fe.log_model(flavor=mlflow.pyfunc)` so feature resolution
-# MAGIC against `unified_pricing_table_live` happens automatically at serving
-# MAGIC time (online store at request time, offline at training/test time).
-# MAGIC The pyfunc wraps the 4 current champions and applies the business
-# MAGIC rules from the rating-engine champion config — both baked at log time.
+# MAGIC Logged with `mlflow.pyfunc.log_model`. At request time the pyfunc
+# MAGIC resolves features by issuing a single SQL warehouse query against
+# MAGIC `unified_pricing_table_live` — no Lakebase / online-store dependency.
+# MAGIC Lookup latency is dominated by warehouse roundtrip (~50-150ms per
+# MAGIC request) which is fine for the demo and avoids the publish_table
+# MAGIC quirks observed on dev workspaces.
+# MAGIC
+# MAGIC The pyfunc bundles the 4 current champions and applies the rating-
+# MAGIC engine business rules — both baked at log time.
 # MAGIC
 # MAGIC Re-run this notebook whenever ANY of these flips:
 # MAGIC  * a champion alias on freq_glm / sev_glm / demand_gbm / fraud_gbm
 # MAGIC  * the rating_engine_config champion row
 # MAGIC
-# MAGIC The same endpoint is used for live demo and for production scoring.
+# MAGIC The same endpoint serves both the live demo and production.
 
 # COMMAND ----------
 
 dbutils.widgets.text("catalog_name",  "lr_serverless_aws_us_catalog")
 dbutils.widgets.text("schema_name",   "pricing_upt")
 dbutils.widgets.text("endpoint_name", "pricing_scorer")
+dbutils.widgets.text("warehouse_id",  "ab79eced8207d29b")
 
 # COMMAND ----------
 
-# MAGIC %pip install mlflow databricks-feature-engineering databricks-sdk \
-# MAGIC   statsmodels lightgbm scikit-learn --quiet
+# MAGIC %pip install mlflow databricks-sdk statsmodels lightgbm scikit-learn --quiet
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
@@ -35,6 +39,7 @@ dbutils.widgets.text("endpoint_name", "pricing_scorer")
 catalog        = dbutils.widgets.get("catalog_name")
 schema         = dbutils.widgets.get("schema_name")
 endpoint_name  = dbutils.widgets.get("endpoint_name")
+warehouse_id   = dbutils.widgets.get("warehouse_id")
 fqn            = f"{catalog}.{schema}"
 scorer_uc_name = f"{fqn}.pricing_scorer"
 
@@ -46,12 +51,8 @@ from mlflow.models import ModelSignature
 from mlflow.types.schema import Schema, ColSpec
 from mlflow.tracking import MlflowClient
 from mlflow.artifacts import download_artifacts
-from databricks.feature_engineering import FeatureEngineeringClient, FeatureLookup
-import pyspark.sql.functions as F
-
 mlflow.set_registry_uri("databricks-uc")
 client = MlflowClient()
-fe     = FeatureEngineeringClient()
 
 FAMILIES = ("freq_glm", "sev_glm", "demand_gbm", "fraud_gbm")
 
@@ -96,7 +97,7 @@ print("Rating engine config baked at log time:", RATING_CFG)
 # MAGIC %md
 # MAGIC ## Pull inner artefacts from each champion
 # MAGIC
-# MAGIC Each champion is itself an `fe.log_model` wrapper around a sklearn /
+# MAGIC Each champion is an FE-wrapped sklearn /
 # MAGIC LightGBM artefact. The unified scorer only needs the inner raw flavor
 # MAGIC (the wrapper does its own FeatureLookup and we already have features
 # MAGIC at predict time). `_pull_raw_flavor` walks the artifact tree and
@@ -121,10 +122,17 @@ print("Inner artefacts:")
 for k, v in artifact_paths.items():
     print(f"  {k}: {v}")
 
-# Bake champions + rating config into a single JSON artefact loaded in load_context.
+# Bake champions + rating config + lookup-table coordinates into a single JSON
+# artefact loaded in load_context. The pyfunc resolves features at request
+# time via SQL warehouse — no Lakebase / online-table dependency required.
 cfg_path = f"{tempfile.mkdtemp()}/config.json"
 with open(cfg_path, "w") as fh:
-    json.dump({"champions": CHAMPIONS, "rating_engine_config": RATING_CFG}, fh)
+    json.dump({
+        "champions":            CHAMPIONS,
+        "rating_engine_config": RATING_CFG,
+        "warehouse_id":         warehouse_id,
+        "upt_table":            f"{fqn}.unified_pricing_table_live",
+    }, fh)
 artifact_paths["config"] = cfg_path
 
 # COMMAND ----------
@@ -166,14 +174,9 @@ FRAUD_FEATURES = [
     "employee_count_est", "claim_count_5y", "total_incurred_5y",
     "open_claims_count", "distinct_perils",
 ]
-# Extra UPT cols used to synthesize quote-level inputs for the demand model.
-DEMAND_PROXY_FEATURES = [
-    "region", "rate_per_1k_si", "market_position_ratio", "market_median_rate",
-]
-UNION_FEATURES = sorted(set(
-    FREQ_FEATURES + SEV_FEATURES + FRAUD_FEATURES + DEMAND_PROXY_FEATURES
-))
-print(f"FeatureLookup union: {len(UNION_FEATURES)} columns")
+# Predict-time SQL fetches all UPT cols (cheaper than projecting a tight
+# subset and keeping the projection in sync as features evolve). Sub-models
+# slice only the columns they need via _prep_raw / feature_name() lookups.
 
 # COMMAND ----------
 
@@ -194,12 +197,46 @@ class PricingScorer(PythonModel):
         import mlflow.sklearn, mlflow.lightgbm
         with open(context.artifacts["config"]) as fh:
             payload = _j.load(fh)
-        self.champions  = payload["champions"]
-        self.rating_cfg = payload["rating_engine_config"]
+        self.champions    = payload["champions"]
+        self.rating_cfg   = payload["rating_engine_config"]
+        self.warehouse_id = payload["warehouse_id"]
+        self.upt_table    = payload["upt_table"]
         self.freq   = mlflow.sklearn.load_model(context.artifacts["freq_glm"])
         self.sev    = mlflow.sklearn.load_model(context.artifacts["sev_glm"])
         self.demand = mlflow.lightgbm.load_model(context.artifacts["demand_gbm"])
         self.fraud  = mlflow.lightgbm.load_model(context.artifacts["fraud_gbm"])
+        # Lazy SDK init — defer until first predict so cold-start is faster.
+        self._w = None
+
+    def _lookup_features(self, policy_ids):
+        """Resolve UPT features for a list of policy_ids via SQL warehouse.
+        Latency is dominated by warehouse roundtrip — typically 50-150ms for
+        a single-row lookup. Returns a pandas DataFrame keyed on policy_id."""
+        import pandas as pd
+        from databricks.sdk import WorkspaceClient
+        if self._w is None:
+            self._w = WorkspaceClient()
+        ids = ",".join(f"'{p.replace(chr(39), chr(39)+chr(39))}'" for p in policy_ids)
+        sql = f"SELECT * FROM {self.upt_table} WHERE policy_id IN ({ids})"
+        resp = self._w.statement_execution.execute_statement(
+            warehouse_id = self.warehouse_id,
+            statement    = sql,
+            wait_timeout = "30s",
+        )
+        result = resp.result
+        cols   = [c.name for c in (resp.manifest.schema.columns or [])]
+        rows   = list(result.data_array or [])
+        if not rows:
+            return pd.DataFrame(columns=cols)
+        df = pd.DataFrame(rows, columns=cols)
+        # All values come back as strings — coerce numerics so the GLM/GBM
+        # wrappers see the right dtypes.
+        for c in df.columns:
+            if c == "policy_id":
+                continue
+            converted = pd.to_numeric(df[c], errors="coerce")
+            df[c] = converted if converted.notna().any() else df[c]
+        return df
 
     def _prep(self, df):
         out = df.copy()
@@ -316,16 +353,23 @@ class PricingScorer(PythonModel):
 
     def predict(self, context, model_input, params=None):
         import pandas as pd, numpy as np
-        # FE wrapper has already resolved features. model_input has policy_id +
-        # all UNION_FEATURES cols. Sub-models pull their own subset internally
-        # via _prep_raw / feature_name() lookups.
+        # Input shape: a DataFrame (or list-of-dicts) with a policy_id column.
+        # Resolve features from UPT via SQL warehouse — no online-store
+        # dependency, works on any workspace with the warehouse + grants set.
         if not hasattr(model_input, "columns"):
             model_input = pd.DataFrame(list(model_input))
+        policy_ids = [str(p).strip().upper() for p in model_input["policy_id"].tolist()]
+        features_df = self._lookup_features(policy_ids)
 
-        freq   = self._score_glm(self.freq,   model_input)
-        sev    = self._score_glm(self.sev,    model_input)
-        fraud  = self._score_lgb(self.fraud,  model_input)
-        demand = self._score_lgb(self.demand, self._build_demand_input(model_input))
+        # Preserve request order — the warehouse may return rows in any order.
+        idx = pd.Index(features_df["policy_id"].astype(str)) if "policy_id" in features_df.columns else None
+        if idx is not None:
+            features_df = features_df.set_index("policy_id").reindex(policy_ids).reset_index()
+
+        freq   = self._score_glm(self.freq,   features_df)
+        sev    = self._score_glm(self.sev,    features_df)
+        fraud  = self._score_lgb(self.fraud,  features_df)
+        demand = self._score_lgb(self.demand, self._build_demand_input(features_df))
 
         technical, loaded, fraud_load, demand_adj, final = self._apply_rules(
             freq, sev, demand, fraud)
@@ -349,36 +393,6 @@ class PricingScorer(PythonModel):
 
 
 # COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Capture FeatureLookup spec via a tiny training_set
-# MAGIC
-# MAGIC `fe.log_model` requires a `training_set` to capture the FeatureLookup
-# MAGIC metadata that drives serving-time resolution. We don't actually train
-# MAGIC anything here — labels are dummy. The FE wrapper uses the spec to:
-# MAGIC  * look features up offline at `mlflow.pyfunc.load_model` test time
-# MAGIC  * look features up via online store at serving time
-
-# COMMAND ----------
-
-KEY = "policy_id"
-
-labels_df = (
-    spark.table(f"{fqn}.unified_pricing_table_live")
-         .select(KEY).limit(50)
-         .withColumn("_dummy_label", F.lit(0.0))
-)
-
-training_set = fe.create_training_set(
-    df              = labels_df,
-    feature_lookups = [FeatureLookup(
-        table_name    = f"{fqn}.unified_pricing_table_live",
-        feature_names = UNION_FEATURES,
-        lookup_key    = KEY,
-    )],
-    label           = "_dummy_label",
-    exclude_columns = [KEY],
-)
 
 # COMMAND ----------
 
@@ -410,17 +424,15 @@ input_example = pd.DataFrame({"policy_id": sample_pids})
 # COMMAND ----------
 
 with mlflow.start_run(run_name="pricing_scorer_deploy") as run:
-    fe.log_model(
-        model                 = PricingScorer(),
+    mlflow.pyfunc.log_model(
         artifact_path         = "scorer",
-        flavor                = mlflow.pyfunc,
-        training_set          = training_set,
+        python_model          = PricingScorer(),
         registered_model_name = scorer_uc_name,
         artifacts             = artifact_paths,
         input_example         = input_example,
         signature             = signature,
         pip_requirements=[
-            "mlflow>=2.12", "databricks-feature-engineering",
+            "mlflow>=2.12", "databricks-sdk",
             "scikit-learn", "lightgbm", "statsmodels",
             "pandas", "numpy", "databricks-sdk",
         ],

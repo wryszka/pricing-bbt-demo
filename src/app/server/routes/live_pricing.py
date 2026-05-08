@@ -100,6 +100,7 @@ async def status() -> dict:
                     "error": str(e)[:200]}
 
     def _online_store_state() -> dict:
+        # Optional — only used when use_online_store=true was passed at provision.
         try:
             w = get_workspace_client()
             store = w.feature_store.get_online_store(ONLINE_STORE_NAME)
@@ -107,24 +108,26 @@ async def status() -> dict:
                     "name":    ONLINE_STORE_NAME,
                     "state":   str(getattr(store, "state", "")).split(".")[-1],
                     "capacity": str(getattr(store, "capacity", ""))}
-        except Exception as e:
+        except Exception:
             return {"present": False, "name": ONLINE_STORE_NAME,
-                    "error": str(e)[:200]}
+                    "note": "warehouse-backed lookup (no online store provisioned)"}
 
     ep_state, store_state = await asyncio.gather(
         asyncio.to_thread(_endpoint_state),
         asyncio.to_thread(_online_store_state),
     )
 
+    # The scorer uses warehouse-backed feature lookup by default — endpoint
+    # readiness alone is enough to call the system 'on'. Online store, when
+    # present, is just an extra surface for status display.
     endpoint_ready = ep_state["present"] and ep_state.get("ready") == "READY" and \
                      (ep_state.get("config_update") in (None, "", "NOT_UPDATING"))
-    store_ready    = store_state["present"] and (store_state.get("state") or "") == "AVAILABLE"
 
-    if endpoint_ready and store_ready:
+    if endpoint_ready:
         state = "on"
     elif ep_state.get("config_update") == "UPDATE_FAILED":
         state = "error"
-    elif ep_state["present"] or store_state["present"]:
+    elif ep_state["present"]:
         state = "starting"
     else:
         state = "off"
