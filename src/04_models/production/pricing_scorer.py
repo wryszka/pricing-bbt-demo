@@ -423,6 +423,16 @@ input_example = pd.DataFrame({"policy_id": sample_pids})
 
 # COMMAND ----------
 
+# Declare the resources the pyfunc reaches at request time. Model Serving
+# uses this to (a) check the model owner has access at deploy time, and
+# (b) auto-inject DATABRICKS_HOST + DATABRICKS_TOKEN env vars scoped to
+# those resources at request time so the SDK's default auth chain works.
+from mlflow.models.resources import DatabricksSQLWarehouse, DatabricksTable
+resources = [
+    DatabricksSQLWarehouse(warehouse_id=warehouse_id),
+    DatabricksTable(table_name=f"{fqn}.unified_pricing_table_live"),
+]
+
 with mlflow.start_run(run_name="pricing_scorer_deploy") as run:
     mlflow.pyfunc.log_model(
         artifact_path         = "scorer",
@@ -431,6 +441,7 @@ with mlflow.start_run(run_name="pricing_scorer_deploy") as run:
         artifacts             = artifact_paths,
         input_example         = input_example,
         signature             = signature,
+        resources             = resources,
         pip_requirements=[
             "mlflow>=2.12", "databricks-sdk",
             "scikit-learn", "lightgbm", "statsmodels",
