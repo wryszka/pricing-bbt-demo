@@ -477,9 +477,7 @@ except Exception as e:
 print(f"Deploying {scorer_uc_name} v{latest} → endpoint '{endpoint_name}'")
 
 from databricks.sdk import WorkspaceClient
-from databricks.sdk.service.serving import (
-    EndpointCoreConfigInput, ServedEntityInput, RouteOptimizedConfig,
-)
+from databricks.sdk.service.serving import EndpointCoreConfigInput, ServedEntityInput
 
 w = WorkspaceClient()
 served = [ServedEntityInput(
