@@ -247,7 +247,17 @@ class PricingScorer(PythonModel):
     def _score_glm(self, wrapper, df):
         import numpy as np
         padded, n_real = self._pad_for_categoricals(self._prep(df))
-        all_preds = np.asarray(wrapper.predict(padded), dtype=float).ravel()
+        try:
+            all_preds = np.asarray(wrapper.predict(padded), dtype=float).ravel()
+        except Exception as e:
+            # Surface the actual dtype map of the dataframe we passed in so the
+            # error message tells us which column caused the wrapper's astype
+            # to fail. Without this, the trace just says ValueError: '(null)'
+            # with no column hint.
+            cols = {c: str(padded[c].dtype) for c in padded.columns}
+            sample = {c: padded[c].head(1).tolist() for c in padded.columns}
+            raise RuntimeError(f"GLM predict failed: {e}\n"
+                                f"dtypes: {cols}\nsample: {sample}") from e
         return all_preds[:n_real]
 
     def _score_lgb(self, booster, df):
