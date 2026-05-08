@@ -317,11 +317,13 @@ def _num(v, default=0.0):
 # Serving-endpoint scoring — the live pricing runtime
 # ---------------------------------------------------------------------------
 
-async def _score_via_endpoint(features: dict) -> dict | None:
-    """Call the unified `pricing_scorer` Model Serving endpoint. Returns
-    {freq_pred, sev_pred, demand_pred, fraud_pred, *_version} for this
-    feature row, or None if the endpoint is unavailable (so the caller
-    can fall back to a clear "offline" response)."""
+async def _score_via_endpoint(policy_id: str) -> dict | None:
+    """Call the unified `pricing_scorer` Model Serving endpoint with a
+    policy_id. The endpoint resolves features against UPT (online store at
+    serving time), runs the 4 champions and applies the baked rating-engine
+    business rules — returning final_premium plus every intermediate value.
+    Returns None if the endpoint is unavailable so the caller can show a
+    clear 'offline' response."""
     import asyncio, requests as _rq
     from server.config import get_workspace_client
 
@@ -333,7 +335,7 @@ async def _score_via_endpoint(features: dict) -> dict | None:
             resp = _rq.post(
                 f"{host}/serving-endpoints/{SCORER_ENDPOINT}/invocations",
                 headers={**token, "Content-Type": "application/json"},
-                json={"dataframe_records": [{"features": json.dumps(features)}]},
+                json={"dataframe_records": [{"policy_id": policy_id}]},
                 timeout=120,
             )
             resp.raise_for_status()
@@ -575,15 +577,17 @@ def _apply_rating_engine(cfg: dict, freq, sev, fraud, demand) -> dict:
 
 class QuoteRunRequest(BaseModel):
     features: dict[str, Any]
+    policy_id: str | None = None
     model_versions: dict[str, list[str]] | None = None
     rating_engine_version: str | None = None
     label: str | None = None
 
 
-async def _run_quote(features: dict, versions: dict[str, list[str]], cfg: dict) -> list[dict]:
-    """Champion combos go through the live `pricing_scorer` endpoint.
-    Non-champion (historical) combos return a `needs_batch` marker with a
-    pointer to Compare & Test — those cost a batch job to score."""
+async def _run_quote(features: dict, policy_id: str | None,
+                     versions: dict[str, list[str]], cfg: dict) -> list[dict]:
+    """Champion combos go through the live `pricing_scorer` endpoint, which
+    needs a policy_id to look up features against UPT. Non-champion combos
+    return a `needs_batch` marker — those cost a batch job to score."""
     import itertools
 
     champions = {fam: _resolve_alias_to_version(fam, "champion") for fam in FAMILIES}
@@ -596,10 +600,13 @@ async def _run_quote(features: dict, versions: dict[str, list[str]], cfg: dict) 
         vs = (versions or {}).get(fam) or []
         resolved[fam] = vs or [champions[fam]]
 
-    # Always score champion-champion-champion-champion once — single endpoint call
+    # Endpoint needs a policy_id (FeatureLookup key). The Quote Runner usually
+    # has one — fall back to features["policy_id"] if the caller didn't pass it.
+    pid = (policy_id or features.get("policy_id") or "").strip().upper() or None
+
     champion_row = None
-    if all(champions[f] in resolved[f] for f in FAMILIES):
-        champion_row = await _score_via_endpoint(features)
+    if pid and all(champions[f] in resolved[f] for f in FAMILIES):
+        champion_row = await _score_via_endpoint(pid)
 
     out = []
     for vf, vs_, vd, vfr in itertools.product(
@@ -615,6 +622,31 @@ async def _run_quote(features: dict, versions: dict[str, list[str]], cfg: dict) 
                 sev    = _num(champion_row.get("sev_pred"))
                 demand = _num(champion_row.get("demand_pred"))
                 fraud  = _num(champion_row.get("fraud_pred"))
+                # The endpoint has already applied rules with its baked rating
+                # engine config. If the caller asked for a different rating
+                # engine version, recompute against `cfg` instead — same freq /
+                # sev / demand / fraud predictions, different rules.
+                endpoint_re = champion_row.get("rating_engine_version")
+                if endpoint_re and endpoint_re == cfg.get("version"):
+                    technical = _num(champion_row.get("technical_premium"))
+                    fraud_load = _num(champion_row.get("fraud_load"))
+                    demand_adj = _num(champion_row.get("demand_adj"))
+                    final_premium = _num(champion_row.get("final_premium"))
+                    base = float(freq) * float(sev)
+                    expense    = base * _num(cfg.get("expense_loading_pct"), 0) / 100.0
+                    commission = (base + expense) * _num(cfg.get("commission_bp"), 0) / 10_000.0
+                    price_buildup = {
+                        "base_premium":      round(base, 2),
+                        "fraud_loading":     round(fraud_load, 2),
+                        "demand_adj":        round(demand_adj, 2),
+                        "technical_premium": round(technical, 2),
+                        "expense_loading":   round(expense, 2),
+                        "commission":        round(commission, 2),
+                        "gross_premium":     round(final_premium, 2),
+                    }
+                else:
+                    price_buildup = _apply_rating_engine(cfg, freq, sev, fraud, demand)
+
                 out.append({
                     "model_versions": {"freq_glm": vf, "sev_glm": vs_,
                                         "demand_gbm": vd, "fraud_gbm": vfr},
@@ -624,8 +656,18 @@ async def _run_quote(features: dict, versions: dict[str, list[str]], cfg: dict) 
                         "demand_pred": round(demand, 6),
                         "fraud_pred":  round(fraud, 6),
                     },
-                    "price_buildup": _apply_rating_engine(cfg, freq, sev, fraud, demand),
+                    "price_buildup": price_buildup,
                     "source":        "live_endpoint",
+                })
+            elif not pid:
+                out.append({
+                    "model_versions": {"freq_glm": vf, "sev_glm": vs_,
+                                        "demand_gbm": vd, "fraud_gbm": vfr},
+                    "predictions":    None,
+                    "price_buildup":  None,
+                    "source":         "policy_id_required",
+                    "note":           (f"The {SCORER_ENDPOINT} endpoint needs a policy_id "
+                                        f"to resolve features. Pass `policy_id` in the request."),
                 })
             else:
                 out.append({
@@ -658,7 +700,7 @@ async def run_quote(req: QuoteRunRequest) -> dict:
         raise HTTPException(404, f"rating_engine_config version '{req.rating_engine_version}' not found")
     cfg = _coerce_config(cfg)
 
-    results = await _run_quote(req.features, req.model_versions or {}, cfg)
+    results = await _run_quote(req.features, req.policy_id, req.model_versions or {}, cfg)
 
     await log_audit_event(
         event_type="quote_run",
@@ -837,12 +879,21 @@ async def simulate_mta(req: MtaRequest) -> dict:
     after  = dict(policy)
     after.update(req.changes or {})
 
-    # Live-engine quote (current champion) — single source of truth
+    # Live-engine quote (current champion). With the FeatureLookup-based
+    # scorer the endpoint reads features from UPT by policy_id — the in-memory
+    # `after` modifications won't be reflected. We score `before` on the
+    # endpoint then apply a sum-insured-ratio heuristic to derive `after`,
+    # which captures the dominant linear effect of MTA changes (capacity,
+    # contents, liability) on technical premium.
     cfg = _coerce_config(await _current_config())
-    quotes_before = await _run_quote(before, {}, cfg)
-    quotes_after  = await _run_quote(after,  {}, cfg)
+    quotes_before = await _run_quote(before, policy_id, {}, cfg)
     q_before = quotes_before[0]
-    q_after  = quotes_after[0]
+
+    si_before = _num(before.get("sum_insured"))
+    si_after  = _num(after.get("sum_insured"))
+    mta_factor = (si_after / si_before) if si_before > 0 and si_after > 0 else 1.0
+    q_after = _apply_calibration(q_before, mta_factor)
+    quotes_after = [q_after]
 
     try:
         eff = date.fromisoformat(req.effective_date) if req.effective_date else date.today()

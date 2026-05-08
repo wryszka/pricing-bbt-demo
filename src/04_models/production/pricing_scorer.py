@@ -1,21 +1,22 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Pricing Scorer — unified serving endpoint for the 4 champions
+# MAGIC # Pricing Scorer — unified live pricing endpoint with FeatureLookup
 # MAGIC
-# MAGIC One pyfunc that wraps `freq_glm`, `sev_glm`, `demand_gbm`, `fraud_gbm`
-# MAGIC current champions. Deployed as a single Model Serving endpoint
-# MAGIC (`pricing_scorer`) — the live pricing runtime for the Pricing Engine
-# MAGIC tab.  Sub-second per-quote latency after warm start.
+# MAGIC One Model Serving endpoint (`pricing_scorer`) that takes a `policy_id`
+# MAGIC and returns the final premium plus all intermediate predictions and
+# MAGIC rating-engine components in a single round-trip.
 # MAGIC
-# MAGIC Why unified:
-# MAGIC  * single cold-start, one round-trip from the app
-# MAGIC  * one endpoint to grant + monitor + audit
-# MAGIC  * the app doesn't have to know about individual UC model versions
+# MAGIC Logged with `fe.log_model(flavor=mlflow.pyfunc)` so feature resolution
+# MAGIC against `unified_pricing_table_live` happens automatically at serving
+# MAGIC time (online store at request time, offline at training/test time).
+# MAGIC The pyfunc wraps the 4 current champions and applies the business
+# MAGIC rules from the rating-engine champion config — both baked at log time.
 # MAGIC
-# MAGIC Re-run this notebook whenever any champion alias flips — it bakes the
-# MAGIC current versions in at log time, then deploys as a new endpoint
-# MAGIC version.  Historical (non-champion) scoring stays on the Compare &
-# MAGIC Test batch job.
+# MAGIC Re-run this notebook whenever ANY of these flips:
+# MAGIC  * a champion alias on freq_glm / sev_glm / demand_gbm / fraud_gbm
+# MAGIC  * the rating_engine_config champion row
+# MAGIC
+# MAGIC The same endpoint is used for live demo and for production scoring.
 
 # COMMAND ----------
 
@@ -25,31 +26,35 @@ dbutils.widgets.text("endpoint_name", "pricing_scorer")
 
 # COMMAND ----------
 
-# MAGIC %pip install mlflow databricks-agents databricks-sdk statsmodels lightgbm scikit-learn --quiet
+# MAGIC %pip install mlflow databricks-feature-engineering databricks-sdk \
+# MAGIC   statsmodels lightgbm scikit-learn --quiet
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
 
-catalog       = dbutils.widgets.get("catalog_name")
-schema        = dbutils.widgets.get("schema_name")
-endpoint_name = dbutils.widgets.get("endpoint_name")
-fqn           = f"{catalog}.{schema}"
+catalog        = dbutils.widgets.get("catalog_name")
+schema         = dbutils.widgets.get("schema_name")
+endpoint_name  = dbutils.widgets.get("endpoint_name")
+fqn            = f"{catalog}.{schema}"
 scorer_uc_name = f"{fqn}.pricing_scorer"
 
-import json, os, tempfile
+import json, os, tempfile, shutil
+import pandas as pd
 import mlflow
 from mlflow.pyfunc import PythonModel
 from mlflow.models import ModelSignature
 from mlflow.types.schema import Schema, ColSpec
 from mlflow.tracking import MlflowClient
 from mlflow.artifacts import download_artifacts
+from databricks.feature_engineering import FeatureEngineeringClient, FeatureLookup
+import pyspark.sql.functions as F
 
 mlflow.set_registry_uri("databricks-uc")
 client = MlflowClient()
+fe     = FeatureEngineeringClient()
 
 FAMILIES = ("freq_glm", "sev_glm", "demand_gbm", "fraud_gbm")
 
-# Resolve current champion per family — baked into the logged artefact.
 def _champion_version(family: str) -> str:
     mv = client.get_model_version_by_alias(f"{fqn}.{family}", "champion")
     return str(mv.version)
@@ -59,20 +64,47 @@ print("Champions to bake in:", CHAMPIONS)
 
 # COMMAND ----------
 
+# Bake the current rating-engine champion config so the pyfunc applies it
+# without a runtime SQL hop on every predict() call.
+rating_row = spark.sql(f"""
+    SELECT version, expense_loading_pct, commission_bp, fraud_loading_pct,
+           fraud_loading_threshold, demand_adj_pct, demand_adj_threshold_lo,
+           demand_adj_threshold_hi, min_premium, max_premium
+    FROM {fqn}.rating_engine_config
+    WHERE status = 'champion'
+    LIMIT 1
+""").collect()
+if not rating_row:
+    raise RuntimeError(f"{fqn}.rating_engine_config has no champion row")
+
+RATING_CFG = {
+    "version":                 rating_row[0]["version"],
+    "expense_loading_pct":     float(rating_row[0]["expense_loading_pct"]),
+    "commission_bp":           int(rating_row[0]["commission_bp"]),
+    "fraud_loading_pct":       float(rating_row[0]["fraud_loading_pct"]),
+    "fraud_loading_threshold": float(rating_row[0]["fraud_loading_threshold"]),
+    "demand_adj_pct":          float(rating_row[0]["demand_adj_pct"]),
+    "demand_adj_threshold_lo": float(rating_row[0]["demand_adj_threshold_lo"]),
+    "demand_adj_threshold_hi": float(rating_row[0]["demand_adj_threshold_hi"]),
+    "min_premium":             float(rating_row[0]["min_premium"]),
+    "max_premium":             float(rating_row[0]["max_premium"]),
+}
+print("Rating engine config baked at log time:", RATING_CFG)
+
+# COMMAND ----------
+
 # MAGIC %md
-# MAGIC ## Download the raw flavor models into the log payload
+# MAGIC ## Pull inner artefacts from each champion
 # MAGIC
-# MAGIC Each champion is downloaded from UC and the deepest MLmodel directory
-# MAGIC (the raw sklearn wrapper or LightGBM booster — not the FE pyfunc) is
-# MAGIC packaged as an artifact of this scorer. The scorer's `load_context`
-# MAGIC loads them back at serving-endpoint startup.
+# MAGIC Each champion is itself an `fe.log_model` wrapper around a sklearn /
+# MAGIC LightGBM artefact. The unified scorer only needs the inner raw flavor
+# MAGIC (the wrapper does its own FeatureLookup and we already have features
+# MAGIC at predict time). `_pull_raw_flavor` walks the artifact tree and
+# MAGIC returns the deepest `MLmodel` directory.
 
 # COMMAND ----------
 
 def _pull_raw_flavor(family: str, version: str) -> str:
-    """Download the UC model artifact tree, find the deepest MLmodel
-    directory, copy just that subtree. Returns the local dir."""
-    import shutil
     tmp  = tempfile.mkdtemp(prefix=f"{family}_v{version}_")
     uri  = f"models:/{fqn}.{family}/{version}"
     root = download_artifacts(artifact_uri=uri, dst_path=tmp)
@@ -80,53 +112,94 @@ def _pull_raw_flavor(family: str, version: str) -> str:
     if not mlmodel_dirs:
         raise RuntimeError(f"{family} v{version}: no MLmodel under {root}")
     deepest = max(mlmodel_dirs, key=lambda p: p.count(os.sep))
-    # Copy to a clean path so log_model's artifacts dict is happy
     dest = f"{tempfile.mkdtemp(prefix=f'{family}_clean_')}/{family}"
     shutil.copytree(deepest, dest)
     return dest
 
-artifact_paths = {
-    fam: _pull_raw_flavor(fam, ver)
-    for fam, ver in CHAMPIONS.items()
-}
-print("Artifact paths:")
+artifact_paths = {fam: _pull_raw_flavor(fam, ver) for fam, ver in CHAMPIONS.items()}
+print("Inner artefacts:")
 for k, v in artifact_paths.items():
     print(f"  {k}: {v}")
+
+# Bake champions + rating config into a single JSON artefact loaded in load_context.
+cfg_path = f"{tempfile.mkdtemp()}/config.json"
+with open(cfg_path, "w") as fh:
+    json.dump({"champions": CHAMPIONS, "rating_engine_config": RATING_CFG}, fh)
+artifact_paths["config"] = cfg_path
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Pyfunc definition — loads 4 models, scores a batch in one call
+# MAGIC ## Pyfunc — 4 sub-models + business rules in one call
+
+# COMMAND ----------
+
+# Feature unions per sub-model. These must match the trained champions'
+# FEATURE lists so we slice the looked-up DataFrame correctly.
+FREQ_FEATURES = [
+    "sum_insured", "annual_turnover", "current_premium",
+    "industry_risk_tier", "construction_type",
+    "credit_score", "ccj_count", "years_trading",
+    "flood_zone_rating", "proximity_to_fire_station_km",
+    "crime_theft_index", "subsidence_risk", "composite_location_risk",
+    "urban_score", "is_coastal", "population_density_per_km2",
+    "elevation_metres", "annual_rainfall_mm",
+    "director_stability_score", "employee_count_est",
+    "distance_to_coast_km", "neighbourhood_claim_frequency",
+]
+SEV_FEATURES = [
+    "sum_insured", "annual_turnover",
+    "industry_risk_tier", "construction_type", "year_built",
+    "credit_score", "years_trading",
+    "flood_zone_rating", "proximity_to_fire_station_km",
+    "crime_theft_index", "subsidence_risk", "composite_location_risk",
+    "urban_score", "is_coastal", "elevation_metres",
+    "annual_rainfall_mm", "population_density_per_km2",
+    "distance_to_coast_km",
+]
+FRAUD_FEATURES = [
+    "sum_insured", "annual_turnover", "current_premium",
+    "industry_risk_tier", "construction_type", "year_built",
+    "credit_score", "ccj_count", "years_trading",
+    "flood_zone_rating", "crime_theft_index",
+    "urban_score", "is_coastal", "director_stability_score",
+    "employee_count_est", "claim_count_5y", "total_incurred_5y",
+    "open_claims_count", "distinct_perils",
+]
+# Extra UPT cols used to synthesize quote-level inputs for the demand model.
+DEMAND_PROXY_FEATURES = [
+    "region", "rate_per_1k_si", "market_position_ratio", "market_median_rate",
+]
+UNION_FEATURES = sorted(set(
+    FREQ_FEATURES + SEV_FEATURES + FRAUD_FEATURES + DEMAND_PROXY_FEATURES
+))
+print(f"FeatureLookup union: {len(UNION_FEATURES)} columns")
 
 # COMMAND ----------
 
 class PricingScorer(PythonModel):
-    """Unified scorer across the 4 production champions. Reads champion
-    versions from a config.json artefact so the logged pickle works
-    regardless of whether the source class is inspectable."""
+    """Unified live pricing scorer. Receives policy_id + UPT-looked-up features
+    (FE wrapper does the lookup), runs all 4 champions, applies the baked
+    rating-engine business rules, returns final_premium plus every intermediate
+    value the app and audit log need."""
 
-    def load_context(self, context):
-        import json as _j
-        import mlflow.sklearn, mlflow.lightgbm
-        with open(context.artifacts["config"]) as fh:
-            self.champions = _j.load(fh)
-        self.freq   = mlflow.sklearn.load_model(context.artifacts["freq_glm"])
-        self.sev    = mlflow.sklearn.load_model(context.artifacts["sev_glm"])
-        self.demand = mlflow.lightgbm.load_model(context.artifacts["demand_gbm"])
-        self.fraud  = mlflow.lightgbm.load_model(context.artifacts["fraud_gbm"])
-
-    # GLM wrappers run get_dummies(drop_first=True) internally on object
-    # dtype. On a single-row DataFrame, get_dummies sees only one value
-    # per categorical and silently drops the category contribution.
-    # Workaround: pad the input with synthetic rows that exercise every
-    # training-time category value so get_dummies produces the full set
-    # of indicator columns. Score the padded frame, then return only
-    # the original-row predictions.
     _GLM_CATS = {
         "industry_risk_tier": ["High", "Low", "Medium"],
         "construction_type":  ["Fire Resistive", "Frame", "Heavy Timber",
                                 "Joisted Masonry", "Non-Combustible"],
     }
+
+    def load_context(self, context):
+        import json as _j
+        import mlflow.sklearn, mlflow.lightgbm
+        with open(context.artifacts["config"]) as fh:
+            payload = _j.load(fh)
+        self.champions  = payload["champions"]
+        self.rating_cfg = payload["rating_engine_config"]
+        self.freq   = mlflow.sklearn.load_model(context.artifacts["freq_glm"])
+        self.sev    = mlflow.sklearn.load_model(context.artifacts["sev_glm"])
+        self.demand = mlflow.lightgbm.load_model(context.artifacts["demand_gbm"])
+        self.fraud  = mlflow.lightgbm.load_model(context.artifacts["fraud_gbm"])
 
     def _prep(self, df):
         out = df.copy()
@@ -136,9 +209,6 @@ class PricingScorer(PythonModel):
         return out
 
     def _pad_for_categoricals(self, df):
-        """Append rows that span every (industry_risk_tier × construction_type)
-        combination so get_dummies sees every category. Returns the padded
-        frame and the count of original rows."""
         import pandas as pd
         if df.empty:
             return df, 0
@@ -161,9 +231,6 @@ class PricingScorer(PythonModel):
         return all_preds[:n_real]
 
     def _score_lgb(self, booster, df):
-        """LightGBM needs each feature column in the exact dtype it had at
-        training — categorical cols with training category lists, numeric
-        cols as float. Use booster.pandas_categorical to tell them apart."""
         import pandas as pd, numpy as np
         feat_names  = list(booster.feature_name())
         pandas_cats = getattr(booster, "pandas_categorical", None)
@@ -177,63 +244,156 @@ class PricingScorer(PythonModel):
                 training_cats = [str(c) for c in pandas_cats[i]]
                 built[name] = pd.Categorical(col.astype(str), categories=training_cats)
             else:
-                # Numeric feature — coerce to float, fill missing with 0.0
                 if present:
                     built[name] = pd.to_numeric(prepped[name], errors="coerce").fillna(0.0).astype(float)
                 else:
                     built[name] = pd.Series([0.0] * len(prepped), index=prepped.index, dtype=float)
         return np.asarray(booster.predict(built), dtype=float).ravel()
 
-    def predict(self, context, model_input, params=None):
-        import pandas as pd, json as _j
+    @staticmethod
+    def _col(df, name, default):
+        import pandas as pd
+        if name in df.columns:
+            ser = df[name]
+            if ser.dtype == "object":
+                return ser.fillna(default)
+            return ser.astype(float).fillna(float(default)) if not isinstance(default, str) else ser.fillna(default)
+        return pd.Series([default] * len(df), index=df.index)
 
-        # Accept DataFrame or list-of-dicts; also accept a `features` column
-        # containing JSON-string rows (that's what the serving endpoint gets
-        # from our FastAPI app).
+    def _build_demand_input(self, df):
+        """The demand model was trained on quote-level features (channel,
+        voluntary_excess, gross_premium_quoted etc.) that don't exist on a
+        policy. Project policy attributes through deterministic defaults so
+        the demand prediction is stable per policy_id."""
+        import numpy as np, pandas as pd
+        sum_insured     = self._col(df, "sum_insured",     1_000_000.0).astype(float)
+        current_premium = self._col(df, "current_premium", 1500.0).astype(float)
+        market_median   = self._col(df, "market_median_rate", 1.5).astype(float)
+
+        out = pd.DataFrame(index=df.index)
+        out["channel"]              = "broker"
+        out["region"]               = self._col(df, "region", "London")
+        out["construction_type"]    = self._col(df, "construction_type", "Non-Combustible")
+        out["flood_zone"]           = self._col(df, "flood_zone_rating", 1)
+        out["year_built"]           = self._col(df, "year_built", 1990).astype(float)
+        out["floor_area_sqm"]       = (sum_insured / 5_000.0).clip(50.0, 10_000.0)
+        out["buildings_si"]         = sum_insured
+        out["contents_si"]          = sum_insured * 0.2
+        out["liability_si"]         = 1_000_000.0
+        out["voluntary_excess"]     = 500.0
+        out["gross_premium_quoted"] = current_premium
+        out["log_gross_premium"]    = np.log1p(current_premium)
+        out["log_buildings_si"]     = np.log1p(sum_insured)
+        out["rate_per_1k_si"]       = self._col(df, "rate_per_1k_si", 1.5).astype(float)
+        out["vs_market_rate"]       = self._col(df, "market_position_ratio", 1.0).astype(float)
+        out["market_median_rate"]   = market_median
+        out["competitor_a_min_rate"] = market_median * 0.95
+        out["price_index"]          = 1.0
+        out["annual_turnover"]      = self._col(df, "annual_turnover", 500_000.0).astype(float)
+        out["credit_score"]         = self._col(df, "credit_score", 600.0).astype(float)
+        out["flood_zone_rating"]    = self._col(df, "flood_zone_rating", 1).astype(float)
+        out["crime_theft_index"]    = self._col(df, "crime_theft_index", 5.0).astype(float)
+        out["sprinklered"]          = 0
+        out["alarmed"]              = 0
+        return out
+
+    def _apply_rules(self, freq, sev, demand, fraud):
+        import numpy as np
+        cfg       = self.rating_cfg
+        technical = freq * sev
+        loaded    = technical * (1.0 + cfg["expense_loading_pct"] / 100.0) \
+                              * (1.0 + cfg["commission_bp"] / 10_000.0)
+        fraud_load = np.where(fraud > cfg["fraud_loading_threshold"],
+                              loaded * cfg["fraud_loading_pct"] / 100.0, 0.0)
+        demand_adj = np.where(demand < cfg["demand_adj_threshold_lo"],
+                              loaded * cfg["demand_adj_pct"] / 100.0,
+                              np.where(demand > cfg["demand_adj_threshold_hi"],
+                                       -loaded * cfg["demand_adj_pct"] / 100.0,
+                                       0.0))
+        final = np.clip(loaded + fraud_load + demand_adj,
+                        cfg["min_premium"], cfg["max_premium"])
+        return technical, loaded, fraud_load, demand_adj, final
+
+    def predict(self, context, model_input, params=None):
+        import pandas as pd, numpy as np
+        # FE wrapper has already resolved features. model_input has policy_id +
+        # all UNION_FEATURES cols. Sub-models pull their own subset internally
+        # via _prep_raw / feature_name() lookups.
         if not hasattr(model_input, "columns"):
             model_input = pd.DataFrame(list(model_input))
-        if "features" in model_input.columns and len(model_input.columns) == 1:
-            parsed = [
-                _j.loads(r) if isinstance(r, str) else (r or {})
-                for r in model_input["features"].tolist()
-            ]
-            model_input = pd.DataFrame(parsed)
 
         freq   = self._score_glm(self.freq,   model_input)
         sev    = self._score_glm(self.sev,    model_input)
-        demand = self._score_lgb(self.demand, model_input)
         fraud  = self._score_lgb(self.fraud,  model_input)
+        demand = self._score_lgb(self.demand, self._build_demand_input(model_input))
+
+        technical, loaded, fraud_load, demand_adj, final = self._apply_rules(
+            freq, sev, demand, fraud)
 
         n = len(model_input)
         return pd.DataFrame({
-            "freq_pred":       freq,
-            "sev_pred":        sev,
-            "demand_pred":     demand,
-            "fraud_pred":      fraud,
-            "freq_version":    [self.champions["freq_glm"]]   * n,
-            "sev_version":     [self.champions["sev_glm"]]    * n,
-            "demand_version":  [self.champions["demand_gbm"]] * n,
-            "fraud_version":   [self.champions["fraud_gbm"]]  * n,
+            "final_premium":          np.round(final, 2),
+            "freq_pred":              freq,
+            "sev_pred":               sev,
+            "demand_pred":            demand,
+            "fraud_pred":             fraud,
+            "technical_premium":      np.round(loaded, 2),
+            "fraud_load":             np.round(fraud_load, 2),
+            "demand_adj":             np.round(demand_adj, 2),
+            "rating_engine_version":  [self.rating_cfg["version"]] * n,
+            "freq_version":           [self.champions["freq_glm"]]   * n,
+            "sev_version":            [self.champions["sev_glm"]]    * n,
+            "demand_version":         [self.champions["demand_gbm"]] * n,
+            "fraud_version":          [self.champions["fraud_gbm"]]  * n,
         })
 
 
 # COMMAND ----------
 
-# Write the champion config to a file — loaded back in load_context.
-cfg_path = f"{tempfile.mkdtemp()}/config.json"
-with open(cfg_path, "w") as fh:
-    json.dump(CHAMPIONS, fh)
+# MAGIC %md
+# MAGIC ## Capture FeatureLookup spec via a tiny training_set
+# MAGIC
+# MAGIC `fe.log_model` requires a `training_set` to capture the FeatureLookup
+# MAGIC metadata that drives serving-time resolution. We don't actually train
+# MAGIC anything here — labels are dummy. The FE wrapper uses the spec to:
+# MAGIC  * look features up offline at `mlflow.pyfunc.load_model` test time
+# MAGIC  * look features up via online store at serving time
 
-# Assemble artefact bundle (4 models + config)
-artifact_paths["config"] = cfg_path
+# COMMAND ----------
+
+KEY = "policy_id"
+
+labels_df = (
+    spark.table(f"{fqn}.unified_pricing_table_live")
+         .select(KEY).limit(50)
+         .withColumn("_dummy_label", F.lit(0.0))
+)
+
+training_set = fe.create_training_set(
+    df              = labels_df,
+    feature_lookups = [FeatureLookup(
+        table_name    = f"{fqn}.unified_pricing_table_live",
+        feature_names = UNION_FEATURES,
+        lookup_key    = KEY,
+    )],
+    label           = "_dummy_label",
+    exclude_columns = [KEY],
+)
+
+# COMMAND ----------
 
 signature = ModelSignature(
-    inputs=Schema([ColSpec("string", "features")]),
+    inputs=Schema([ColSpec("string", "policy_id")]),
     outputs=Schema([
+        ColSpec("double", "final_premium"),
         ColSpec("double", "freq_pred"),
         ColSpec("double", "sev_pred"),
         ColSpec("double", "demand_pred"),
         ColSpec("double", "fraud_pred"),
+        ColSpec("double", "technical_premium"),
+        ColSpec("double", "fraud_load"),
+        ColSpec("double", "demand_adj"),
+        ColSpec("string", "rating_engine_version"),
         ColSpec("string", "freq_version"),
         ColSpec("string", "sev_version"),
         ColSpec("string", "demand_version"),
@@ -241,75 +401,105 @@ signature = ModelSignature(
     ]),
 )
 
-input_example = {"features": json.dumps({
-    "sum_insured": 2500000, "annual_turnover": 850000, "current_premium": 1200,
-    "industry_risk_tier": "Medium", "construction_type": "Non-Combustible",
-    "postcode_sector": "EC1A", "region": "London",
-    "credit_score": 620, "ccj_count": 1, "years_trading": 12,
-})}
+# Sample policy_ids — input_example must be a DataFrame matching the input schema.
+sample_pids = [r["policy_id"] for r in spark.sql(f"""
+    SELECT policy_id FROM {fqn}.unified_pricing_table_live LIMIT 5
+""").collect()]
+input_example = pd.DataFrame({"policy_id": sample_pids})
 
 # COMMAND ----------
 
-from mlflow.models.resources import DatabricksServingEndpoint  # not used, no inner endpoint call
-
-with mlflow.start_run(run_name="pricing_scorer_deploy"):
-    mi = mlflow.pyfunc.log_model(
-        artifact_path="scorer",
-        python_model=PricingScorer(),
-        artifacts=artifact_paths,
-        input_example=input_example,
-        signature=signature,
-        registered_model_name=scorer_uc_name,
+with mlflow.start_run(run_name="pricing_scorer_deploy") as run:
+    fe.log_model(
+        model                 = PricingScorer(),
+        artifact_path         = "scorer",
+        flavor                = mlflow.pyfunc,
+        training_set          = training_set,
+        registered_model_name = scorer_uc_name,
+        artifacts             = artifact_paths,
+        input_example         = input_example,
+        signature             = signature,
         pip_requirements=[
-            "mlflow>=2.12", "scikit-learn", "lightgbm",
-            "statsmodels", "pandas", "numpy", "databricks-sdk",
+            "mlflow>=2.12", "databricks-feature-engineering",
+            "scikit-learn", "lightgbm", "statsmodels",
+            "pandas", "numpy", "databricks-sdk",
         ],
     )
-    print("Logged:", mi.model_uri)
+    print(f"Logged scorer for run {run.info.run_id}")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Deploy as a Model Serving endpoint (scale to zero)
+# MAGIC ## Sanity test — load the new version and predict on policy_ids
+# MAGIC
+# MAGIC `mlflow.pyfunc.load_model` on an FE-wrapped model resolves features
+# MAGIC offline (against the Delta UPT) at test time. Confirms the wrapper +
+# MAGIC sub-models + business rules all wire up before we deploy to serving.
 
 # COMMAND ----------
 
 latest = max(int(v.version) for v in client.search_model_versions(f"name='{scorer_uc_name}'"))
+print(f"New scorer version: {latest}")
+
+scorer_uri = f"models:/{scorer_uc_name}/{latest}"
+loaded     = mlflow.pyfunc.load_model(scorer_uri)
+test_df    = input_example.copy()
+result     = loaded.predict(test_df)
+print("Sanity test result:")
+print(result.to_string(index=False))
+
+cfg = RATING_CFG
+assert (result["final_premium"] >= cfg["min_premium"] - 1e-6).all(), \
+       f"final_premium below min: {result['final_premium'].min()}"
+assert (result["final_premium"] <= cfg["max_premium"] + 1e-6).all(), \
+       f"final_premium above max: {result['final_premium'].max()}"
+assert (result["technical_premium"] > 0).all(), "technical_premium not positive"
+print("Sanity asserts passed.")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Deploy as a Model Serving endpoint
+# MAGIC
+# MAGIC scale_to_zero=False — the live demo's whole point is sub-second
+# MAGIC response. Provision/teardown notebooks bring this up before a demo
+# MAGIC and wind it down afterwards (cost discipline).
+
+# COMMAND ----------
+
 print(f"Deploying {scorer_uc_name} v{latest} → endpoint '{endpoint_name}'")
 
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.serving import (
+    EndpointCoreConfigInput, ServedEntityInput, RouteOptimizedConfig,
+)
+
+w = WorkspaceClient()
+served = [ServedEntityInput(
+    entity_name           = scorer_uc_name,
+    entity_version        = str(latest),
+    scale_to_zero_enabled = False,
+    workload_size         = "Small",
+)]
+
 try:
-    from databricks import agents
-    deployment = agents.deploy(
-        model_name=scorer_uc_name,
-        model_version=latest,
-        scale_to_zero=True,
-        tags={"project": "pricing_workbench", "purpose": "unified_pricing_scorer",
-              **{f"baked_{k}": v for k, v in CHAMPIONS.items()}},
+    w.serving_endpoints.get(endpoint_name)
+    w.serving_endpoints.update_config(name=endpoint_name, served_entities=served)
+    print("Updated existing endpoint.")
+except Exception:
+    w.serving_endpoints.create(
+        name   = endpoint_name,
+        config = EndpointCoreConfigInput(name=endpoint_name, served_entities=served),
+        route_optimized = True,
     )
-    print("databricks-agents deploy kicked off:", deployment)
-except Exception as e:
-    print(f"databricks-agents.deploy failed, trying serving_endpoints: {e}")
-    from databricks.sdk import WorkspaceClient
-    from databricks.sdk.service.serving import EndpointCoreConfigInput, ServedEntityInput
-    w = WorkspaceClient()
-    served = [ServedEntityInput(
-        entity_name=scorer_uc_name, entity_version=str(latest),
-        scale_to_zero_enabled=True, workload_size="Small",
-    )]
-    cfg = EndpointCoreConfigInput(name=endpoint_name, served_entities=served)
-    try:
-        w.serving_endpoints.get(endpoint_name)
-        w.serving_endpoints.update_config(name=endpoint_name, served_entities=served)
-        print("Updated existing endpoint.")
-    except Exception:
-        w.serving_endpoints.create(name=endpoint_name, config=cfg)
-        print("Created new endpoint.")
+    print("Created new endpoint (route_optimized).")
 
 # COMMAND ----------
 
 dbutils.notebook.exit(json.dumps({
-    "scorer_uc_name": scorer_uc_name,
-    "version":        latest,
-    "endpoint":       endpoint_name,
-    "champions":      CHAMPIONS,
+    "scorer_uc_name":        scorer_uc_name,
+    "version":               latest,
+    "endpoint":              endpoint_name,
+    "champions":             CHAMPIONS,
+    "rating_engine_version": RATING_CFG["version"],
 }))
