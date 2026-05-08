@@ -17,6 +17,8 @@ resources:
           default: ${var.live_endpoint_name}
         - name: online_store_capacity
           default: "CU_2"
+        - name: app_service_principal_id
+          default: ${var.app_service_principal_id}
 
       permissions:
         - service_principal_name: ${var.app_service_principal_id}
@@ -27,11 +29,12 @@ resources:
           notebook_task:
             notebook_path: ../src/07_serving/live_pricing/01_provision.py
             base_parameters:
-              catalog_name:          "{{job.parameters.catalog_name}}"
-              schema_name:           "{{job.parameters.schema_name}}"
-              online_store_name:     "{{job.parameters.online_store_name}}"
-              endpoint_name:         "{{job.parameters.endpoint_name}}"
-              online_store_capacity: "{{job.parameters.online_store_capacity}}"
+              catalog_name:             "{{job.parameters.catalog_name}}"
+              schema_name:              "{{job.parameters.schema_name}}"
+              online_store_name:        "{{job.parameters.online_store_name}}"
+              endpoint_name:            "{{job.parameters.endpoint_name}}"
+              online_store_capacity:    "{{job.parameters.online_store_capacity}}"
+              app_service_principal_id: "{{job.parameters.app_service_principal_id}}"
           environment_key: env
 
       environments:

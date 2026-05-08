@@ -22,6 +22,7 @@ dbutils.widgets.text("schema_name",       "pricing_upt")
 dbutils.widgets.text("online_store_name", "pricing-upt-online-store-live")
 dbutils.widgets.text("endpoint_name",     "pricing_scorer")
 dbutils.widgets.text("online_store_capacity", "CU_2")
+dbutils.widgets.text("app_service_principal_id", "")
 
 # COMMAND ----------
 
@@ -37,6 +38,7 @@ schema         = dbutils.widgets.get("schema_name")
 online_store   = dbutils.widgets.get("online_store_name")
 endpoint_name  = dbutils.widgets.get("endpoint_name")
 capacity       = dbutils.widgets.get("online_store_capacity")
+app_sp_id      = dbutils.widgets.get("app_service_principal_id")
 fqn            = f"{catalog}.{schema}"
 upt_table      = f"{fqn}.unified_pricing_table_live"
 scorer_uc_name = f"{fqn}.pricing_scorer"
@@ -160,6 +162,28 @@ spark.sql(f"""
     WHEN NOT MATCHED THEN INSERT (key, value, ts) VALUES (s.key, s.value, s.ts)
 """)
 print(f"persisted publish_pipeline_id={publish_pipeline_id} to live_pricing_runtime_state")
+
+# 1e. Grant the app SP CAN_MANAGE on the pipeline so /api/live-pricing/claim
+# can fire start_update from the FastAPI route. publish_table creates the
+# pipeline owned by whoever ran the notebook — the app SP needs an explicit
+# grant. Note: Lakebase synced-table pipelines reject CAN_RUN on
+# start_update; only CAN_MANAGE works. Idempotent.
+if publish_pipeline_id and app_sp_id:
+    try:
+        from databricks.sdk.service.iam import (
+            AccessControlRequest, PermissionLevel,
+        )
+        w.permissions.update(
+            request_object_type = "pipelines",
+            request_object_id   = publish_pipeline_id,
+            access_control_list = [AccessControlRequest(
+                service_principal_name = app_sp_id,
+                permission_level       = PermissionLevel.CAN_MANAGE,
+            )],
+        )
+        print(f"granted CAN_MANAGE to {app_sp_id} on pipeline {publish_pipeline_id}")
+    except Exception as e:
+        print(f"pipeline ACL grant failed (continuing): {e}")
 
 # COMMAND ----------
 
