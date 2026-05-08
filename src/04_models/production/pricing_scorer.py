@@ -193,6 +193,17 @@ class PricingScorer(PythonModel):
         "construction_type":  ["Fire Resistive", "Frame", "Heavy Timber",
                                 "Joisted Masonry", "Non-Combustible"],
     }
+    # Features that are genuinely strings/categories. Everything else in UPT
+    # is numeric. FE returns null values as Python None, which pandas types
+    # as dtype=object — so we can't tell from the dtype alone whether a col
+    # is meant to be numeric or categorical (especially for single-row scoring
+    # where every value of a column is null). Hard-coded allow-list resolves
+    # the ambiguity.
+    _CATEGORICAL_FEATURES = {
+        "industry_risk_tier", "construction_type", "region",
+        "location_risk_tier", "sic_code", "postcode_sector",
+        "credit_risk_tier", "policy_id",
+    }
 
     def load_context(self, context):
         import json as _j
@@ -207,25 +218,24 @@ class PricingScorer(PythonModel):
         self.fraud  = mlflow.lightgbm.load_model(context.artifacts["fraud_gbm"])
 
     def _prep(self, df):
-        # FE returns columns with whatever dtype Lakebase preserved (Int64,
-        # Arrow string, decimal, etc.). The downstream GLM wrapper does
-        # `if dtype == "object"` which MISSES Int64/StringDtype and falls
-        # through to astype(float) — crashing on '(null)' for nulls. Strictly
-        # normalize so what we hand the wrapper is either plain object-str
-        # (with '(null)' filling) or plain float64 (with NaN→0.0).
+        # FE returns each column with whatever dtype Lakebase preserved.
+        # NULL values often arrive as Python None, leaving the column's
+        # dtype as object — which makes a numeric column LOOK categorical.
+        # Use the explicit _CATEGORICAL_FEATURES allow-list to disambiguate:
+        # listed cols → string with '(null)'; everything else → float.
         import pandas as pd
         out = df.copy()
         for c in out.columns:
             s = out[c]
             kind = getattr(s.dtype, "kind", "")
-            if kind in ("i", "u", "f"):
-                out[c] = pd.to_numeric(s, errors="coerce").fillna(0.0).astype(float)
+            if c in self._CATEGORICAL_FEATURES:
+                out[c] = s.astype(str).where(s.notna(), "(null)").astype(object)
             elif kind == "b":
                 out[c] = s.fillna(False).astype(int).astype(float)
             else:
-                # object / category / string / Arrow string / decimal: stringify
-                # then replace original-NaN positions with '(null)'.
-                out[c] = s.astype(str).where(s.notna(), "(null)").astype(object)
+                # Default to numeric — pd.to_numeric coerces None / "(null)" /
+                # other non-numeric to NaN, which fillna(0) cleans up.
+                out[c] = pd.to_numeric(s, errors="coerce").fillna(0.0).astype(float)
         return out
 
     def _pad_for_categoricals(self, df):
