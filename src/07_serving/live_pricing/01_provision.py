@@ -203,17 +203,39 @@ served = [ServedEntityInput(
     workload_size         = "Small",
 )]
 
+# Reconcile the endpoint state before issuing an update_config:
+#  - If endpoint absent → create
+#  - If endpoint already serving the target version → skip
+#  - If a pending config update is already targeting that version (e.g.
+#    from a parallel pricing_scorer_deploy run) → skip and let it land
+#  - Otherwise → update_config
+existing = None
 try:
-    w.serving_endpoints.get(endpoint_name)
-    w.serving_endpoints.update_config(name=endpoint_name, served_entities=served)
-    print("updated existing endpoint")
+    existing = w.serving_endpoints.get(endpoint_name)
 except Exception:
+    pass
+
+def _versions(cfg):
+    return {(e.entity_version) for e in (getattr(cfg, "served_entities", []) or [])}
+
+if existing is None:
     w.serving_endpoints.create(
         name             = endpoint_name,
         config           = EndpointCoreConfigInput(name=endpoint_name, served_entities=served),
         route_optimized  = True,
     )
     print("created endpoint (route_optimized)")
+else:
+    served_versions  = _versions(getattr(existing, "config", None))
+    pending_versions = _versions(getattr(existing, "pending_config", None))
+    target = str(scorer_version)
+    if target in served_versions and not pending_versions:
+        print(f"endpoint already serving v{target} — skip update")
+    elif target in pending_versions:
+        print(f"endpoint pending update to v{target} — skip; the update will land")
+    else:
+        w.serving_endpoints.update_config(name=endpoint_name, served_entities=served)
+        print(f"updated existing endpoint to v{target}")
 
 # COMMAND ----------
 
