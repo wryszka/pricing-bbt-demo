@@ -12,7 +12,7 @@ resources:
         - name: volume_name
           default: ${var.volume_name}
         - name: scale_factor
-          default: "1"
+          default: ${var.scale_factor}
 
       tasks:
         - task_key: full_pipeline
@@ -22,7 +22,7 @@ resources:
               catalog_name: ${var.catalog_name}
               schema_name: ${var.schema_name}
               volume_name: ${var.volume_name}
-              scale_factor: "1"
+              scale_factor: "{{job.parameters.scale_factor}}"
           environment_key: default
 
       environments:

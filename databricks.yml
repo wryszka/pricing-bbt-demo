@@ -32,6 +32,13 @@ variables:
   live_endpoint_name:
     description: Model Serving endpoint name for the unified pricing scorer (live + production share one endpoint)
     default: "pricing_scorer"
+  scale_factor:
+    description: |
+      Multiplier on the synthetic dataset size (1 = 50k policies, 20 = 1M).
+      Prod targets the full 1M policies. Dev defaults to 10 (500k) — the
+      largest size that comfortably fits the CU_2 Lakebase tier the live
+      pricing system provisions for the demo. Bump if running on CU_4+.
+    default: "20"
 
 # Default target points at PROD only as a hard guard — explicitly pass
 # `--target dev` for any work-in-progress deploy. Prod is the live demo
@@ -63,6 +70,8 @@ targets:
       # Genie spaces don't exist in dev yet — leave blank so the UI hides them.
       genie_space_id:       ""
       genie_quote_space_id: ""
+      # Dev runs against CU_2 Lakebase, sized to fit ~500k policies (scale=10).
+      scale_factor:         "10"
 
 sync:
   exclude:
