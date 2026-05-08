@@ -51,91 +51,51 @@ user = dbutils.notebook.entry_point.getDbutils().notebook().getContext().userNam
 # COMMAND ----------
 
 from databricks.sdk import WorkspaceClient
-from databricks.sdk.service.ml import (
-    OnlineStore, PublishSpec, PublishSpecPublishMode,
-)
 from databricks.sdk.service.serving import (
     EndpointCoreConfigInput, ServedEntityInput,
 )
-from databricks.feature_engineering import FeatureEngineeringClient
 from mlflow.tracking import MlflowClient
 import mlflow
 
 mlflow.set_registry_uri("databricks-uc")
 w  = WorkspaceClient()
 mc = MlflowClient()
-fe = FeatureEngineeringClient()
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 1. Online store — provision Lakebase
-
-# COMMAND ----------
-
-try:
-    store = w.feature_store.get_online_store(online_store)
-    print(f"online store exists: {store.name} (state={store.state}, capacity={store.capacity})")
-except Exception:
-    print(f"creating online store {online_store} at {capacity}…")
-    store = w.feature_store.create_online_store(
-        online_store=OnlineStore(name=online_store, capacity=capacity)
-    )
-    print(f"created: {store.name}")
-
-for i in range(60):  # up to 5 min
-    store = w.feature_store.get_online_store(online_store)
-    if str(store.state).endswith("AVAILABLE"):
-        print(f"online store AVAILABLE after {i*5}s")
-        break
-    print(f"  waiting… state={store.state}")
-    time.sleep(5)
-else:
-    raise RuntimeError(f"online store {online_store} did not become AVAILABLE in 5 min")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 2. Continuous publish UPT → online store
+# MAGIC ## 1. Online table — managed serverless online store
 # MAGIC
-# MAGIC Continuous mode (per project decision) — every Delta change to UPT is
-# MAGIC streamed into Lakebase. Latency from MERGE to online lookup ~5-15s.
+# MAGIC `online_tables.create_and_wait` provisions a Databricks-managed online
+# MAGIC table on top of `unified_pricing_table_live` (which has `upt_pk` on
+# MAGIC policy_id). Continuous scheduling streams every Delta change into the
+# MAGIC online store, latency ~5-15s from MERGE to lookup. The Model Serving
+# MAGIC endpoint resolves features against this table automatically because
+# MAGIC the scorer was logged with `fe.log_model` + FeatureLookup.
 
 # COMMAND ----------
 
-print(f"publishing {upt_table} → {online_store} (CONTINUOUS)…")
-
-# publish_table requires the source to be registered as an FE feature table.
-# UPT already has a PK (build_upt.py) but needs explicit fe.create_table to
-# satisfy the online publish API. Idempotent — get_table tells us if it's
-# already registered.
-try:
-    fe.get_table(name=upt_table)
-    print(f"FE table already registered: {upt_table}")
-except Exception:
-    print(f"registering {upt_table} as FE table…")
-    fe.create_table(
-        name         = upt_table,
-        primary_keys = "policy_id",
-        df           = spark.table(upt_table),
-        description  = "Unified Pricing Table — feature table for live pricing FeatureLookup.",
-    )
-    print(f"registered: {upt_table}")
+from databricks.sdk.service.catalog import (
+    OnlineTable, OnlineTableSpec, OnlineTableSpecContinuousSchedulingPolicy,
+)
 
 try:
-    result = w.feature_store.publish_table(
-        source_table_name=upt_table,
-        publish_spec=PublishSpec(
-            online_store      = online_store,
-            online_table_name = upt_table,
-            publish_mode      = PublishSpecPublishMode.CONTINUOUS,
-        ),
-    )
-    print(f"publish_table OK: {getattr(result, 'status', result)}")
+    existing = w.online_tables.get(upt_table)
+    state = getattr(existing, "unity_catalog_provisioning_state", None) \
+            or getattr(existing, "status", None)
+    print(f"online table already exists: {upt_table} (state={state})")
 except Exception as e:
-    err = str(e)
-    if "already published" in err.lower() or "already exists" in err.lower():
-        print(f"already published — continuous sync continuing")
+    msg = str(e).lower()
+    if "not found" in msg or "does not exist" in msg or "404" in msg:
+        print(f"creating online table {upt_table} (CONTINUOUS)…")
+        ot_spec = OnlineTableSpec(
+            source_table_full_name = upt_table,
+            primary_key_columns    = ["policy_id"],
+            run_continuously       = OnlineTableSpecContinuousSchedulingPolicy(),
+        )
+        ot = OnlineTable(name=upt_table, spec=ot_spec)
+        w.online_tables.create_and_wait(table=ot)
+        print(f"online table created: {upt_table}")
     else:
         raise
 
@@ -272,12 +232,11 @@ log_event(
     entity_version= str(scorer_version),
     user_id       = user,
     details={
-        "online_store":     online_store,
-        "online_capacity":  capacity,
+        "online_table":     upt_table,
         "scorer_version":   scorer_version,
         "warm_latencies_ms": warm_latencies_ms,
         "warm_p50_ms":      warm_p50,
-        "publish_mode":     "CONTINUOUS",
+        "sync_mode":        "CONTINUOUS",
     },
     source="notebook",
 )
