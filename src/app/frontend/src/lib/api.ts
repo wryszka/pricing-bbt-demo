@@ -266,4 +266,27 @@ export const api = {
   getQuoteStreamOutliers: () => fetchJson<any[]>('/quote-stream/analytics/outliers'),
   getQuoteStreamFunnel: () => fetchJson<any[]>('/quote-stream/analytics/funnel'),
   getQuoteStreamDistribution: () => fetchJson<any[]>('/quote-stream/analytics/distribution'),
+
+  // Live Pricing System
+  livePricingStatus: () => fetchJson<any>('/live-pricing/status'),
+  livePricingStart:  () => fetchJson<any>('/live-pricing/start',  { method: 'POST', body: JSON.stringify({}) }),
+  livePricingStop:   () => fetchJson<any>('/live-pricing/stop',   { method: 'POST', body: JSON.stringify({}) }),
+  livePricingQuote: (policyId: string) =>
+    fetchJson<any>('/live-pricing/quote', { method: 'POST', body: JSON.stringify({ policy_id: policyId }) }),
+  livePricingClaim: (body: { policy_id: string; claim_amount: number; claim_type?: string }) =>
+    fetchJson<any>('/live-pricing/claim', { method: 'POST', body: JSON.stringify(body) }),
+  livePricingClaimStatus: (runId: number | string) =>
+    fetchJson<any>(`/live-pricing/claim/${runId}`),
+  livePricingLoadTestStart: (body: { target_qps?: number; duration_seconds?: number; concurrency?: number }) =>
+    fetchJson<any>('/live-pricing/load-test/start', { method: 'POST', body: JSON.stringify(body) }),
+  livePricingLoadTestStop: (runId: number | string) =>
+    fetchJson<any>(`/live-pricing/load-test/stop?run_id=${encodeURIComponent(String(runId))}`,
+      { method: 'POST', body: JSON.stringify({}) }),
+  livePricingLoadTestMetrics: (params: { since?: string; run_id?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (params.since)  q.set('since',  params.since);
+    if (params.run_id) q.set('run_id', params.run_id);
+    const qs = q.toString();
+    return fetchJson<any>(`/live-pricing/load-test/metrics${qs ? `?${qs}` : ''}`);
+  },
 };
