@@ -104,7 +104,6 @@ async def status() -> dict:
                     "error": str(e)[:200]}
 
     def _online_store_state() -> dict:
-        # Optional — only used when use_online_store=true was passed at provision.
         try:
             w = get_workspace_client()
             store = w.feature_store.get_online_store(ONLINE_STORE_NAME)
@@ -112,26 +111,24 @@ async def status() -> dict:
                     "name":    ONLINE_STORE_NAME,
                     "state":   str(getattr(store, "state", "")).split(".")[-1],
                     "capacity": str(getattr(store, "capacity", ""))}
-        except Exception:
+        except Exception as e:
             return {"present": False, "name": ONLINE_STORE_NAME,
-                    "note": "warehouse-backed lookup (no online store provisioned)"}
+                    "error":   str(e)[:200]}
 
     ep_state, store_state = await asyncio.gather(
         asyncio.to_thread(_endpoint_state),
         asyncio.to_thread(_online_store_state),
     )
 
-    # The scorer uses warehouse-backed feature lookup by default — endpoint
-    # readiness alone is enough to call the system 'on'. Online store, when
-    # present, is just an extra surface for status display.
     endpoint_ready = ep_state["present"] and ep_state.get("ready") == "READY" and \
                      (ep_state.get("config_update") in (None, "", "NOT_UPDATING"))
+    store_ready    = store_state["present"] and (store_state.get("state") or "") == "AVAILABLE"
 
-    if endpoint_ready:
+    if endpoint_ready and store_ready:
         state = "on"
     elif ep_state.get("config_update") == "UPDATE_FAILED":
         state = "error"
-    elif ep_state["present"]:
+    elif ep_state["present"] or store_state["present"]:
         state = "starting"
     else:
         state = "off"
@@ -334,12 +331,26 @@ _PERIL_MAP = {
 }
 
 
+async def _get_publish_pipeline_id() -> str | None:
+    """Pull the persisted Lakebase publish pipeline id (set by 01_provision)."""
+    try:
+        rows = await execute_query(f"""
+            SELECT value FROM {fqn('live_pricing_runtime_state')}
+            WHERE key = 'publish_pipeline_id' LIMIT 1
+        """)
+        if rows and rows[0].get("value"):
+            return rows[0]["value"]
+    except Exception as e:
+        logger.warning("could not read publish_pipeline_id: %s", str(e)[:200])
+    return None
+
+
 @router.post("/claim")
 async def file_claim(req: ClaimRequest, background_tasks: BackgroundTasks) -> dict:
-    """File a synthetic claim and merge claim aggregates into UPT inline so
-    the next quote against this policy reflects the new claim. Continuous
-    online sync pushes the change into Lakebase within ~5-15s — that's the
-    update-speed metric the demo is showcasing."""
+    """File a synthetic claim, MERGE claim aggregates into UPT, then trigger
+    a Lakebase SNAPSHOT refresh by starting an update on the publish pipeline
+    captured at provision time. Returns when the pipeline update completes
+    (or 60s timeout) so the next quote sees the new feature value."""
     pid          = req.policy_id.strip().upper()
     claim_amount = float(req.claim_amount)
     claim_type   = req.claim_type.upper()
@@ -396,6 +407,40 @@ async def file_claim(req: ClaimRequest, background_tasks: BackgroundTasks) -> di
     """)
     upt_merge_ms = (time.perf_counter() - t0) * 1000.0
 
+    # Trigger a Lakebase SNAPSHOT refresh. The publish_table call at provision
+    # time stood up a DLT pipeline that runs SNAPSHOT on demand. start_update
+    # kicks off a fresh run; polling waits up to 60s for it to complete so the
+    # next quote sees the new feature row in Lakebase.
+    pipeline_id = await _get_publish_pipeline_id()
+    refresh: dict[str, Any] = {"pipeline_id": pipeline_id, "triggered": False,
+                               "completed": False, "duration_ms": None}
+    if pipeline_id:
+        def _trigger_and_wait():
+            w = get_workspace_client()
+            t0 = time.perf_counter()
+            try:
+                upd = w.pipelines.start_update(pipeline_id=pipeline_id, full_refresh=False)
+                update_id = getattr(upd, "update_id", None)
+            except Exception as e:
+                return {"triggered": False, "error": str(e)[:200]}
+            # Poll for completion (~30s typical, cap at 60s)
+            deadline = time.perf_counter() + 60.0
+            terminal = {"COMPLETED", "FAILED", "CANCELED"}
+            state = None
+            while time.perf_counter() < deadline:
+                try:
+                    info = w.pipelines.get_update(pipeline_id=pipeline_id, update_id=update_id)
+                    state = str(getattr(info.update, "state", "")).split(".")[-1]
+                except Exception as e:
+                    state = f"poll-error:{str(e)[:80]}"
+                if state in terminal:
+                    break
+                time.sleep(2.0)
+            return {"triggered": True, "update_id": update_id,
+                    "completed": state == "COMPLETED", "state": state,
+                    "duration_ms": round((time.perf_counter() - t0) * 1000.0, 1)}
+        refresh.update(await asyncio.to_thread(_trigger_and_wait))
+
     user = get_current_user()
     await log_audit_event(
         event_type="live_pricing_claim_filed",
@@ -409,20 +454,23 @@ async def file_claim(req: ClaimRequest, background_tasks: BackgroundTasks) -> di
             "claim_write_ms": round(claim_write_ms, 1),
             "upt_merge_ms":   round(upt_merge_ms, 1),
             "user":           user,
-            "publish_mode":   "CONTINUOUS",
+            "publish_mode":   "SNAPSHOT",
+            "online_refresh": refresh,
         },
     )
 
     return {
-        "ok":             True,
-        "claim_id":       claim_id,
-        "policy_id":      pid,
-        "claim_amount":   claim_amount,
-        "peril":          peril,
-        "claim_write_ms": round(claim_write_ms, 1),
-        "upt_merge_ms":   round(upt_merge_ms, 1),
-        "total_ms":       round(claim_write_ms + upt_merge_ms, 1),
-        "filed_at":       datetime.now(timezone.utc).isoformat(),
+        "ok":               True,
+        "claim_id":         claim_id,
+        "policy_id":        pid,
+        "claim_amount":     claim_amount,
+        "peril":            peril,
+        "claim_write_ms":   round(claim_write_ms, 1),
+        "upt_merge_ms":     round(upt_merge_ms, 1),
+        "online_refresh":   refresh,
+        "total_ms":         round(claim_write_ms + upt_merge_ms +
+                                  (refresh.get("duration_ms") or 0), 1),
+        "filed_at":         datetime.now(timezone.utc).isoformat(),
     }
 
 

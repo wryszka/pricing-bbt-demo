@@ -807,7 +807,13 @@ function DemoFlow() {
                   <div>Claim ID: <code className="text-gray-800">{step2.claim_id}</code></div>
                   <div>Insert: <span className="text-gray-800">{step2.claim_write_ms} ms</span></div>
                   <div>UPT MERGE: <span className="text-gray-800">{step2.upt_merge_ms} ms</span></div>
-                  <div className="text-emerald-700 mt-1.5">Continuous online sync pushes the change into Lakebase (~5–15s).</div>
+                  {step2.online_refresh && (
+                    <div className={step2.online_refresh.completed ? 'text-emerald-700 mt-1.5' : 'text-amber-700 mt-1.5'}>
+                      Lakebase SNAPSHOT refresh: {step2.online_refresh.completed
+                        ? `synced in ${Math.round(step2.online_refresh.duration_ms ?? 0)} ms`
+                        : `state ${step2.online_refresh.state ?? 'unknown'}${step2.online_refresh.duration_ms ? ` (${Math.round(step2.online_refresh.duration_ms)} ms)` : ''}`}
+                    </div>
+                  )}
                 </div>
               </>
             : <p className="text-xs text-gray-500">File a £75k accidental damage claim, MERGE into UPT inline.</p>}

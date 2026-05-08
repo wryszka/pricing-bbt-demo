@@ -21,7 +21,6 @@ dbutils.widgets.text("catalog_name",      "lr_serverless_aws_us_catalog")
 dbutils.widgets.text("schema_name",       "pricing_upt")
 dbutils.widgets.text("online_store_name", "pricing-upt-online-store-live")
 dbutils.widgets.text("endpoint_name",     "pricing_scorer")
-dbutils.widgets.text("warehouse_id",      "ab79eced8207d29b")
 dbutils.widgets.text("online_store_capacity", "CU_2")
 
 # COMMAND ----------
@@ -37,7 +36,6 @@ catalog        = dbutils.widgets.get("catalog_name")
 schema         = dbutils.widgets.get("schema_name")
 online_store   = dbutils.widgets.get("online_store_name")
 endpoint_name  = dbutils.widgets.get("endpoint_name")
-warehouse_id   = dbutils.widgets.get("warehouse_id")
 capacity       = dbutils.widgets.get("online_store_capacity")
 fqn            = f"{catalog}.{schema}"
 upt_table      = f"{fqn}.unified_pricing_table_live"
@@ -66,68 +64,101 @@ mc = MlflowClient()
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 1. Optional Lakebase online store
+# MAGIC ## 1. Lakebase online store + SNAPSHOT publish
 # MAGIC
-# MAGIC The scorer resolves features at request time via SQL warehouse — no
-# MAGIC online store is strictly required. Skip this step entirely on dev
-# MAGIC where the publish_table API has known issues. Production can
-# MAGIC re-enable Lakebase CONTINUOUS sync by setting use_online_store=true
-# MAGIC and configuring the workspace's Lakebase tier.
+# MAGIC SNAPSHOT mode (not CONTINUOUS) — CONTINUOUS publish requires DLT
+# MAGIC streaming pipeline support which isn't enabled on the dev workspace
+# MAGIC tier. The claim-filing endpoint refreshes the snapshot on demand by
+# MAGIC triggering an update on the backing DLT pipeline (id captured below).
+# MAGIC Same architecture works on prod — flip publish_mode to CONTINUOUS
+# MAGIC there once the workspace tier supports it.
 
 # COMMAND ----------
 
-dbutils.widgets.text("use_online_store", "false")
-use_online_store = dbutils.widgets.get("use_online_store").lower() == "true"
+from databricks.sdk.service.ml import (
+    OnlineStore, PublishSpec, PublishSpecPublishMode,
+)
+from databricks.feature_engineering import FeatureEngineeringClient
 
-if use_online_store:
-    from databricks.sdk.service.ml import (
-        OnlineStore, PublishSpec, PublishSpecPublishMode,
+fe = FeatureEngineeringClient()
+
+# 1a. Provision Lakebase store
+try:
+    store = w.feature_store.get_online_store(online_store)
+    print(f"online store exists: {store.name} (state={store.state})")
+except Exception:
+    print(f"creating online store {online_store} at {capacity}…")
+    w.feature_store.create_online_store(
+        online_store=OnlineStore(name=online_store, capacity=capacity)
     )
-    from databricks.feature_engineering import FeatureEngineeringClient
-    fe = FeatureEngineeringClient()
-
-    try:
-        store = w.feature_store.get_online_store(online_store)
-        print(f"online store exists: {store.name} (state={store.state})")
-    except Exception:
-        print(f"creating online store {online_store} at {capacity}…")
-        w.feature_store.create_online_store(
-            online_store=OnlineStore(name=online_store, capacity=capacity)
-        )
-    for i in range(60):
-        store = w.feature_store.get_online_store(online_store)
-        if str(store.state).endswith("AVAILABLE"):
-            print(f"online store AVAILABLE after {i*5}s")
-            break
-        time.sleep(5)
-    else:
-        raise RuntimeError(f"online store {online_store} not AVAILABLE in 5 min")
-
-    spark.sql(f"ALTER TABLE {upt_table} SET TBLPROPERTIES (delta.enableChangeDataFeed = true)")
-
-    try:
-        fe.get_table(name=upt_table)
-    except Exception:
-        fe.create_table(name=upt_table, primary_keys="policy_id",
-                        df=spark.table(upt_table),
-                        description="UPT for live pricing FeatureLookup.")
-    try:
-        w.feature_store.publish_table(
-            source_table_name = upt_table,
-            publish_spec      = PublishSpec(
-                online_store      = online_store,
-                online_table_name = upt_table,
-                publish_mode      = PublishSpecPublishMode.CONTINUOUS,
-            ),
-        )
-        print("publish_table OK (CONTINUOUS)")
-    except Exception as e:
-        if "already published" in str(e).lower() or "already exists" in str(e).lower():
-            print("already published — continuous sync is in place")
-        else:
-            raise
+for i in range(60):
+    store = w.feature_store.get_online_store(online_store)
+    if str(store.state).endswith("AVAILABLE"):
+        print(f"online store AVAILABLE after {i*5}s")
+        break
+    time.sleep(5)
 else:
-    print("skipping Lakebase setup — scorer uses warehouse-backed feature lookup")
+    raise RuntimeError(f"online store {online_store} not AVAILABLE in 5 min")
+
+# 1b. Register UPT as FE feature table (idempotent — the diag run confirmed
+# UPT is already registered in dev; on a fresh catalog this would be the
+# first-time call)
+try:
+    fe.get_table(name=upt_table)
+    print(f"FE table already registered: {upt_table}")
+except Exception:
+    print(f"registering {upt_table} as FE table…")
+    fe.create_table(name=upt_table, primary_keys="policy_id",
+                    df=spark.table(upt_table),
+                    description="UPT for live pricing FeatureLookup.")
+
+# 1c. Publish UPT to Lakebase, SNAPSHOT mode. Idempotent: if it's already
+# published, w.feature_store calls return the existing pipeline; we read it
+# back and capture the pipeline_id so the claim endpoint can trigger updates.
+publish_pipeline_id = None
+try:
+    res = w.feature_store.publish_table(
+        source_table_name = upt_table,
+        publish_spec      = PublishSpec(
+            online_store      = online_store,
+            online_table_name = upt_table,
+            publish_mode      = PublishSpecPublishMode.SNAPSHOT,
+        ),
+    )
+    publish_pipeline_id = getattr(res, "pipeline_id", None)
+    print(f"publish_table OK (SNAPSHOT) pipeline_id={publish_pipeline_id}")
+except Exception as e:
+    if "already published" in str(e).lower() or "already exists" in str(e).lower():
+        print("already published — fetching existing pipeline_id")
+        # No direct list method on feature_store; fall back to scanning
+        # pipelines for one whose name references our online table.
+        for p in w.pipelines.list_pipelines():
+            if p.name and upt_table in p.name:
+                publish_pipeline_id = p.pipeline_id
+                break
+        print(f"  resolved pipeline_id={publish_pipeline_id}")
+    else:
+        raise
+
+# 1d. Persist the pipeline_id so the FastAPI /claim endpoint can trigger
+# refreshes without having to re-derive it on every call.
+spark.sql(f"""
+    CREATE TABLE IF NOT EXISTS {fqn}.live_pricing_runtime_state (
+        key   STRING,
+        value STRING,
+        ts    TIMESTAMP
+    ) USING DELTA
+""")
+spark.sql(f"""
+    MERGE INTO {fqn}.live_pricing_runtime_state t
+    USING (SELECT 'publish_pipeline_id' AS key,
+                  '{publish_pipeline_id or ""}' AS value,
+                  current_timestamp() AS ts) s
+    ON t.key = s.key
+    WHEN MATCHED THEN UPDATE SET value = s.value, ts = s.ts
+    WHEN NOT MATCHED THEN INSERT (key, value, ts) VALUES (s.key, s.value, s.ts)
+""")
+print(f"persisted publish_pipeline_id={publish_pipeline_id} to live_pricing_runtime_state")
 
 # COMMAND ----------
 
@@ -156,7 +187,6 @@ if scorer_version is None:
             "catalog_name":  catalog,
             "schema_name":   schema,
             "endpoint_name": endpoint_name,
-            "warehouse_id":  warehouse_id,
         },
     )
     scorer_version = _latest_version(scorer_uc_name)
@@ -275,11 +305,13 @@ log_event(
     entity_version= str(scorer_version),
     user_id       = user,
     details={
-        "online_table":     upt_table,
-        "scorer_version":   scorer_version,
-        "warm_latencies_ms": warm_latencies_ms,
-        "warm_p50_ms":      warm_p50,
-        "sync_mode":        "CONTINUOUS",
+        "online_store":         online_store,
+        "online_table":         upt_table,
+        "scorer_version":       scorer_version,
+        "warm_latencies_ms":    warm_latencies_ms,
+        "warm_p50_ms":          warm_p50,
+        "publish_mode":         "SNAPSHOT",
+        "publish_pipeline_id":  publish_pipeline_id,
     },
     source="notebook",
 )
@@ -287,10 +319,11 @@ log_event(
 # COMMAND ----------
 
 dbutils.notebook.exit(json.dumps({
-    "online_store_name": online_store,
-    "endpoint_name":     endpoint_name,
-    "scorer_version":    scorer_version,
-    "warm_p50_ms":       warm_p50,
-    "warm_latencies_ms": warm_latencies_ms,
-    "metrics_table":     metrics_table,
+    "online_store_name":   online_store,
+    "endpoint_name":       endpoint_name,
+    "scorer_version":      scorer_version,
+    "warm_p50_ms":         warm_p50,
+    "warm_latencies_ms":   warm_latencies_ms,
+    "metrics_table":       metrics_table,
+    "publish_pipeline_id": publish_pipeline_id,
 }))

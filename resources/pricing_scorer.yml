@@ -9,8 +9,6 @@ resources:
           default: ${var.catalog_name}
         - name: schema_name
           default: ${var.schema_name}
-        - name: warehouse_id
-          default: ${var.warehouse_id}
         - name: endpoint_name
           default: "pricing_scorer"
 
@@ -25,7 +23,6 @@ resources:
             base_parameters:
               catalog_name:  ${var.catalog_name}
               schema_name:   ${var.schema_name}
-              warehouse_id:  "{{job.parameters.warehouse_id}}"
               endpoint_name: "{{job.parameters.endpoint_name}}"
           environment_key: env
 

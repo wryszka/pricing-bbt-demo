@@ -1,18 +1,14 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Pricing Scorer — unified live pricing endpoint
+# MAGIC # Pricing Scorer — unified live pricing endpoint with FeatureLookup
 # MAGIC
 # MAGIC One Model Serving endpoint (`pricing_scorer`) that takes a `policy_id`
 # MAGIC and returns the final premium plus all intermediate predictions and
 # MAGIC rating-engine components in a single round-trip.
 # MAGIC
-# MAGIC Logged with `mlflow.pyfunc.log_model`. At request time the pyfunc
-# MAGIC resolves features by issuing a single SQL warehouse query against
-# MAGIC `unified_pricing_table_live` — no Lakebase / online-store dependency.
-# MAGIC Lookup latency is dominated by warehouse roundtrip (~50-150ms per
-# MAGIC request) which is fine for the demo and avoids the publish_table
-# MAGIC quirks observed on dev workspaces.
-# MAGIC
+# MAGIC Logged with `fe.log_model(flavor=mlflow.pyfunc)` so feature resolution
+# MAGIC against `unified_pricing_table_live` happens automatically at serving
+# MAGIC time — Lakebase online lookup at request time, offline at training.
 # MAGIC The pyfunc bundles the 4 current champions and applies the rating-
 # MAGIC engine business rules — both baked at log time.
 # MAGIC
@@ -27,11 +23,11 @@
 dbutils.widgets.text("catalog_name",  "lr_serverless_aws_us_catalog")
 dbutils.widgets.text("schema_name",   "pricing_upt")
 dbutils.widgets.text("endpoint_name", "pricing_scorer")
-dbutils.widgets.text("warehouse_id",  "ab79eced8207d29b")
 
 # COMMAND ----------
 
-# MAGIC %pip install mlflow databricks-sdk statsmodels lightgbm scikit-learn --quiet
+# MAGIC %pip install mlflow databricks-feature-engineering databricks-sdk \
+# MAGIC   statsmodels lightgbm scikit-learn --quiet
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
@@ -39,7 +35,6 @@ dbutils.widgets.text("warehouse_id",  "ab79eced8207d29b")
 catalog        = dbutils.widgets.get("catalog_name")
 schema         = dbutils.widgets.get("schema_name")
 endpoint_name  = dbutils.widgets.get("endpoint_name")
-warehouse_id   = dbutils.widgets.get("warehouse_id")
 fqn            = f"{catalog}.{schema}"
 scorer_uc_name = f"{fqn}.pricing_scorer"
 
@@ -51,8 +46,12 @@ from mlflow.models import ModelSignature
 from mlflow.types.schema import Schema, ColSpec
 from mlflow.tracking import MlflowClient
 from mlflow.artifacts import download_artifacts
+from databricks.feature_engineering import FeatureEngineeringClient, FeatureLookup
+import pyspark.sql.functions as F
+
 mlflow.set_registry_uri("databricks-uc")
 client = MlflowClient()
+fe     = FeatureEngineeringClient()
 
 FAMILIES = ("freq_glm", "sev_glm", "demand_gbm", "fraud_gbm")
 
@@ -122,16 +121,14 @@ print("Inner artefacts:")
 for k, v in artifact_paths.items():
     print(f"  {k}: {v}")
 
-# Bake champions + rating config + lookup-table coordinates into a single JSON
-# artefact loaded in load_context. The pyfunc resolves features at request
-# time via SQL warehouse — no Lakebase / online-table dependency required.
+# Bake champions + rating config into the artifact bundle. FeatureLookup
+# resolves UPT features at request time — no warehouse_id / lookup table
+# coordinates needed inside the pyfunc.
 cfg_path = f"{tempfile.mkdtemp()}/config.json"
 with open(cfg_path, "w") as fh:
     json.dump({
         "champions":            CHAMPIONS,
         "rating_engine_config": RATING_CFG,
-        "warehouse_id":         warehouse_id,
-        "upt_table":            f"{fqn}.unified_pricing_table_live",
     }, fh)
 artifact_paths["config"] = cfg_path
 
@@ -174,9 +171,14 @@ FRAUD_FEATURES = [
     "employee_count_est", "claim_count_5y", "total_incurred_5y",
     "open_claims_count", "distinct_perils",
 ]
-# Predict-time SQL fetches all UPT cols (cheaper than projecting a tight
-# subset and keeping the projection in sync as features evolve). Sub-models
-# slice only the columns they need via _prep_raw / feature_name() lookups.
+# Extra UPT cols used to synthesize quote-level inputs for the demand model.
+DEMAND_PROXY_FEATURES = [
+    "region", "rate_per_1k_si", "market_position_ratio", "market_median_rate",
+]
+UNION_FEATURES = sorted(set(
+    FREQ_FEATURES + SEV_FEATURES + FRAUD_FEATURES + DEMAND_PROXY_FEATURES
+))
+print(f"FeatureLookup union: {len(UNION_FEATURES)} columns")
 
 # COMMAND ----------
 
@@ -197,46 +199,12 @@ class PricingScorer(PythonModel):
         import mlflow.sklearn, mlflow.lightgbm
         with open(context.artifacts["config"]) as fh:
             payload = _j.load(fh)
-        self.champions    = payload["champions"]
-        self.rating_cfg   = payload["rating_engine_config"]
-        self.warehouse_id = payload["warehouse_id"]
-        self.upt_table    = payload["upt_table"]
+        self.champions  = payload["champions"]
+        self.rating_cfg = payload["rating_engine_config"]
         self.freq   = mlflow.sklearn.load_model(context.artifacts["freq_glm"])
         self.sev    = mlflow.sklearn.load_model(context.artifacts["sev_glm"])
         self.demand = mlflow.lightgbm.load_model(context.artifacts["demand_gbm"])
         self.fraud  = mlflow.lightgbm.load_model(context.artifacts["fraud_gbm"])
-        # Lazy SDK init — defer until first predict so cold-start is faster.
-        self._w = None
-
-    def _lookup_features(self, policy_ids):
-        """Resolve UPT features for a list of policy_ids via SQL warehouse.
-        Latency is dominated by warehouse roundtrip — typically 50-150ms for
-        a single-row lookup. Returns a pandas DataFrame keyed on policy_id."""
-        import pandas as pd
-        from databricks.sdk import WorkspaceClient
-        if self._w is None:
-            self._w = WorkspaceClient()
-        ids = ",".join(f"'{p.replace(chr(39), chr(39)+chr(39))}'" for p in policy_ids)
-        sql = f"SELECT * FROM {self.upt_table} WHERE policy_id IN ({ids})"
-        resp = self._w.statement_execution.execute_statement(
-            warehouse_id = self.warehouse_id,
-            statement    = sql,
-            wait_timeout = "30s",
-        )
-        result = resp.result
-        cols   = [c.name for c in (resp.manifest.schema.columns or [])]
-        rows   = list(result.data_array or [])
-        if not rows:
-            return pd.DataFrame(columns=cols)
-        df = pd.DataFrame(rows, columns=cols)
-        # All values come back as strings — coerce numerics so the GLM/GBM
-        # wrappers see the right dtypes.
-        for c in df.columns:
-            if c == "policy_id":
-                continue
-            converted = pd.to_numeric(df[c], errors="coerce")
-            df[c] = converted if converted.notna().any() else df[c]
-        return df
 
     def _prep(self, df):
         out = df.copy()
@@ -353,23 +321,16 @@ class PricingScorer(PythonModel):
 
     def predict(self, context, model_input, params=None):
         import pandas as pd, numpy as np
-        # Input shape: a DataFrame (or list-of-dicts) with a policy_id column.
-        # Resolve features from UPT via SQL warehouse — no online-store
-        # dependency, works on any workspace with the warehouse + grants set.
+        # FE wrapper has already resolved UPT features. model_input has
+        # policy_id + every UNION_FEATURES column looked up from the online
+        # store at request time (sub-10ms).
         if not hasattr(model_input, "columns"):
             model_input = pd.DataFrame(list(model_input))
-        policy_ids = [str(p).strip().upper() for p in model_input["policy_id"].tolist()]
-        features_df = self._lookup_features(policy_ids)
 
-        # Preserve request order — the warehouse may return rows in any order.
-        idx = pd.Index(features_df["policy_id"].astype(str)) if "policy_id" in features_df.columns else None
-        if idx is not None:
-            features_df = features_df.set_index("policy_id").reindex(policy_ids).reset_index()
-
-        freq   = self._score_glm(self.freq,   features_df)
-        sev    = self._score_glm(self.sev,    features_df)
-        fraud  = self._score_lgb(self.fraud,  features_df)
-        demand = self._score_lgb(self.demand, self._build_demand_input(features_df))
+        freq   = self._score_glm(self.freq,   model_input)
+        sev    = self._score_glm(self.sev,    model_input)
+        fraud  = self._score_lgb(self.fraud,  model_input)
+        demand = self._score_lgb(self.demand, self._build_demand_input(model_input))
 
         technical, loaded, fraud_load, demand_adj, final = self._apply_rules(
             freq, sev, demand, fraud)
@@ -393,6 +354,34 @@ class PricingScorer(PythonModel):
 
 
 # COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Capture FeatureLookup spec via a tiny training_set
+# MAGIC
+# MAGIC `fe.log_model` requires a `training_set` to capture the FeatureLookup
+# MAGIC metadata that drives serving-time resolution. Labels are dummy — we
+# MAGIC never train this thing, just package it.
+
+# COMMAND ----------
+
+KEY = "policy_id"
+
+labels_df = (
+    spark.table(f"{fqn}.unified_pricing_table_live")
+         .select(KEY).limit(50)
+         .withColumn("_dummy_label", F.lit(0.0))
+)
+
+training_set = fe.create_training_set(
+    df              = labels_df,
+    feature_lookups = [FeatureLookup(
+        table_name    = f"{fqn}.unified_pricing_table_live",
+        feature_names = UNION_FEATURES,
+        lookup_key    = KEY,
+    )],
+    label           = "_dummy_label",
+    exclude_columns = [KEY],
+)
 
 # COMMAND ----------
 
@@ -423,27 +412,18 @@ input_example = pd.DataFrame({"policy_id": sample_pids})
 
 # COMMAND ----------
 
-# Declare the resources the pyfunc reaches at request time. Model Serving
-# uses this to (a) check the model owner has access at deploy time, and
-# (b) auto-inject DATABRICKS_HOST + DATABRICKS_TOKEN env vars scoped to
-# those resources at request time so the SDK's default auth chain works.
-from mlflow.models.resources import DatabricksSQLWarehouse, DatabricksTable
-resources = [
-    DatabricksSQLWarehouse(warehouse_id=warehouse_id),
-    DatabricksTable(table_name=f"{fqn}.unified_pricing_table_live"),
-]
-
 with mlflow.start_run(run_name="pricing_scorer_deploy") as run:
-    mlflow.pyfunc.log_model(
+    fe.log_model(
+        model                 = PricingScorer(),
         artifact_path         = "scorer",
-        python_model          = PricingScorer(),
+        flavor                = mlflow.pyfunc,
+        training_set          = training_set,
         registered_model_name = scorer_uc_name,
         artifacts             = artifact_paths,
         input_example         = input_example,
         signature             = signature,
-        resources             = resources,
         pip_requirements=[
-            "mlflow>=2.12", "databricks-sdk",
+            "mlflow>=2.12", "databricks-feature-engineering",
             "scikit-learn", "lightgbm", "statsmodels",
             "pandas", "numpy", "databricks-sdk",
         ],

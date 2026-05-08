@@ -5,22 +5,18 @@ resources:
   jobs:
 
     live_pricing_provision:
-      name: "v1 — Live pricing: provision (endpoint + warm-up)"
+      name: "v1 — Live pricing: provision (Lakebase SNAPSHOT + endpoint + warm-up)"
       parameters:
         - name: catalog_name
           default: ${var.catalog_name}
         - name: schema_name
           default: ${var.schema_name}
-        - name: warehouse_id
-          default: ${var.warehouse_id}
         - name: online_store_name
           default: ${var.live_online_store_name}
         - name: endpoint_name
           default: ${var.live_endpoint_name}
         - name: online_store_capacity
           default: "CU_2"
-        - name: use_online_store
-          default: "false"
 
       permissions:
         - service_principal_name: ${var.app_service_principal_id}
@@ -33,11 +29,9 @@ resources:
             base_parameters:
               catalog_name:          "{{job.parameters.catalog_name}}"
               schema_name:           "{{job.parameters.schema_name}}"
-              warehouse_id:          "{{job.parameters.warehouse_id}}"
               online_store_name:     "{{job.parameters.online_store_name}}"
               endpoint_name:         "{{job.parameters.endpoint_name}}"
               online_store_capacity: "{{job.parameters.online_store_capacity}}"
-              use_online_store:      "{{job.parameters.use_online_store}}"
           environment_key: env
 
       environments:
