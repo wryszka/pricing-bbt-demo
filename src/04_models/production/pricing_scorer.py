@@ -422,8 +422,11 @@ with mlflow.start_run(run_name="pricing_scorer_deploy") as run:
         artifacts             = artifact_paths,
         input_example         = input_example,
         signature             = signature,
+        # NOTE: do NOT include databricks-feature-engineering — fe.log_model
+        # auto-adds databricks-feature-lookup==1.* for serving, and the two
+        # clients can't coexist in the same env (it's a startup assertion).
         pip_requirements=[
-            "mlflow>=2.12", "databricks-feature-engineering",
+            "mlflow>=2.12",
             "scikit-learn", "lightgbm", "statsmodels",
             "pandas", "numpy", "databricks-sdk",
         ],
