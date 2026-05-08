@@ -204,39 +204,11 @@ else:
 
 # COMMAND ----------
 
-# Warm up — issue 5 sequential quotes against random policy_ids; discard the
-# first 2 latencies (cold path / lazy import). Reports the warm latency.
-import requests as _rq
-
-sample_pids = [r["policy_id"] for r in spark.sql(
-    f"SELECT policy_id FROM {upt_table} LIMIT 5"
-).collect()]
-print(f"warm-up policy ids: {sample_pids}")
-
-host  = w.config.host.rstrip("/")
-token = w.config._header_factory()
-warm_latencies_ms = []
-for pid in sample_pids:
-    t0 = time.perf_counter()
-    resp = _rq.post(
-        f"{host}/serving-endpoints/{endpoint_name}/invocations",
-        headers={**token, "Content-Type": "application/json"},
-        json={"dataframe_records": [{"policy_id": pid}]},
-        timeout=120,
-    )
-    dt = (time.perf_counter() - t0) * 1000
-    resp.raise_for_status()
-    warm_latencies_ms.append(round(dt, 1))
-    print(f"  {pid} → {dt:.0f} ms")
-
-warm_after_initial = warm_latencies_ms[2:]
-warm_p50 = sorted(warm_after_initial)[len(warm_after_initial) // 2] if warm_after_initial else None
-print(f"warm latencies: {warm_latencies_ms}  warm-after-initial p50: {warm_p50} ms")
-
-# COMMAND ----------
-
 # MAGIC %md
 # MAGIC ## 5. Metrics table for load-test chart
+# MAGIC
+# MAGIC Created BEFORE warm-up so a warm-up failure (auth quirks in the
+# MAGIC notebook context) doesn't leave the system without a metrics sink.
 
 # COMMAND ----------
 
@@ -252,6 +224,46 @@ spark.sql(f"""
     ) USING DELTA
 """)
 print(f"metrics table ready: {metrics_table}")
+
+# COMMAND ----------
+
+# Warm up — issue 5 sequential quotes against random policy_ids; discard the
+# first 2 latencies (cold path / lazy import). Non-fatal: notebook auth into
+# the serving endpoint is finicky on dev — log the failure but don't fail
+# the provision job, since the FastAPI app warm-paths the endpoint naturally
+# on the first user click.
+import requests as _rq
+
+warm_latencies_ms: list[float] = []
+warm_p50: float | None = None
+try:
+    sample_pids = [r["policy_id"] for r in spark.sql(
+        f"SELECT policy_id FROM {upt_table} LIMIT 5"
+    ).collect()]
+    print(f"warm-up policy ids: {sample_pids}")
+
+    host  = w.config.host.rstrip("/")
+    token = w.config._header_factory()
+    for pid in sample_pids:
+        t0 = time.perf_counter()
+        resp = _rq.post(
+            f"{host}/serving-endpoints/{endpoint_name}/invocations",
+            headers={**token, "Content-Type": "application/json"},
+            json={"dataframe_records": [{"policy_id": pid}]},
+            timeout=120,
+        )
+        dt = (time.perf_counter() - t0) * 1000
+        if resp.status_code == 200:
+            warm_latencies_ms.append(round(dt, 1))
+            print(f"  {pid} → {dt:.0f} ms")
+        else:
+            print(f"  {pid} → HTTP {resp.status_code}: {resp.text[:200]}")
+
+    warm_after_initial = warm_latencies_ms[2:]
+    warm_p50 = sorted(warm_after_initial)[len(warm_after_initial) // 2] if warm_after_initial else None
+    print(f"warm latencies: {warm_latencies_ms}  warm-after-initial p50: {warm_p50} ms")
+except Exception as e:
+    print(f"warm-up failed (non-fatal): {type(e).__name__}: {str(e)[:200]}")
 
 # COMMAND ----------
 
