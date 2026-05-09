@@ -423,8 +423,10 @@ async def file_claim(req: ClaimRequest, background_tasks: BackgroundTasks) -> di
                 update_id = getattr(upd, "update_id", None)
             except Exception as e:
                 return {"triggered": False, "error": str(e)[:200]}
-            # Poll for completion (~30s typical, cap at 60s)
-            deadline = time.perf_counter() + 60.0
+            # Poll for completion. Lakebase SNAPSHOT publish on a 500k-row
+            # source typically lands in 50-70s; cap at 180s so the demo card
+            # reports `completed` instead of an inaccurate `RUNNING (62s)`.
+            deadline = time.perf_counter() + 180.0
             terminal = {"COMPLETED", "FAILED", "CANCELED"}
             state = None
             while time.perf_counter() < deadline:
