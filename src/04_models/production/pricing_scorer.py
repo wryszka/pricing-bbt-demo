@@ -128,18 +128,17 @@ for k, v in artifact_paths.items():
 # store dependency. Trade-off: data is frozen at log time; re-run this
 # notebook to refresh.
 #
-# Write via Spark (coalesce(1)) instead of toPandas().to_parquet() — the
-# latter drags Spark's PlanMetrics into the pandas frame's metadata,
-# which breaks MLflow's artifact serialization with a JSON-serializer
-# TypeError when MLflow inspects the artifact at log time.
-import os as _os, glob, shutil as _sh
-_upt_dir = f"{tempfile.mkdtemp()}/upt_parquet"
+# Write via Spark to a UC Volume (serverless can't write to /tmp/), then
+# copy the part file into a temp local path so MLflow log_model gets a
+# clean local file path.
+import os as _os, glob, shutil as _sh, time as _time
+_run_id = _time.strftime("%Y%m%d_%H%M%S")
+_upt_volume_dir = f"/Volumes/{catalog}/{schema}/raw_data/_upt_snapshots/{_run_id}"
+_os.makedirs(_upt_volume_dir, exist_ok=True)
 spark.table(f"{fqn}.unified_pricing_table_live") \
      .coalesce(1) \
-     .write.mode("overwrite").parquet(_upt_dir)
-# Spark writes part-00000-...parquet inside the dir. Pull the single file
-# out so we can pass a clean file path to mlflow.log_model artifacts.
-_part = glob.glob(f"{_upt_dir}/part-*.parquet")[0]
+     .write.mode("overwrite").parquet(_upt_volume_dir)
+_part = glob.glob(f"{_upt_volume_dir}/part-*.parquet")[0]
 upt_path = f"{tempfile.mkdtemp()}/upt.parquet"
 _sh.copy(_part, upt_path)
 print(f"UPT snapshot: {_os.path.getsize(upt_path)/1024/1024:.1f} MB at {upt_path}")
