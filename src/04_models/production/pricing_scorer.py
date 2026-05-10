@@ -122,30 +122,8 @@ print("Inner artefacts:")
 for k, v in artifact_paths.items():
     print(f"  {k}: {v}")
 
-# Bake the WHOLE UPT into the model artifact as a single parquet file.
-# Predict-time feature resolution is then a sub-millisecond in-memory
-# reindex — no warehouse roundtrip, no FE serving wrapper, no online
-# store dependency. Trade-off: data is frozen at log time; re-run this
-# notebook to refresh.
-#
-# Write via Spark to a UC Volume (serverless can't write to /tmp/), then
-# copy the part file into a temp local path so MLflow log_model gets a
-# clean local file path.
-import os as _os, glob, shutil as _sh, time as _time
-_run_id = _time.strftime("%Y%m%d_%H%M%S")
-_upt_volume_dir = f"/Volumes/{catalog}/{schema}/raw_data/_upt_snapshots/{_run_id}"
-_os.makedirs(_upt_volume_dir, exist_ok=True)
-spark.table(f"{fqn}.unified_pricing_table_live") \
-     .coalesce(1) \
-     .write.mode("overwrite").parquet(_upt_volume_dir)
-_part = glob.glob(f"{_upt_volume_dir}/part-*.parquet")[0]
-upt_path = f"{tempfile.mkdtemp()}/upt.parquet"
-_sh.copy(_part, upt_path)
-print(f"UPT snapshot: {_os.path.getsize(upt_path)/1024/1024:.1f} MB at {upt_path}")
-artifact_paths["upt"] = upt_path
-
-# Bake champions + rating config alongside. warehouse_id / upt_table are no
-# longer used at predict time (kept for backwards compat / observability).
+# Bake config (champions + rating + warehouse coords) — features are looked
+# up live from the SQL warehouse at request time inside predict().
 cfg_path = f"{tempfile.mkdtemp()}/config.json"
 with open(cfg_path, "w") as fh:
     json.dump({
@@ -153,7 +131,6 @@ with open(cfg_path, "w") as fh:
         "rating_engine_config": RATING_CFG,
         "warehouse_id":         warehouse_id,
         "upt_table":            f"{fqn}.unified_pricing_table_live",
-        "upt_row_count":        len(upt_pdf),
     }, fh)
 artifact_paths["config"] = cfg_path
 
@@ -225,28 +202,55 @@ class PricingScorer(PythonModel):
 
     def load_context(self, context):
         import json as _j
-        import pandas as _pd
         import mlflow.sklearn, mlflow.lightgbm
         with open(context.artifacts["config"]) as fh:
             payload = _j.load(fh)
         self.champions    = payload["champions"]
         self.rating_cfg   = payload["rating_engine_config"]
+        self.warehouse_id = payload["warehouse_id"]
+        self.upt_table    = payload["upt_table"]
         self.freq   = mlflow.sklearn.load_model(context.artifacts["freq_glm"])
         self.sev    = mlflow.sklearn.load_model(context.artifacts["sev_glm"])
         self.demand = mlflow.lightgbm.load_model(context.artifacts["demand_gbm"])
         self.fraud  = mlflow.lightgbm.load_model(context.artifacts["fraud_gbm"])
-        # Load the baked UPT snapshot into memory and index by policy_id.
-        upt = _pd.read_parquet(context.artifacts["upt"])
-        self._upt = upt.set_index("policy_id")
+        self._w = None
 
     def _lookup_features(self, policy_ids):
-        """In-memory feature lookup — sub-ms regardless of dataset size.
-        UPT is loaded into a pandas index at container start; predict-time
-        resolution is a vectorised reindex against the request's policy_ids."""
+        """Live SQL warehouse feature lookup. Surfaces the actual statement
+        status if it doesn't return a manifest so failures are diagnosable."""
         import pandas as pd
-        # reindex preserves request order and fills missing policy_ids with
-        # NaN-rows that downstream _prep coerces to 0.0 + '(null)'.
-        df = self._upt.reindex(policy_ids).reset_index()
+        from databricks.sdk import WorkspaceClient
+        if self._w is None:
+            self._w = WorkspaceClient()
+        ids = ",".join(f"'{p.replace(chr(39), chr(39)+chr(39))}'" for p in policy_ids)
+        sql = f"SELECT * FROM {self.upt_table} WHERE policy_id IN ({ids})"
+        resp = self._w.statement_execution.execute_statement(
+            warehouse_id = self.warehouse_id,
+            statement    = sql,
+            wait_timeout = "30s",
+        )
+        # The dev tier was returning resp.manifest=None silently. Surface the
+        # actual state + error so the cause is readable in the trace.
+        if resp.manifest is None or resp.manifest.schema is None:
+            status = getattr(resp, "status", None)
+            state  = getattr(status, "state", None)
+            err    = getattr(getattr(status, "error", None), "message", None)
+            raise RuntimeError(
+                f"warehouse {self.warehouse_id} returned no manifest. "
+                f"state={state} error={err} statement_id={resp.statement_id}"
+            )
+        cols   = [c.name for c in (resp.manifest.schema.columns or [])]
+        rows   = list((resp.result and resp.result.data_array) or [])
+        if not rows:
+            return pd.DataFrame(columns=cols)
+        df = pd.DataFrame(rows, columns=cols)
+        # SQL API returns everything as strings — coerce numerics so the
+        # GLM/GBM wrappers see the right dtypes.
+        for c in df.columns:
+            if c == "policy_id":
+                continue
+            converted = pd.to_numeric(df[c], errors="coerce")
+            df[c] = converted if converted.notna().any() else df[c]
         return df
 
     def _prep(self, df):
