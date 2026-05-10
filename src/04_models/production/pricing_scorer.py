@@ -122,17 +122,27 @@ print("Inner artefacts:")
 for k, v in artifact_paths.items():
     print(f"  {k}: {v}")
 
-# Bake the WHOLE UPT into the model artifact as parquet. Predict-time
-# feature resolution is then a sub-millisecond in-memory dict lookup — no
-# warehouse roundtrip, no FE serving wrapper, no online store dependency.
-# Trade-off: data is frozen at log time. Re-run this notebook whenever
-# the demo state needs refreshing.
-upt_pdf = spark.table(f"{fqn}.unified_pricing_table_live").toPandas()
-print(f"UPT snapshot: {len(upt_pdf):,} rows × {len(upt_pdf.columns)} cols")
+# Bake the WHOLE UPT into the model artifact as a single parquet file.
+# Predict-time feature resolution is then a sub-millisecond in-memory
+# reindex — no warehouse roundtrip, no FE serving wrapper, no online
+# store dependency. Trade-off: data is frozen at log time; re-run this
+# notebook to refresh.
+#
+# Write via Spark (coalesce(1)) instead of toPandas().to_parquet() — the
+# latter drags Spark's PlanMetrics into the pandas frame's metadata,
+# which breaks MLflow's artifact serialization with a JSON-serializer
+# TypeError when MLflow inspects the artifact at log time.
+import os as _os, glob, shutil as _sh
+_upt_dir = f"{tempfile.mkdtemp()}/upt_parquet"
+spark.table(f"{fqn}.unified_pricing_table_live") \
+     .coalesce(1) \
+     .write.mode("overwrite").parquet(_upt_dir)
+# Spark writes part-00000-...parquet inside the dir. Pull the single file
+# out so we can pass a clean file path to mlflow.log_model artifacts.
+_part = glob.glob(f"{_upt_dir}/part-*.parquet")[0]
 upt_path = f"{tempfile.mkdtemp()}/upt.parquet"
-upt_pdf.to_parquet(upt_path, index=False)
-import os as _os
-print(f"  parquet size: {_os.path.getsize(upt_path)/1024/1024:.1f} MB")
+_sh.copy(_part, upt_path)
+print(f"UPT snapshot: {_os.path.getsize(upt_path)/1024/1024:.1f} MB at {upt_path}")
 artifact_paths["upt"] = upt_path
 
 # Bake champions + rating config alongside. warehouse_id / upt_table are no
