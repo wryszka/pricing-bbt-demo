@@ -528,7 +528,7 @@ served = [ServedEntityInput(
     entity_name           = scorer_uc_name,
     entity_version        = str(latest),
     scale_to_zero_enabled = False,
-    workload_size         = "Small",
+    workload_size         = "Large",
 )]
 
 existing = None

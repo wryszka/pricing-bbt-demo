@@ -224,7 +224,7 @@ served = [ServedEntityInput(
     entity_name           = scorer_uc_name,
     entity_version        = str(scorer_version),
     scale_to_zero_enabled = False,
-    workload_size         = "Small",
+    workload_size         = "Large",
 )]
 
 # Reconcile the endpoint state before issuing an update_config:
