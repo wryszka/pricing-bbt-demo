@@ -122,9 +122,21 @@ print("Inner artefacts:")
 for k, v in artifact_paths.items():
     print(f"  {k}: {v}")
 
-# Bake champions + rating config + lookup-table coordinates into a single JSON
-# artefact loaded in load_context. The pyfunc resolves features at request
-# time via SQL warehouse — no Lakebase / online-table dependency required.
+# Bake the WHOLE UPT into the model artifact as parquet. Predict-time
+# feature resolution is then a sub-millisecond in-memory dict lookup — no
+# warehouse roundtrip, no FE serving wrapper, no online store dependency.
+# Trade-off: data is frozen at log time. Re-run this notebook whenever
+# the demo state needs refreshing.
+upt_pdf = spark.table(f"{fqn}.unified_pricing_table_live").toPandas()
+print(f"UPT snapshot: {len(upt_pdf):,} rows × {len(upt_pdf.columns)} cols")
+upt_path = f"{tempfile.mkdtemp()}/upt.parquet"
+upt_pdf.to_parquet(upt_path, index=False)
+import os as _os
+print(f"  parquet size: {_os.path.getsize(upt_path)/1024/1024:.1f} MB")
+artifact_paths["upt"] = upt_path
+
+# Bake champions + rating config alongside. warehouse_id / upt_table are no
+# longer used at predict time (kept for backwards compat / observability).
 cfg_path = f"{tempfile.mkdtemp()}/config.json"
 with open(cfg_path, "w") as fh:
     json.dump({
@@ -132,6 +144,7 @@ with open(cfg_path, "w") as fh:
         "rating_engine_config": RATING_CFG,
         "warehouse_id":         warehouse_id,
         "upt_table":            f"{fqn}.unified_pricing_table_live",
+        "upt_row_count":        len(upt_pdf),
     }, fh)
 artifact_paths["config"] = cfg_path
 
@@ -203,48 +216,28 @@ class PricingScorer(PythonModel):
 
     def load_context(self, context):
         import json as _j
+        import pandas as _pd
         import mlflow.sklearn, mlflow.lightgbm
         with open(context.artifacts["config"]) as fh:
             payload = _j.load(fh)
         self.champions    = payload["champions"]
         self.rating_cfg   = payload["rating_engine_config"]
-        self.warehouse_id = payload["warehouse_id"]
-        self.upt_table    = payload["upt_table"]
         self.freq   = mlflow.sklearn.load_model(context.artifacts["freq_glm"])
         self.sev    = mlflow.sklearn.load_model(context.artifacts["sev_glm"])
         self.demand = mlflow.lightgbm.load_model(context.artifacts["demand_gbm"])
         self.fraud  = mlflow.lightgbm.load_model(context.artifacts["fraud_gbm"])
-        # Lazy SDK init — defer until first predict so cold-start is faster.
-        self._w = None
+        # Load the baked UPT snapshot into memory and index by policy_id.
+        upt = _pd.read_parquet(context.artifacts["upt"])
+        self._upt = upt.set_index("policy_id")
 
     def _lookup_features(self, policy_ids):
-        """Resolve UPT features for a list of policy_ids via SQL warehouse.
-        Latency is dominated by warehouse roundtrip — typically 50-150ms for
-        a single-row lookup. Returns a pandas DataFrame keyed on policy_id."""
+        """In-memory feature lookup — sub-ms regardless of dataset size.
+        UPT is loaded into a pandas index at container start; predict-time
+        resolution is a vectorised reindex against the request's policy_ids."""
         import pandas as pd
-        from databricks.sdk import WorkspaceClient
-        if self._w is None:
-            self._w = WorkspaceClient()
-        ids = ",".join(f"'{p.replace(chr(39), chr(39)+chr(39))}'" for p in policy_ids)
-        sql = f"SELECT * FROM {self.upt_table} WHERE policy_id IN ({ids})"
-        resp = self._w.statement_execution.execute_statement(
-            warehouse_id = self.warehouse_id,
-            statement    = sql,
-            wait_timeout = "30s",
-        )
-        result = resp.result
-        cols   = [c.name for c in (resp.manifest.schema.columns or [])]
-        rows   = list(result.data_array or [])
-        if not rows:
-            return pd.DataFrame(columns=cols)
-        df = pd.DataFrame(rows, columns=cols)
-        # All values come back as strings — coerce numerics so the GLM/GBM
-        # wrappers see the right dtypes.
-        for c in df.columns:
-            if c == "policy_id":
-                continue
-            converted = pd.to_numeric(df[c], errors="coerce")
-            df[c] = converted if converted.notna().any() else df[c]
+        # reindex preserves request order and fills missing policy_ids with
+        # NaN-rows that downstream _prep coerces to 0.0 + '(null)'.
+        df = self._upt.reindex(policy_ids).reset_index()
         return df
 
     def _prep(self, df):
