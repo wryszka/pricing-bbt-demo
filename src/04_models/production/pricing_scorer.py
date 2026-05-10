@@ -230,14 +230,19 @@ class PricingScorer(PythonModel):
             wait_timeout = "30s",
         )
         # The dev tier was returning resp.manifest=None silently. Surface the
-        # actual state + error so the cause is readable in the trace.
+        # actual state + error + identity so the cause is readable in the trace.
         if resp.manifest is None or resp.manifest.schema is None:
             status = getattr(resp, "status", None)
             state  = getattr(status, "state", None)
             err    = getattr(getattr(status, "error", None), "message", None)
+            try:
+                me = self._w.current_user.me().user_name
+            except Exception as e:
+                me = f"unknown ({type(e).__name__})"
             raise RuntimeError(
                 f"warehouse {self.warehouse_id} returned no manifest. "
-                f"state={state} error={err} statement_id={resp.statement_id}"
+                f"running_as={me} state={state} error={err} "
+                f"statement_id={resp.statement_id}"
             )
         cols   = [c.name for c in (resp.manifest.schema.columns or [])]
         rows   = list((resp.result and resp.result.data_array) or [])
