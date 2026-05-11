@@ -30,15 +30,38 @@ def _execute_sync(sql: str) -> list[dict[str, Any]]:
     columns = [col.name for col in response.manifest.schema.columns]
     rows: list[dict[str, Any]] = []
 
+    # Inline data — first chunk is on response.result.data_array.
     if response.result and response.result.data_array:
         for row_data in response.result.data_array:
             rows.append(dict(zip(columns, row_data)))
 
+    # External links — pre-signed URLs in lieu of inline data.
     if response.result and response.result.external_links:
         for link in response.result.external_links:
             chunk = client.statement_execution.get_statement_result_chunk_n(
                 statement_id=response.statement_id,
                 chunk_index=link.chunk_index,
+            )
+            if chunk.data_array:
+                for row_data in chunk.data_array:
+                    rows.append(dict(zip(columns, row_data)))
+
+    # Inline data, additional chunks — when the result spans more than one
+    # chunk (the default 16 MiB inline cap), only chunk 0 lands on
+    # response.result.data_array. Chunks 1..N are listed in manifest.chunks
+    # and must be fetched explicitly. Without this loop, large result sets
+    # silently truncate to the first chunk's row count (sometimes a single
+    # row when wide rows compress to one chunk).
+    manifest = response.manifest
+    if manifest and getattr(manifest, "chunks", None):
+        first_chunk = response.result.chunk_index if response.result else 0
+        for chunk_info in manifest.chunks:
+            idx = chunk_info.chunk_index
+            if idx is None or idx == first_chunk:
+                continue
+            chunk = client.statement_execution.get_statement_result_chunk_n(
+                statement_id=response.statement_id,
+                chunk_index=idx,
             )
             if chunk.data_array:
                 for row_data in chunk.data_array:
