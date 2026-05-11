@@ -65,16 +65,18 @@ KEY    = "policy_id"
 # COMMAND ----------
 
 upt_table = f"{fqn}.unified_motor_table_live"
-labels_df = spark.table(upt_table).select(KEY, TARGET)
+# Keep policy_id in the loaded pdf so the train/test mask aligns with the
+# FE-resolved rows (FeatureLookup may drop unmatched rows; deriving the mask
+# from labels_df separately gives a length mismatch).
+labels_df = spark.table(upt_table).select(KEY, TARGET).sample(0.10, seed=42)
 
 training_set = fe.create_training_set(
     df              = labels_df,
     feature_lookups = [FeatureLookup(table_name=upt_table, feature_names=FEATURES, lookup_key=KEY)],
     label           = TARGET,
-    exclude_columns = [KEY],
+    # NB: do NOT exclude_columns=[KEY] — we need it for mask alignment.
 )
-# Sample down to keep wall-clock reasonable on 1M rows; GLM converges fine on 100k.
-training_pdf = training_set.load_df().sample(0.10, seed=42).toPandas()
+training_pdf = training_set.load_df().toPandas()
 print(f"Training set: {len(training_pdf):,} rows × {len(training_pdf.columns)} cols")
 
 # COMMAND ----------
@@ -91,9 +93,8 @@ def _prep_raw(df: pd.DataFrame) -> pd.DataFrame:
 X = pd.get_dummies(_prep_raw(training_pdf), drop_first=True, dtype=float).fillna(0.0)
 y = training_pdf[TARGET].fillna(0).astype(float)
 
-# 80/20 split by policy_id hash for determinism
-keys = labels_df.sample(0.10, seed=42).toPandas()[KEY]
-mask = keys.apply(lambda s: abs(hash(s)) % 100 < 80).values
+# Mask derived from training_pdf itself so X / y / mask are always aligned.
+mask = training_pdf[KEY].apply(lambda s: abs(hash(s)) % 100 < 80).values
 X_train, y_train = X[mask], y[mask]
 X_test,  y_test  = X[~mask], y[~mask]
 print(f"Train: {len(X_train):,}   Test: {len(X_test):,}")
