@@ -48,12 +48,14 @@ from server.sql import execute_query
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/live-pricing", tags=["live-pricing"])
 
-ENDPOINT_NAME       = "pricing_scorer"
-ONLINE_STORE_NAME   = "pricing-upt-online-store-live"
-PROVISION_JOB_NAME  = "v1 — Live pricing: provision (endpoint + warm-up)"
-TEARDOWN_JOB_NAME   = "v1 — Live pricing: teardown (delete endpoint + online store)"
+ENDPOINT_NAME       = "motor_pricing_scorer"
+ONLINE_STORE_NAME   = "motor-pricing-online-store"
+UPT_TABLE_NAME      = "unified_motor_table_live"
+TELEMATICS_TABLE    = "motor_telematics_aggregate"
+RUNTIME_STATE_TABLE = "live_motor_runtime_state"
+METRICS_TABLE_NAME  = "live_motor_metrics"
+PROVISION_JOB_NAME  = "Motor live serving: provision (Lakebase + endpoint reconcile)"
 LOAD_TEST_JOB_NAME  = "v1 — Live pricing: load test (sustained QPS against scorer)"
-REFRESH_JOB_NAME    = "v1 — Live pricing: file claim + refresh UPT"
 
 
 def _find_job_by_name(name: str) -> int | None:
@@ -137,7 +139,7 @@ async def status() -> dict:
         "state":         state,
         "endpoint":      {"name": ENDPOINT_NAME, **ep_state},
         "online_store":  store_state,
-        "metrics_table": fqn("live_pricing_metrics"),
+        "metrics_table": fqn(METRICS_TABLE_NAME),
     }
 
 
@@ -188,13 +190,16 @@ async def start() -> dict:
 
 @router.post("/stop")
 async def stop() -> dict:
+    """Motor live serving has no teardown job (Lakebase store + endpoint
+    are persistent across demo runs to avoid the ~10 min cold-start). This
+    endpoint is kept so the UI's power button has a place to call; it just
+    no-ops with a 501 unless we wire one up."""
+    raise HTTPException(501, "motor live serving has no teardown job; the "
+                              "stack is persistent. Run `motor_provision` to "
+                              "refresh.")
+    # (unreachable — kept for code symmetry if a teardown is wired later)
     user = get_current_user()
-    triggered = await _trigger_job(TEARDOWN_JOB_NAME, {
-        "catalog_name":      get_catalog(),
-        "schema_name":       get_schema(),
-        "online_store_name": ONLINE_STORE_NAME,
-        "endpoint_name":     ENDPOINT_NAME,
-    })
+    triggered = {"job_id": None, "run_id": None}
     await log_audit_event(
         event_type="live_pricing_stop_requested",
         entity_type="endpoint",
@@ -218,7 +223,7 @@ def _write_metric_blocking(source: str, policy_id: str, latency_ms: float,
     """Synchronous metric write — wrap with asyncio.to_thread."""
     fp = "NULL" if final_premium is None else str(final_premium)
     sql = f"""
-        INSERT INTO {fqn('live_pricing_metrics')}
+        INSERT INTO {fqn(METRICS_TABLE_NAME)}
           (ts, source, policy_id, latency_ms, final_premium, status_code, run_id)
         VALUES (current_timestamp(), '{source}',
                 '{policy_id.replace("'", "''")}', {latency_ms},
@@ -311,31 +316,23 @@ async def quote(req: QuoteRequest) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Claim filing — inline INSERT + UPT MERGE for snappy demo
+# Telematics event — mutates the policy's telematics aggregate inline so the
+# next quote returns a different premium driven by real model signal.
 # ---------------------------------------------------------------------------
 
-class ClaimRequest(BaseModel):
-    policy_id:    str
-    claim_amount: float
-    claim_type:   str = "ACCIDENTAL_DAMAGE"
-
-
-_PERIL_MAP = {
-    "ACCIDENTAL_DAMAGE": "Other",
-    "FIRE":              "Fire",
-    "FLOOD":             "Flood",
-    "THEFT":             "Theft",
-    "STORM":             "Storm",
-    "SUBSIDENCE":        "Subsidence",
-    "WATER":             "Escape of Water",
-}
+class TelematicsEventRequest(BaseModel):
+    policy_id:               str
+    speeding_event:          bool = True
+    curfew_breach:           bool = True
+    behaviour_score_delta:   int  = -15
+    harsh_braking_delta:     int  = 1
 
 
 async def _get_publish_pipeline_id() -> str | None:
-    """Pull the persisted Lakebase publish pipeline id (set by 01_provision)."""
+    """Pull the persisted Lakebase publish pipeline id (set by provision)."""
     try:
         rows = await execute_query(f"""
-            SELECT value FROM {fqn('live_pricing_runtime_state')}
+            SELECT value FROM {fqn(RUNTIME_STATE_TABLE)}
             WHERE key = 'publish_pipeline_id' LIMIT 1
         """)
         if rows and rows[0].get("value"):
@@ -345,67 +342,80 @@ async def _get_publish_pipeline_id() -> str | None:
     return None
 
 
-@router.post("/claim")
-async def file_claim(req: ClaimRequest, background_tasks: BackgroundTasks) -> dict:
-    """File a synthetic claim, MERGE claim aggregates into UPT, then trigger
-    a Lakebase SNAPSHOT refresh by starting an update on the publish pipeline
-    captured at provision time. Returns when the pipeline update completes
-    (or 60s timeout) so the next quote sees the new feature value."""
-    pid          = req.policy_id.strip().upper()
-    claim_amount = float(req.claim_amount)
-    claim_type   = req.claim_type.upper()
-    peril        = _PERIL_MAP.get(claim_type, "Other")
+@router.post("/telematics-event")
+async def telematics_event(req: TelematicsEventRequest,
+                            background_tasks: BackgroundTasks) -> dict:
+    """Simulate a telematics black-box event landing for a policy: increments
+    the speeding/curfew counters, drops behaviour_score, MERGEs the change
+    into the motor UPT, and triggers a Lakebase SNAPSHOT refresh so the next
+    quote against this policy sees the new feature values."""
+    pid = req.policy_id.strip().upper()
+    if not pid:
+        raise HTTPException(400, "policy_id required")
 
-    if not pid or claim_amount <= 0:
-        raise HTTPException(400, "policy_id and positive claim_amount required")
-
-    rows = await execute_query(f"""
-        SELECT policy_id FROM {fqn('unified_pricing_table_live')}
+    # Verify policy exists + capture before-state
+    before_rows = await execute_query(f"""
+        SELECT behaviour_score, recent_speeding_events, recent_curfew_breaches,
+               recent_harsh_braking_30d, telematics_recent_event_count
+        FROM {fqn(UPT_TABLE_NAME)}
         WHERE policy_id = '{pid}' LIMIT 1
     """)
-    if not rows:
+    if not before_rows:
         raise HTTPException(404, f"policy {pid} not found")
+    before = before_rows[0]
 
-    claim_id  = f"CLM-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{uuid.uuid4().hex[:8].upper()}"
-    loss_date = datetime.now(timezone.utc).date().isoformat()
-    paid      = int(claim_amount * 0.5)
+    sp_inc = 1 if req.speeding_event else 0
+    cb_inc = 1 if req.curfew_breach  else 0
+    hb_inc = max(0, int(req.harsh_braking_delta))
+    bs_dec = max(0, -int(req.behaviour_score_delta))  # delta is negative; convert to positive subtract
 
+    event_id  = f"TLM-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{uuid.uuid4().hex[:8].upper()}"
+
+    # 1. Update the telematics_aggregate source-of-truth table
     t0 = time.perf_counter()
     await execute_query(f"""
-        INSERT INTO {fqn('internal_claims_history')}
-          (claim_id, policy_id, peril, incurred_amount, paid_amount, reserve,
-           loss_date, status)
-        VALUES ('{claim_id}', '{pid}', '{peril}',
-                {int(claim_amount)}, {paid}, {int(claim_amount) - paid},
-                '{loss_date}', 'Open')
+        UPDATE {fqn(TELEMATICS_TABLE)} SET
+            recent_speeding_events    = recent_speeding_events    + {sp_inc},
+            recent_curfew_breaches    = recent_curfew_breaches    + {cb_inc},
+            recent_harsh_braking_30d  = recent_harsh_braking_30d  + {hb_inc},
+            behaviour_score           = GREATEST(0, LEAST(100, behaviour_score - {bs_dec}))
+        WHERE policy_id = '{pid}'
     """)
-    claim_write_ms = (time.perf_counter() - t0) * 1000.0
+    telematics_write_ms = (time.perf_counter() - t0) * 1000.0
 
+    # 2. MERGE the updated telematics row into UPT (so Lakebase has fresh data)
     t0 = time.perf_counter()
     await execute_query(f"""
-        MERGE INTO {fqn('unified_pricing_table_live')} target
+        MERGE INTO {fqn(UPT_TABLE_NAME)} target
         USING (
-            SELECT policy_id,
-                   COUNT(*) AS claim_count_5y,
-                   SUM(incurred_amount) AS total_incurred_5y,
-                   SUM(paid_amount) AS total_paid_5y,
-                   SUM(CASE WHEN status='Open' THEN 1 ELSE 0 END) AS open_claims_count,
-                   COUNT(DISTINCT peril) AS distinct_perils
-            FROM {fqn('internal_claims_history')}
+            SELECT policy_id, behaviour_score, recent_speeding_events,
+                   recent_curfew_breaches, recent_harsh_braking_30d,
+                   recent_speeding_events + recent_curfew_breaches +
+                   recent_harsh_braking_30d AS telematics_recent_event_count
+            FROM {fqn(TELEMATICS_TABLE)}
             WHERE policy_id = '{pid}'
-            GROUP BY policy_id
         ) src
         ON target.policy_id = src.policy_id
         WHEN MATCHED THEN UPDATE SET
-            target.claim_count_5y    = src.claim_count_5y,
-            target.total_incurred_5y = src.total_incurred_5y,
-            target.total_paid_5y     = src.total_paid_5y,
-            target.open_claims_count = src.open_claims_count,
-            target.distinct_perils   = src.distinct_perils,
-            target.loss_ratio_5y     = ROUND(src.total_incurred_5y /
-                                             (target.current_premium * 5), 3)
+            target.behaviour_score               = src.behaviour_score,
+            target.recent_speeding_events        = src.recent_speeding_events,
+            target.recent_curfew_breaches        = src.recent_curfew_breaches,
+            target.recent_harsh_braking_30d      = src.recent_harsh_braking_30d,
+            target.telematics_recent_event_count = src.telematics_recent_event_count
     """)
     upt_merge_ms = (time.perf_counter() - t0) * 1000.0
+
+    # Backwards-compat naming for the UI which still reads claim_write_ms.
+    claim_write_ms = telematics_write_ms
+
+    # Capture after-state
+    after_rows = await execute_query(f"""
+        SELECT behaviour_score, recent_speeding_events, recent_curfew_breaches,
+               recent_harsh_braking_30d, telematics_recent_event_count
+        FROM {fqn(UPT_TABLE_NAME)}
+        WHERE policy_id = '{pid}' LIMIT 1
+    """)
+    after = after_rows[0] if after_rows else {}
 
     # Trigger a Lakebase SNAPSHOT refresh. The publish_table call at provision
     # time stood up a DLT pipeline that runs SNAPSHOT on demand. start_update
@@ -445,34 +455,40 @@ async def file_claim(req: ClaimRequest, background_tasks: BackgroundTasks) -> di
 
     user = get_current_user()
     await log_audit_event(
-        event_type="live_pricing_claim_filed",
+        event_type="live_motor_telematics_event",
         entity_type="policy",
         entity_id=pid,
         details={
-            "claim_id":       claim_id,
-            "claim_type":     claim_type,
-            "peril":          peril,
-            "claim_amount":   claim_amount,
-            "claim_write_ms": round(claim_write_ms, 1),
-            "upt_merge_ms":   round(upt_merge_ms, 1),
-            "user":           user,
-            "publish_mode":   "SNAPSHOT",
-            "online_refresh": refresh,
+            "event_id":             event_id,
+            "speeding_event":       req.speeding_event,
+            "curfew_breach":        req.curfew_breach,
+            "behaviour_score_delta": req.behaviour_score_delta,
+            "before":               before,
+            "after":                after,
+            "telematics_write_ms":  round(telematics_write_ms, 1),
+            "upt_merge_ms":         round(upt_merge_ms, 1),
+            "user":                 user,
+            "publish_mode":         "SNAPSHOT",
+            "online_refresh":       refresh,
         },
     )
 
     return {
-        "ok":               True,
-        "claim_id":         claim_id,
-        "policy_id":        pid,
-        "claim_amount":     claim_amount,
-        "peril":            peril,
-        "claim_write_ms":   round(claim_write_ms, 1),
-        "upt_merge_ms":     round(upt_merge_ms, 1),
-        "online_refresh":   refresh,
-        "total_ms":         round(claim_write_ms + upt_merge_ms +
-                                  (refresh.get("duration_ms") or 0), 1),
-        "filed_at":         datetime.now(timezone.utc).isoformat(),
+        "ok":              True,
+        "event_id":        event_id,
+        "policy_id":       pid,
+        "before":          before,
+        "after":           after,
+        # legacy names so the existing UI still works without changes
+        "claim_id":        event_id,
+        "claim_amount":    0,
+        "peril":           "Telematics event",
+        "claim_write_ms":  round(claim_write_ms, 1),
+        "upt_merge_ms":    round(upt_merge_ms, 1),
+        "online_refresh":  refresh,
+        "total_ms":        round(claim_write_ms + upt_merge_ms +
+                                 (refresh.get("duration_ms") or 0), 1),
+        "filed_at":        datetime.now(timezone.utc).isoformat(),
     }
 
 

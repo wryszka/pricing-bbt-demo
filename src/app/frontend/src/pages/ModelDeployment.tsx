@@ -724,7 +724,7 @@ function StatusChip({ icon, label, value, detail, ok }:
 // ---------------------------------------------------------------------------
 
 function DemoFlow() {
-  const [policyId, setPolicyId] = useState('POL-100009');
+  const [policyId, setPolicyId] = useState('POL-MOTOR-00000001');
   const [step1, setStep1] = useState<any>(null);
   const [step2, setStep2] = useState<any>(null);
   const [step3, setStep3] = useState<any>(null);
@@ -745,7 +745,10 @@ function DemoFlow() {
   const runStep2 = async () => {
     setBusy(2); setErr(null); setStep3(null);
     try {
-      const r = await api.livePricingClaim({ policy_id: policyId, claim_amount: 75000, claim_type: 'ACCIDENTAL_DAMAGE' });
+      const r = await api.livePricingTelematicsEvent({
+        policy_id: policyId, speeding_event: true, curfew_breach: true,
+        behaviour_score_delta: -15, harsh_braking_delta: 1,
+      });
       setStep2(r);
     } catch (e: any) { setErr(e?.message || String(e)); }
     finally { setBusy(null); }
@@ -775,7 +778,7 @@ function DemoFlow() {
             value={policyId}
             onChange={e => setPolicyId(e.target.value.toUpperCase())}
             className="text-xs font-mono px-2 py-1 border border-gray-300 rounded w-36"
-            placeholder="POL-100009"
+            placeholder="POL-MOTOR-00000001"
           />
           <button onClick={reset} className="text-xs text-gray-500 hover:text-gray-700 flex items-center gap-1">
             <Undo2 className="w-3 h-3" /> Reset
@@ -799,14 +802,21 @@ function DemoFlow() {
                   </button>}
         />
         <DemoCard
-          step={2} title="File claim" icon={<FileText className="w-4 h-4" />}
+          step={2} title="Simulate telematics event" icon={<FileText className="w-4 h-4" />}
           body={step2
             ? <>
-                <PremiumLine label="Claim amount" value={step2.claim_amount} prefix="£" />
-                <div className="text-[11px] text-gray-600 mt-1.5 space-y-0.5">
-                  <div>Claim ID: <code className="text-gray-800">{step2.claim_id}</code></div>
-                  <div>Insert: <span className="text-gray-800">{step2.claim_write_ms} ms</span></div>
-                  <div>UPT MERGE: <span className="text-gray-800">{step2.upt_merge_ms} ms</span></div>
+                <div className="text-[11px] text-gray-600 space-y-0.5">
+                  <div>Event ID: <code className="text-gray-800">{step2.event_id || step2.claim_id}</code></div>
+                  <div className="text-gray-800 font-medium mt-1">Telematics signal change</div>
+                  {step2.before && step2.after && (
+                    <>
+                      <div>behaviour_score: <span className="text-gray-800">{step2.before.behaviour_score} → {step2.after.behaviour_score}</span></div>
+                      <div>recent_speeding: <span className="text-gray-800">{step2.before.recent_speeding_events} → {step2.after.recent_speeding_events}</span></div>
+                      <div>recent_curfew:   <span className="text-gray-800">{step2.before.recent_curfew_breaches} → {step2.after.recent_curfew_breaches}</span></div>
+                    </>
+                  )}
+                  <div className="mt-1">Telematics write: <span className="text-gray-800">{Math.round(step2.claim_write_ms)} ms</span></div>
+                  <div>UPT MERGE:        <span className="text-gray-800">{Math.round(step2.upt_merge_ms)} ms</span></div>
                   {step2.online_refresh && (
                     <div className={step2.online_refresh.completed ? 'text-emerald-700 mt-1.5' : 'text-amber-700 mt-1.5'}>
                       Lakebase SNAPSHOT refresh: {step2.online_refresh.completed
@@ -816,7 +826,7 @@ function DemoFlow() {
                   )}
                 </div>
               </>
-            : <p className="text-xs text-gray-500">File a £75k accidental damage claim, MERGE into UPT inline.</p>}
+            : <p className="text-xs text-gray-500">Out-of-curfew speeding event from the black box. Behaviour score drops, recent event counters tick up, UPT mirrors the change, Lakebase syncs.</p>}
           disabled={!step1}
           action={<button onClick={runStep2} disabled={busy !== null || !step1}
                           className="text-xs px-2.5 py-1.5 rounded bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-50 inline-flex items-center gap-1">
@@ -838,7 +848,7 @@ function DemoFlow() {
                   </div>
                 )}
               </>
-            : <p className="text-xs text-gray-500">Score the same policy again — fraud_pred picks up the new claim, premium moves up.</p>}
+            : <p className="text-xs text-gray-500">Score the same policy again — fraud_pred picks up the new event, telematics surcharge kicks in, premium moves up.</p>}
           disabled={!step2}
           action={<button onClick={runStep3} disabled={busy !== null || !step2}
                           className="text-xs px-2.5 py-1.5 rounded bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-50 inline-flex items-center gap-1">
@@ -910,7 +920,7 @@ function DetailGrid({ result, latency }: { result: any; latency: number }) {
 // ---------------------------------------------------------------------------
 
 function SingleQuote() {
-  const [policyId, setPolicyId] = useState('POL-100001');
+  const [policyId, setPolicyId] = useState('POL-MOTOR-00000001');
   const [busy, setBusy] = useState(false);
   const [last, setLast] = useState<any>(null);
   const [err,  setErr]  = useState<string | null>(null);
