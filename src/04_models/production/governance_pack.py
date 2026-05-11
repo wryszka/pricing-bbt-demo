@@ -483,14 +483,17 @@ class GovernancePack(FPDF):
     def para(self, text: str, size: int = 10, color=(40, 40, 40)):
         self.set_font("Helvetica", "", size)
         self.set_text_color(*color)
-        self.multi_cell(0, 5, text)
+        # wrapmode="CHAR" so unbreakable tokens (UUIDs, long URLs embedded in
+        # error messages) don't trip 'Not enough horizontal space to render
+        # a single character' under fpdf2's default word-wrap mode.
+        self.multi_cell(0, 5, text, wrapmode="CHAR")
         self.ln(1)
 
     def callout(self, text: str, color=AMBER, bg=EMBER):
         self.set_fill_color(*bg)
         self.set_font("Helvetica", "I", 9)
         self.set_text_color(*color)
-        self.multi_cell(0, 4.5, text, fill=True, border=0)
+        self.multi_cell(0, 4.5, text, fill=True, border=0, wrapmode="CHAR")
         self.ln(1)
 
     def kv_block(self, items: list[tuple[str, str]]):
@@ -1118,14 +1121,14 @@ try:
             # Bold when the line looks like a section heading
             bold = line[:3] in ("## ", "**") or line.isupper()
             pdf.set_font("Helvetica", "B" if bold else "", 9)
-            pdf.multi_cell(180, 4.5, line[:500])
+            pdf.multi_cell(180, 4.5, line[:500], wrapmode="CHAR")
         pdf.ln(1)
         pdf.set_x(15)
         pdf.set_font("Helvetica", "I", 7)
         pdf.set_text_color(*GRAY)
         pdf.multi_cell(180, 3.5,
             f"agent={len(_trace)} tool calls · model=databricks-claude-sonnet-4-6 · "
-            f"tokens={_usage.get('total_tokens', '?')}")
+            f"tokens={_usage.get('total_tokens', '?')}", wrapmode="CHAR")
     else:
         pdf.para("(agent returned no narrative — table above stands alone)", size=8, color=GRAY)
 except Exception as _e:

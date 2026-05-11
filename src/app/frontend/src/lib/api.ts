@@ -173,7 +173,7 @@ export const api = {
 
   // Deployment
   getRegisteredModels: () => fetchJson<any[]>('/deployment/models'),
-  getChampions: () => fetchJson<any>('/deployment/champions'),
+  getChampions: () => fetchJson<any>('/deployment/champions?require_pack=false'),
   getChampionHistory: (family: string, limit = 10) =>
     fetchJson<any>(`/deployment/champions/${family}/history?limit=${limit}`),
   rollbackChampion: (family: string, note: string) =>
