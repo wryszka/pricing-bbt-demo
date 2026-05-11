@@ -1184,7 +1184,7 @@ function LatencyChart({ rows }: { rows: LoadTestRow[] }) {
 
 function ArchitectureDiagram() {
   return (
-    <svg viewBox="0 0 820 320" className="w-full max-w-4xl" aria-label="Live pricing architecture">
+    <svg viewBox="0 0 920 400" className="w-full max-w-5xl" aria-label="Live pricing architecture">
       <defs>
         <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
                 markerWidth="6" markerHeight="6" orient="auto-start-reverse">
@@ -1206,57 +1206,73 @@ function ArchitectureDiagram() {
           <stop offset="0%" stopColor="#fffbeb" />
           <stop offset="100%" stopColor="#fef3c7" />
         </linearGradient>
+        <linearGradient id="rules-grad" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#fef2f2" />
+          <stop offset="100%" stopColor="#fecaca" />
+        </linearGradient>
       </defs>
 
       {/* Quote request */}
-      <rect x="20" y="130" width="140" height="60" rx="8" fill="url(#quote-grad)" stroke="#3b82f6" />
-      <text x="90" y="160" textAnchor="middle" fontSize="13" fontWeight="600" fill="#1e3a8a">Quote request</text>
-      <text x="90" y="178" textAnchor="middle" fontSize="10" fill="#2563eb">broker / direct / aggregator</text>
+      <rect x="20" y="170" width="140" height="60" rx="8" fill="url(#quote-grad)" stroke="#3b82f6" />
+      <text x="90" y="200" textAnchor="middle" fontSize="13" fontWeight="600" fill="#1e3a8a">Quote request</text>
+      <text x="90" y="218" textAnchor="middle" fontSize="10" fill="#2563eb">policy_id · &lt; 1 KB</text>
 
-      {/* Orchestrator */}
-      <rect x="210" y="130" width="160" height="60" rx="8" fill="url(#orch-grad)" stroke="#7c3aed" />
-      <text x="290" y="158" textAnchor="middle" fontSize="13" fontWeight="600" fill="#4c1d95">Orchestrator</text>
-      <text x="290" y="174" textAnchor="middle" fontSize="10" fill="#6d28d9">fan-out · combine · rules</text>
-      <line x1="160" y1="160" x2="210" y2="160" stroke="#94a3b8" strokeWidth="2" markerEnd="url(#arrow)" />
+      {/* Orchestrator (pyfunc) */}
+      <rect x="200" y="170" width="160" height="60" rx="8" fill="url(#orch-grad)" stroke="#7c3aed" />
+      <text x="280" y="196" textAnchor="middle" fontSize="13" fontWeight="600" fill="#4c1d95">motor_pricing_scorer</text>
+      <text x="280" y="214" textAnchor="middle" fontSize="10" fill="#6d28d9">pyfunc · single endpoint</text>
+      <line x1="160" y1="200" x2="200" y2="200" stroke="#94a3b8" strokeWidth="2" markerEnd="url(#arrow)" />
 
-      {/* Parallel model endpoints — 10 stacked */}
+      {/* Online feature store (Lakebase) — above orchestrator */}
+      <rect x="200" y="60" width="160" height="60" rx="8" fill="url(#fs-grad)" stroke="#d97706" />
+      <text x="280" y="86" textAnchor="middle" fontSize="13" fontWeight="600" fill="#78350f">Lakebase online store</text>
+      <text x="280" y="104" textAnchor="middle" fontSize="10" fill="#92400e">unified_motor_table_live</text>
+      <line x1="280" y1="170" x2="280" y2="120" stroke="#cbd5e1" strokeWidth="2" strokeDasharray="4 2" markerEnd="url(#arrow)" />
+      <text x="370" y="148" fontSize="9" fill="#92400e" fontStyle="italic">FeatureLookup</text>
+
+      {/* 4 parallel models */}
       <g>
         {[
-          "freq_glm",
-          "sev_glm",
-          "demand_gbm",
-          "fraud_gbm",
-          "peril_fire_gbm",
-          "peril_flood_gbm",
-          "retention_gbm",
-          "price_elasticity_gbm",
-          "loading_engine",
-          "price_match_rules",
-        ].map((name, i) => {
-          const y = 20 + i * 28;
+          { name: "freq_glm_motor",   sub: "Poisson · claim count" },
+          { name: "sev_glm_motor",    sub: "Gamma · £ per claim" },
+          { name: "demand_gbm_motor", sub: "LightGBM · accept prob" },
+          { name: "fraud_gbm_motor",  sub: "LightGBM · fraud prob" },
+        ].map((m, i) => {
+          const y = 80 + i * 60;
           return (
-            <g key={name}>
-              <rect x="430" y={y} width="180" height="22" rx="4" fill="url(#model-grad)" stroke="#14b8a6" />
-              <text x="520" y={y + 15} textAnchor="middle" fontSize="11" fontWeight="500" fill="#115e59">{name}</text>
-              <line x1="370" y1="160" x2="430" y2={y + 11} stroke="#cbd5e1" strokeWidth="1" />
+            <g key={m.name}>
+              <rect x="420" y={y} width="180" height="44" rx="6" fill="url(#model-grad)" stroke="#14b8a6" />
+              <text x="510" y={y + 18} textAnchor="middle" fontSize="12" fontWeight="600" fill="#115e59">{m.name}</text>
+              <text x="510" y={y + 34} textAnchor="middle" fontSize="10" fill="#0f766e">{m.sub}</text>
+              <line x1="360" y1="200" x2="420" y2={y + 22} stroke="#cbd5e1" strokeWidth="1.5" />
             </g>
           );
         })}
       </g>
-      <text x="520" y="310" textAnchor="middle" fontSize="10" fill="#0f766e">10 model endpoints scored in parallel</text>
+      <text x="510" y="350" textAnchor="middle" fontSize="10" fill="#0f766e" fontStyle="italic">
+        4 champions scored in-process · shared feature batch
+      </text>
 
-      {/* Online feature store */}
-      <rect x="660" y="130" width="150" height="60" rx="8" fill="url(#fs-grad)" stroke="#d97706" />
-      <text x="735" y="158" textAnchor="middle" fontSize="13" fontWeight="600" fill="#78350f">Online Feature Store</text>
-      <text x="735" y="174" textAnchor="middle" fontSize="10" fill="#92400e">FeatureLookup · &lt;10ms</text>
-      <line x1="610" y1="90"  x2="660" y2="140" stroke="#cbd5e1" strokeDasharray="4 2" />
-      <line x1="610" y1="180" x2="660" y2="180" stroke="#cbd5e1" strokeDasharray="4 2" />
+      {/* Rating Engine */}
+      <rect x="660" y="155" width="160" height="90" rx="8" fill="url(#rules-grad)" stroke="#dc2626" />
+      <text x="740" y="178" textAnchor="middle" fontSize="13" fontWeight="600" fill="#7f1d1d">Rating engine</text>
+      <text x="740" y="196" textAnchor="middle" fontSize="9.5" fill="#991b1b">freq × sev → technical</text>
+      <text x="740" y="210" textAnchor="middle" fontSize="9.5" fill="#991b1b">+ expense · commission</text>
+      <text x="740" y="224" textAnchor="middle" fontSize="9.5" fill="#991b1b">+ young driver · telematics</text>
+      <text x="740" y="238" textAnchor="middle" fontSize="9.5" fill="#991b1b">+ fraud load · demand adj</text>
+      {/* Arrows from each model into rating engine */}
+      {[80, 140, 200, 260].map((y) => (
+        <line key={y} x1="600" y1={y + 22} x2="660" y2="200" stroke="#cbd5e1" strokeWidth="1.5" markerEnd="url(#arrow)" />
+      ))}
 
-      {/* Response back */}
-      <path d="M 370 200 Q 400 260 290 260 Q 180 260 160 200"
+      {/* Final premium response — arrow back to quote */}
+      <path d="M 740 245 Q 740 320 420 320 Q 180 320 90 245"
             fill="none" stroke="#64748b" strokeWidth="2" strokeDasharray="5 3" markerEnd="url(#arrow)" />
-      <text x="290" y="285" textAnchor="middle" fontSize="10" fill="#475569">
-        price + loading + referral flag · end-to-end &lt;500ms
+      <text x="430" y="338" textAnchor="middle" fontSize="11" fontWeight="600" fill="#475569">
+        final_premium + every intermediate factor · end-to-end &lt; 200 ms
+      </text>
+      <text x="430" y="354" textAnchor="middle" fontSize="9.5" fill="#64748b" fontStyle="italic">
+        audit trail logged to inference table
       </text>
     </svg>
   );

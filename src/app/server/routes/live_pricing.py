@@ -55,6 +55,7 @@ TELEMATICS_TABLE    = "motor_telematics_aggregate"
 RUNTIME_STATE_TABLE = "live_motor_runtime_state"
 METRICS_TABLE_NAME  = "live_motor_metrics"
 PROVISION_JOB_NAME  = "Motor live serving: provision (Lakebase + endpoint reconcile)"
+TEARDOWN_JOB_NAME   = "Motor live serving: teardown (delete endpoint)"
 LOAD_TEST_JOB_NAME  = "v1 — Live pricing: load test (sustained QPS against scorer)"
 
 
@@ -190,16 +191,16 @@ async def start() -> dict:
 
 @router.post("/stop")
 async def stop() -> dict:
-    """Motor live serving has no teardown job (Lakebase store + endpoint
-    are persistent across demo runs to avoid the ~10 min cold-start). This
-    endpoint is kept so the UI's power button has a place to call; it just
-    no-ops with a 501 unless we wire one up."""
-    raise HTTPException(501, "motor live serving has no teardown job; the "
-                              "stack is persistent. Run `motor_provision` to "
-                              "refresh.")
-    # (unreachable — kept for code symmetry if a teardown is wired later)
+    """Soft stop — fires the motor_teardown job which deletes the Model
+    Serving endpoint. The Lakebase online store + published table are left
+    in place so a subsequent /start brings the system back up in ~5 min
+    (just the endpoint container build) rather than ~10 min from cold."""
     user = get_current_user()
-    triggered = {"job_id": None, "run_id": None}
+    triggered = await _trigger_job(TEARDOWN_JOB_NAME, {
+        "catalog_name":  get_catalog(),
+        "schema_name":   get_schema(),
+        "endpoint_name": ENDPOINT_NAME,
+    })
     await log_audit_event(
         event_type="live_pricing_stop_requested",
         entity_type="endpoint",

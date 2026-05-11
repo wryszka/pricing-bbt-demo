@@ -37,6 +37,14 @@ resources:
               schema_name:  "{{job.parameters.schema_name}}"
           environment_key: env
 
+        - task_key: demand_gbm_motor
+          notebook_task:
+            notebook_path: ../src/04_models/production/demand_gbm_motor.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name:  "{{job.parameters.schema_name}}"
+          environment_key: env
+
       environments:
         - environment_key: env
           spec:

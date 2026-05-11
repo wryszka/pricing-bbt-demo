@@ -50,7 +50,7 @@ mlflow.set_registry_uri("databricks-uc")
 client = MlflowClient()
 fe     = FeatureEngineeringClient()
 
-FAMILIES = ("freq_glm_motor", "sev_glm_motor", "fraud_gbm_motor")
+FAMILIES = ("freq_glm_motor", "sev_glm_motor", "demand_gbm_motor", "fraud_gbm_motor")
 
 def _champion_version(family: str) -> str:
     mv = client.get_model_version_by_alias(f"{fqn}.{family}", "champion")
@@ -63,7 +63,7 @@ print("Motor champions:", CHAMPIONS)
 
 # Motor rating engine config — baked into the artifact.
 RATING_CFG = {
-    "version":                       "motor_v1.0",
+    "version":                       "motor_v1.1",
     "expense_loading_pct":           18.0,
     "commission_bp":                 1500,    # 15.0 %
     "young_driver_threshold":        25,
@@ -71,6 +71,10 @@ RATING_CFG = {
     "telematics_event_loading_pct":  10.0,
     "fraud_loading_pct":             8.0,
     "fraud_loading_threshold":       0.20,
+    # Demand adjustment: low demand → small discount to win, high demand → small loading.
+    "demand_adjust_pct":             4.0,
+    "demand_low_threshold":          0.35,
+    "demand_high_threshold":         0.70,
     "min_premium":                   200.0,
     "max_premium":                   50_000.0,
 }
@@ -129,7 +133,15 @@ FRAUD_FEATURES = [
     "telematics_recent_event_count",
     "claim_count_5y", "at_fault_count_5y", "open_claims_count", "distinct_perils",
 ]
-UNION_FEATURES = sorted(set(FREQ_FEATURES + SEV_FEATURES + FRAUD_FEATURES))
+DEMAND_FEATURES = [
+    "driver_age", "license_years_held", "no_claims_years",
+    "gender", "marital_status", "occupation_class",
+    "vehicle_group", "vehicle_value", "vehicle_age", "fuel_type",
+    "annual_mileage", "parking_overnight", "business_use",
+    "current_premium", "behaviour_score",
+    "claim_count_5y", "at_fault_count_5y",
+]
+UNION_FEATURES = sorted(set(FREQ_FEATURES + SEV_FEATURES + FRAUD_FEATURES + DEMAND_FEATURES))
 print(f"FeatureLookup union: {len(UNION_FEATURES)} columns")
 
 # COMMAND ----------
@@ -164,9 +176,10 @@ class MotorPricingScorer(PythonModel):
             payload = _j.load(fh)
         self.champions  = payload["champions"]
         self.rating_cfg = payload["rating_engine_config"]
-        self.freq  = mlflow.sklearn.load_model(context.artifacts["freq_glm_motor"])
-        self.sev   = mlflow.sklearn.load_model(context.artifacts["sev_glm_motor"])
-        self.fraud = mlflow.lightgbm.load_model(context.artifacts["fraud_gbm_motor"])
+        self.freq   = mlflow.sklearn.load_model(context.artifacts["freq_glm_motor"])
+        self.sev    = mlflow.sklearn.load_model(context.artifacts["sev_glm_motor"])
+        self.demand = mlflow.lightgbm.load_model(context.artifacts["demand_gbm_motor"])
+        self.fraud  = mlflow.lightgbm.load_model(context.artifacts["fraud_gbm_motor"])
 
     def _prep(self, df):
         import pandas as pd
@@ -225,9 +238,10 @@ class MotorPricingScorer(PythonModel):
                     built[name] = pd.Series([0.0] * len(prepped), index=prepped.index, dtype=float)
         return np.asarray(booster.predict(built), dtype=float).ravel()
 
-    def _apply_rules(self, df, freq, sev, fraud):
+    def _apply_rules(self, df, freq, sev, demand, fraud):
         """Motor rating engine. Returns
-        (technical, loaded, young_driver_load, telematics_load, fraud_load, final)."""
+        (technical, loaded, young_driver_load, telematics_load, fraud_load,
+         demand_adj, final)."""
         import numpy as np
         cfg = self.rating_cfg
         technical = freq * sev
@@ -245,36 +259,47 @@ class MotorPricingScorer(PythonModel):
         # Fraud loading
         fraud_load = np.where(fraud > cfg["fraud_loading_threshold"],
                               loaded * cfg["fraud_loading_pct"] / 100.0, 0.0)
-        final = np.clip(loaded + young_driver_load + telematics_load + fraud_load,
+        # Demand adjustment: low predicted acceptance → small discount to win the
+        # renewal; high predicted acceptance → small loading to capture margin.
+        demand_adj = np.where(demand < cfg["demand_low_threshold"],
+                              -loaded * cfg["demand_adjust_pct"] / 100.0,
+                       np.where(demand > cfg["demand_high_threshold"],
+                                 loaded * cfg["demand_adjust_pct"] / 100.0,
+                                 0.0))
+        final = np.clip(loaded + young_driver_load + telematics_load + fraud_load + demand_adj,
                         cfg["min_premium"], cfg["max_premium"])
-        return technical, loaded, young_driver_load, telematics_load, fraud_load, final
+        return technical, loaded, young_driver_load, telematics_load, fraud_load, demand_adj, final
 
     def predict(self, context, model_input, params=None):
         import pandas as pd, numpy as np
         if not hasattr(model_input, "columns"):
             model_input = pd.DataFrame(list(model_input))
 
-        freq  = self._score_glm(self.freq,  model_input)
-        sev   = self._score_glm(self.sev,   model_input)
-        fraud = self._score_lgb(self.fraud, model_input)
+        freq   = self._score_glm(self.freq,   model_input)
+        sev    = self._score_glm(self.sev,    model_input)
+        demand = self._score_lgb(self.demand, model_input)
+        fraud  = self._score_lgb(self.fraud,  model_input)
 
-        technical, loaded, young_load, telematics_load, fraud_load, final = \
-            self._apply_rules(model_input, freq, sev, fraud)
+        technical, loaded, young_load, telematics_load, fraud_load, demand_adj, final = \
+            self._apply_rules(model_input, freq, sev, demand, fraud)
 
         n = len(model_input)
         return pd.DataFrame({
             "final_premium":           np.round(final, 2),
             "freq_pred":               freq,
             "sev_pred":                sev,
+            "demand_pred":             demand,
             "fraud_pred":              fraud,
             "technical_premium":       np.round(loaded, 2),
             "young_driver_load":       np.round(young_load, 2),
             "telematics_event_load":   np.round(telematics_load, 2),
             "fraud_load":              np.round(fraud_load, 2),
+            "demand_adj":              np.round(demand_adj, 2),
             "rating_engine_version":   [self.rating_cfg["version"]] * n,
-            "freq_version":            [self.champions["freq_glm_motor"]]  * n,
-            "sev_version":             [self.champions["sev_glm_motor"]]   * n,
-            "fraud_version":           [self.champions["fraud_gbm_motor"]] * n,
+            "freq_version":            [self.champions["freq_glm_motor"]]   * n,
+            "sev_version":             [self.champions["sev_glm_motor"]]    * n,
+            "demand_version":          [self.champions["demand_gbm_motor"]] * n,
+            "fraud_version":           [self.champions["fraud_gbm_motor"]]  * n,
         })
 
 # COMMAND ----------
