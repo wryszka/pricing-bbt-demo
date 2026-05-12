@@ -25,6 +25,7 @@ dbutils.widgets.text("catalog_name", "lr_serverless_aws_us_catalog")
 dbutils.widgets.text("schema_name",  "pricing_upt")
 dbutils.widgets.text("endpoint_name","pricing_governance_agent")
 dbutils.widgets.text("fm_endpoint",  "databricks-claude-sonnet-4-6")
+dbutils.widgets.text("warehouse_id", "")  # SQL warehouse the agent tools query; defaults to first running serverless warehouse
 
 # COMMAND ----------
 
@@ -37,6 +38,15 @@ catalog         = dbutils.widgets.get("catalog_name")
 schema          = dbutils.widgets.get("schema_name")
 endpoint_name   = dbutils.widgets.get("endpoint_name")
 fm_endpoint     = dbutils.widgets.get("fm_endpoint")
+warehouse_id    = dbutils.widgets.get("warehouse_id")
+
+if not warehouse_id:
+    from databricks.sdk import WorkspaceClient as _W
+    _w = _W()
+    _running = [wh for wh in _w.warehouses.list() if str(wh.state) == "WarehouseStatusState.RUNNING"]
+    _all = [wh for wh in _w.warehouses.list()]
+    warehouse_id = (_running or _all)[0].id
+    print(f"warehouse_id auto-selected: {warehouse_id}")
 
 fqn             = f"{catalog}.{schema}"
 agent_uc_name   = f"{fqn}.governance_agent"
@@ -402,7 +412,9 @@ def _run_sql(sql: str):
     from databricks.sdk import WorkspaceClient
     from databricks.sdk.service.sql import StatementState
     import os as _os
-    w = WorkspaceClient()
+    tok  = _os.environ.get("AGENT_TOKEN")
+    host = _os.environ.get("AGENT_HOST") or _os.environ.get("DATABRICKS_HOST")
+    w = WorkspaceClient(host=host, token=tok) if tok and host else WorkspaceClient()
     warehouse_id = _os.environ.get("AGENT_WAREHOUSE_ID", "ab79eced8207d29b")
     resp = w.statement_execution.execute_statement(
         statement=sql, warehouse_id=warehouse_id, wait_timeout="30s",
@@ -543,6 +555,8 @@ latest = max(
 )
 print(f"Deploying {agent_uc_name} v{latest} → endpoint '{endpoint_name}'")
 
+env_vars = {"AGENT_WAREHOUSE_ID": warehouse_id}
+
 # Use databricks-agents if present, else fall back to serving_endpoints
 try:
     from databricks import agents
@@ -550,6 +564,7 @@ try:
         model_name=agent_uc_name,
         model_version=latest,
         scale_to_zero=False,  # keep warm for demo cadence
+        environment_vars=env_vars,
         tags={"project": "pricing_workbench", "purpose": "governance_agent"},
     )
     print(f"databricks-agents deploy kicked off: {deployment}")
@@ -565,6 +580,7 @@ except Exception as e:
         entity_version=str(latest),
         scale_to_zero_enabled=False,  # keep warm for demo cadence
         workload_size="Small",
+        environment_vars=env_vars,
     )]
     cfg = EndpointCoreConfigInput(
         name=endpoint_name,

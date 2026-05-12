@@ -23,6 +23,7 @@ dbutils.widgets.text("catalog_name",  "lr_serverless_aws_us_catalog")
 dbutils.widgets.text("schema_name",   "pricing_upt")
 dbutils.widgets.text("endpoint_name", "pricing_chat_agent")
 dbutils.widgets.text("fm_endpoint",   "databricks-claude-sonnet-4-6")
+dbutils.widgets.text("warehouse_id",  "")  # SQL warehouse the agent tools query; defaults to first running serverless warehouse
 
 # COMMAND ----------
 
@@ -35,8 +36,17 @@ catalog       = dbutils.widgets.get("catalog_name")
 schema        = dbutils.widgets.get("schema_name")
 endpoint_name = dbutils.widgets.get("endpoint_name")
 fm_endpoint   = dbutils.widgets.get("fm_endpoint")
+warehouse_id  = dbutils.widgets.get("warehouse_id")
 fqn           = f"{catalog}.{schema}"
 agent_uc_name = f"{fqn}.pricing_chat_agent"
+
+if not warehouse_id:
+    from databricks.sdk import WorkspaceClient as _W
+    _w = _W()
+    _running = [wh for wh in _w.warehouses.list() if str(wh.state) == "WarehouseStatusState.RUNNING"]
+    _all = [wh for wh in _w.warehouses.list()]
+    warehouse_id = (_running or _all)[0].id
+    print(f"warehouse_id auto-selected: {warehouse_id}")
 
 import json, os, tempfile
 import mlflow
@@ -732,7 +742,11 @@ def _summarise_result(result) -> str:
 def _run_sql(sql: str):
     from databricks.sdk import WorkspaceClient
     from databricks.sdk.service.sql import StatementState
-    w = WorkspaceClient()
+    # AGENT_TOKEN (+ AGENT_HOST) is injected on the endpoint to bypass the
+    # model-serving System SP, which UC silently ignores for table grants.
+    tok  = os.environ.get("AGENT_TOKEN")
+    host = os.environ.get("AGENT_HOST") or os.environ.get("DATABRICKS_HOST")
+    w = WorkspaceClient(host=host, token=tok) if tok and host else WorkspaceClient()
     warehouse_id = os.environ.get("AGENT_WAREHOUSE_ID", "ab79eced8207d29b")
     resp = w.statement_execution.execute_statement(
         statement=sql, warehouse_id=warehouse_id, wait_timeout="30s",
@@ -858,12 +872,15 @@ latest = max(
 )
 print(f"Deploying {agent_uc_name} v{latest} → endpoint '{endpoint_name}'")
 
+env_vars = {"AGENT_WAREHOUSE_ID": warehouse_id}
+
 try:
     from databricks import agents
     deployment = agents.deploy(
         model_name=agent_uc_name,
         model_version=latest,
         scale_to_zero=False,  # keep warm for demo cadence
+        environment_vars=env_vars,
         tags={"project": "pricing_workbench", "purpose": "chat_agent",
               "personas": "factory+explain"},
     )
@@ -878,6 +895,7 @@ except Exception as e:
         entity_version=str(latest),
         scale_to_zero_enabled=False,  # keep warm for demo cadence
         workload_size="Small",
+        environment_vars=env_vars,
     )]
     cfg = EndpointCoreConfigInput(name=endpoint_name, served_entities=served)
     try:

@@ -1,7 +1,7 @@
 resources:
   jobs:
     train_motor_models:
-      name: "Train motor champions (freq + sev + fraud)"
+      name: "Train motor champions (freq + sev + demand + fraud)"
       parameters:
         - name: catalog_name
           default: ${var.catalog_name}
