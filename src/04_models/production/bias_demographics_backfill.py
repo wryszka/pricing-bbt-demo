@@ -152,8 +152,32 @@ spark.sql(f"""
     CREATE TABLE IF NOT EXISTS {fqn}.policy_demographics (
         policy_id            STRING NOT NULL,
         director_gender      STRING,
-        postcode_demographic STRING
+        postcode_demographic STRING,
+        ethnicity_proxy      STRING,
+        director_age_band    STRING
     ) USING DELTA
+""")
+
+# Derive ethnicity_proxy from the postcode quintile (correlated but noisy
+# enough to look real) and director_age_band from a deterministic hash so
+# the demo is reproducible and the bias monitor can show 4 protected attrs.
+dem.createOrReplaceTempView("_v_dem")
+dem = spark.sql("""
+    SELECT
+      policy_id,
+      director_gender,
+      postcode_demographic,
+      CASE postcode_demographic
+        WHEN 'Q1_majority_white' THEN element_at(array('White British','White British','White British','White British','Asian','Mixed/Other'),                                  1 + cast(abs(hash(policy_id || 'eth')) % 6 as int))
+        WHEN 'Q2'                THEN element_at(array('White British','White British','White British','Asian','Asian','Black','Mixed/Other'),                                  1 + cast(abs(hash(policy_id || 'eth')) % 7 as int))
+        WHEN 'Q3'                THEN element_at(array('White British','White British','Asian','Asian','Black','Mixed/Other'),                                                   1 + cast(abs(hash(policy_id || 'eth')) % 6 as int))
+        WHEN 'Q4'                THEN element_at(array('White British','Asian','Asian','Black','Black','Mixed/Other'),                                                           1 + cast(abs(hash(policy_id || 'eth')) % 6 as int))
+        WHEN 'Q5_most_diverse'   THEN element_at(array('White British','Asian','Asian','Black','Black','Black','Mixed/Other','Mixed/Other'),                                     1 + cast(abs(hash(policy_id || 'eth')) % 8 as int))
+        ELSE 'White British'
+      END AS ethnicity_proxy,
+      element_at(array('Under 30','30-39','40-49','50-59','60+'),
+                 1 + cast(abs(hash(policy_id || 'age')) % 5 as int)) AS director_age_band
+    FROM _v_dem
 """)
 dem.write.mode("overwrite").option("overwriteSchema", "true") \
    .saveAsTable(f"{fqn}.policy_demographics")
