@@ -43,13 +43,22 @@ user      = dbutils.widgets.get("requested_by") or "app"
 
 fqn       = f"{catalog}.{schema}"
 uc_name   = f"{fqn}.{family}"
-VALID     = {"freq_glm", "sev_glm", "demand_gbm", "fraud_gbm"}
+VALID     = {"freq_glm", "sev_glm", "demand_gbm", "fraud_gbm",
+             "freq_glm_motor", "sev_glm_motor", "demand_gbm_motor", "fraud_gbm_motor"}
 # Factory candidates register as factory_freq_glm_<variant_id>. They're also
 # valid targets — same pack format, same sidecars, but the alias flip at the
 # end is skipped (they're not promoted into production).
 _is_factory_variant = family.startswith("factory_")
 if family not in VALID and not _is_factory_variant:
     raise ValueError(f"model_family must be one of {VALID} or a factory_* variant, got '{family}'")
+
+# Motor variants share schema + algorithm with the commercial families. Use a
+# `_base` form for every BUSINESS_CONTEXT / primary_metric / CSV-filename
+# lookup, but keep `family` for UC model name + pack_id.
+if family.endswith("_motor"):
+    family_base = family[: -len("_motor")]
+else:
+    family_base = family
 
 import json, io, os, uuid, tempfile
 from datetime import datetime, timezone
@@ -242,7 +251,7 @@ if _is_factory_variant:
         "owner_team":   "Pricing Actuarial — Model Factory experiments",
     }
 else:
-    CTX = BUSINESS_CONTEXT[family]
+    CTX = BUSINESS_CONTEXT[family_base]
 
 # Regulatory references by family — shared where applicable
 REGS = [
@@ -315,25 +324,25 @@ _variant_id = family.rsplit("_", 1)[-1] if _is_factory_variant else None
 
 relativities   = _read_csv_if_present([
     f"{_variant_id}_relativities.csv" if _variant_id else "",
-    f"{family.split('_')[0]}_relativities.csv",
+    f"{family_base.split('_')[0]}_relativities.csv",
     "freq_relativities.csv", "sev_relativities.csv",
 ])
 importance     = _read_csv_if_present([
     f"{_variant_id}_importance.csv" if _variant_id else "",
-    f"{family.split('_')[0]}_importance.csv",
+    f"{family_base.split('_')[0]}_importance.csv",
     "demand_importance.csv", "fraud_importance.csv",
 ])
 shap_imp       = _read_csv_if_present([
     f"{_variant_id}_shap_importance.csv" if _variant_id else "",
-    f"{family.split('_')[0]}_shap_importance.csv",
+    f"{family_base.split('_')[0]}_shap_importance.csv",
     "demand_shap_importance.csv", "fraud_shap_importance.csv",
 ])
 shap_plot_key  = next((k for k in artifact_paths if k.endswith("shap_summary.png")), None)
 shap_plot_path = artifact_paths.get(shap_plot_key) if shap_plot_key else None
 
 # Factory candidates are always freq_glm under the hood — treat as GLM
-is_glm = family.endswith("_glm") or _is_factory_variant
-is_gbm = family.endswith("_gbm") and not _is_factory_variant
+is_glm = family_base.endswith("_glm") or _is_factory_variant
+is_gbm = family_base.endswith("_gbm") and not _is_factory_variant
 print(f"  is_glm={is_glm} is_gbm={is_gbm}  "
       f"relativities={None if relativities is None else len(relativities)}  "
       f"importance={None if importance is None else len(importance)}  "
@@ -352,7 +361,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 primary_metric = {"freq_glm": "gini", "sev_glm": "gini",
-                  "demand_gbm": "auc", "fraud_gbm": "auc"}.get(family, "gini")
+                  "demand_gbm": "auc", "fraud_gbm": "auc"}.get(family_base, "gini")
 
 stability_png = None
 if len(history) > 1:
@@ -361,11 +370,13 @@ if len(history) > 1:
     ys = [h["metrics"].get(primary_metric) for h in history]
     simulated_mask = [h["simulated"] for h in history]
     real_mask = [not s for s in simulated_mask]
-    real_xs = [x for x, m in zip(xs, real_mask) if m]
-    real_ys = [y for y, m in zip(ys, real_mask) if m and y is not None]
-    sim_xs  = [x for x, m in zip(xs, simulated_mask) if m]
-    sim_ys  = [y for y, m in zip(ys, simulated_mask) if m and y is not None]
-    ax.plot(xs, ys, linestyle="-", color="#3b82f6", alpha=0.5, linewidth=1)
+    real_pairs = [(x, y) for x, y, m in zip(xs, ys, real_mask) if m and y is not None]
+    sim_pairs  = [(x, y) for x, y, m in zip(xs, ys, simulated_mask) if m and y is not None]
+    real_xs, real_ys = (list(t) for t in zip(*real_pairs)) if real_pairs else ([], [])
+    sim_xs,  sim_ys  = (list(t) for t in zip(*sim_pairs))  if sim_pairs  else ([], [])
+    plot_pairs = [(x, y) for x, y in zip(xs, ys) if y is not None]
+    plot_xs, plot_ys = (list(t) for t in zip(*plot_pairs)) if plot_pairs else ([], [])
+    ax.plot(plot_xs, plot_ys, linestyle="-", color="#3b82f6", alpha=0.5, linewidth=1)
     if sim_xs:
         ax.scatter(sim_xs, sim_ys, s=30, color="#9ca3af", label="simulated replay", zorder=3)
     if real_xs:
@@ -769,7 +780,7 @@ interp = {
     "sev_glm":    f"A Gini of {run_metrics.get('gini', 0):.3f} on severity means the model successfully separates high-cost from low-cost claimants. Mean absolute error of £{run_metrics.get('mae_gbp', 0):,.0f} sets expected residual error per prediction.",
     "demand_gbm": f"AUC of {run_metrics.get('auc', 0):.3f} means the model correctly ranks conversion probability in {int(run_metrics.get('auc', 0)*100)}% of random pairs. Log-loss of {run_metrics.get('logloss', 0):.3f} reflects calibrated probabilities.",
     "fraud_gbm":  f"AUC of {run_metrics.get('auc', 0):.3f} indicates strong separation of fraudulent vs. genuine cases. Precision {run_metrics.get('precision', 0):.2f} — of cases flagged, {int(run_metrics.get('precision', 0)*100)}% warrant SIU review. Recall {run_metrics.get('recall', 0):.2f} — of true fraud, {int(run_metrics.get('recall', 0)*100)}% are caught.",
-}.get(family, "—")
+}.get(family_base, "—")
 pdf.para(interp)
 
 # -------- 6. Feature behaviour --------

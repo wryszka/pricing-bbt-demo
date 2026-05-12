@@ -888,6 +888,12 @@ async def simulate_mta(req: MtaRequest) -> dict:
     cfg = _coerce_config(await _current_config())
     quotes_before = await _run_quote(before, policy_id, {}, cfg)
     q_before = quotes_before[0]
+    if not q_before.get("price_buildup"):
+        raise HTTPException(
+            503,
+            f"{SCORER_ENDPOINT} endpoint isn't deployed on this workspace — "
+            "MTA simulation can't run. Deploy the scorer or use the motor demo.",
+        )
 
     si_before = _num(before.get("sum_insured"))
     si_after  = _num(after.get("sum_insured"))

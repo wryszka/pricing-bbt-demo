@@ -775,7 +775,7 @@ async def ask_governance_agent(req: AskRequest) -> dict:
 # ---------------------------------------------------------------------------
 
 CHAT_AGENT_ENDPOINT = "pricing_chat_agent"
-_PROTECTED_ATTRS = {"director_gender", "postcode_demographic", "ethnicity_proxy", "director_age_band"}
+_PROTECTED_ATTRS = {"director_gender", "postcode_demographic"}
 _FAMILY_METRIC = {
     "freq_glm":   "freq_pred",
     "sev_glm":    "sev_pred",
