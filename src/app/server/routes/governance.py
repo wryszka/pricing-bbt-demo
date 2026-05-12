@@ -39,10 +39,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/governance", tags=["governance"])
 
 FAMILIES = [
-    {"key": "freq_glm",   "label": "Frequency (GLM)"},
-    {"key": "sev_glm",    "label": "Severity (GLM)"},
-    {"key": "demand_gbm", "label": "Demand (GBM)"},
-    {"key": "fraud_gbm",  "label": "Fraud (GBM)"},
+    {"key": "freq_glm",         "label": "Frequency (GLM)"},
+    {"key": "sev_glm",          "label": "Severity (GLM)"},
+    {"key": "demand_gbm",       "label": "Demand (GBM)"},
+    {"key": "fraud_gbm",        "label": "Fraud (GBM)"},
+    {"key": "freq_glm_motor",   "label": "Motor Frequency (GLM)"},
+    {"key": "sev_glm_motor",    "label": "Motor Severity (GLM)"},
+    {"key": "demand_gbm_motor", "label": "Motor Demand (GBM)"},
+    {"key": "fraud_gbm_motor",  "label": "Motor Fraud (GBM)"},
 ]
 # Real Databricks Agent Framework endpoint — deployed from governance_agent.py
 # via the governance_agent_deploy bundle job. The agent has 3 tools it calls
