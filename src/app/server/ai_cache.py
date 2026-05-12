@@ -8,7 +8,8 @@ Two modes, toggled via `/api/admin/ai-mode`:
 
 Cache is keyed by a stable hash of `(endpoint, question, custom_inputs)`
 and persisted to a UC Volume so it survives app restarts and is shared
-across replicas.
+across replicas. Writes go through the Databricks SDK Files API because
+the UC Volume FUSE mount rejects direct file creation via open().
 
 The mode flag is held both in-process (for hot reads) and in a tiny
 sidecar file on the volume (so a freshly-started replica picks it up).
@@ -17,6 +18,7 @@ sidecar file on the volume (so a freshly-started replica picks it up).
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import logging
 import os
@@ -24,7 +26,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from server.config import get_catalog, get_schema
+from server.config import get_catalog, get_schema, get_workspace_client
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +57,16 @@ def _ensure_vol() -> str:
     return p
 
 
+def _vol_write(path: str, data: bytes) -> None:
+    """Upload bytes to a UC Volume path via the SDK Files API.
+
+    The FUSE mount under /Volumes/... is read-only for new files (open()
+    in write mode fails with ENOENT even when the directory exists), so
+    we route writes through `w.files.upload` which talks to the metastore."""
+    w = get_workspace_client()
+    w.files.upload(file_path=path, contents=io.BytesIO(data), overwrite=True)
+
+
 def _load_responses() -> dict[str, Any]:
     global _response_cache
     if _response_cache is not None:
@@ -76,11 +88,9 @@ def _save_responses() -> None:
         return
     _ensure_vol()
     path = f"{_vol_path()}/{CACHE_FILE}"
-    # UC Volume FUSE doesn't support os.replace across the mount, so write
-    # the target file directly. Single-writer config so a race is unlikely.
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(_response_cache, f, ensure_ascii=False, separators=(",", ":"))
+        payload = json.dumps(_response_cache, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        _vol_write(path, payload)
     except Exception as e:
         logger.warning("ai_cache: could not persist cache to %s: %s", path, e)
 
@@ -107,8 +117,7 @@ def _persist_mode(mode: str) -> None:
     _ensure_vol()
     path = f"{_vol_path()}/{MODE_FILE}"
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(mode)
+        _vol_write(path, mode.encode("utf-8"))
     except Exception as e:
         logger.warning("ai_cache: could not persist mode to %s: %s", path, e)
 
