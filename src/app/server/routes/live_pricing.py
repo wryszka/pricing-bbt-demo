@@ -171,9 +171,34 @@ async def _trigger_job(job_name: str, params: dict) -> dict:
     }
 
 
+def _resume_lakebase(name: str) -> dict:
+    """Lakebase instances are paused when the demo isn't running. Flip
+    `stopped=false` so the provision job's online-store check finds the
+    instance back in AVAILABLE state."""
+    import requests as _rq
+    w = get_workspace_client()
+    host  = w.config.host.rstrip("/")
+    token = w.config._header_factory()
+    try:
+        resp = _rq.patch(
+            f"{host}/api/2.0/database/instances/{name}?update_mask=stopped",
+            headers={**token, "Content-Type": "application/json"},
+            json={"stopped": False}, timeout=20,
+        )
+        if resp.status_code in (200, 204):
+            return {"resumed": True, "name": name}
+        return {"resumed": False, "name": name, "status": resp.status_code, "body": resp.text[:200]}
+    except Exception as e:
+        return {"resumed": False, "name": name, "error": str(e)[:200]}
+
+
 @router.post("/start")
 async def start() -> dict:
     user = get_current_user()
+    # Resume the Lakebase instance first — it warms in the background
+    # (~60s) in parallel with the provision job, which also waits for
+    # AVAILABLE before proceeding to publish.
+    lakebase = await asyncio.to_thread(_resume_lakebase, ONLINE_STORE_NAME)
     triggered = await _trigger_job(PROVISION_JOB_NAME, {
         "catalog_name":      get_catalog(),
         "schema_name":       get_schema(),
@@ -184,30 +209,51 @@ async def start() -> dict:
         event_type="live_pricing_start_requested",
         entity_type="endpoint",
         entity_id=ENDPOINT_NAME,
-        details={"job_id": triggered["job_id"], "run_id": triggered["run_id"], "user": user},
+        details={"job_id": triggered["job_id"], "run_id": triggered["run_id"],
+                 "user": user, "lakebase": lakebase},
     )
-    return {"state": "starting", **triggered}
+    return {"state": "starting", "lakebase": lakebase, **triggered}
+
+
+def _stop_lakebase(name: str) -> dict:
+    import requests as _rq
+    w = get_workspace_client()
+    host  = w.config.host.rstrip("/")
+    token = w.config._header_factory()
+    try:
+        resp = _rq.patch(
+            f"{host}/api/2.0/database/instances/{name}?update_mask=stopped",
+            headers={**token, "Content-Type": "application/json"},
+            json={"stopped": True}, timeout=20,
+        )
+        if resp.status_code in (200, 204):
+            return {"stopped": True, "name": name}
+        return {"stopped": False, "name": name, "status": resp.status_code, "body": resp.text[:200]}
+    except Exception as e:
+        return {"stopped": False, "name": name, "error": str(e)[:200]}
 
 
 @router.post("/stop")
 async def stop() -> dict:
     """Soft stop — fires the motor_teardown job which deletes the Model
-    Serving endpoint. The Lakebase online store + published table are left
-    in place so a subsequent /start brings the system back up in ~5 min
-    (just the endpoint container build) rather than ~10 min from cold."""
+    Serving endpoint, then pauses the Lakebase online store so neither is
+    burning compute. A subsequent /start resumes the Lakebase instance and
+    rebuilds the endpoint container (~60-90s warm-up)."""
     user = get_current_user()
     triggered = await _trigger_job(TEARDOWN_JOB_NAME, {
         "catalog_name":  get_catalog(),
         "schema_name":   get_schema(),
         "endpoint_name": ENDPOINT_NAME,
     })
+    lakebase = await asyncio.to_thread(_stop_lakebase, ONLINE_STORE_NAME)
     await log_audit_event(
         event_type="live_pricing_stop_requested",
         entity_type="endpoint",
         entity_id=ENDPOINT_NAME,
-        details={"job_id": triggered["job_id"], "run_id": triggered["run_id"], "user": user},
+        details={"job_id": triggered["job_id"], "run_id": triggered["run_id"],
+                 "user": user, "lakebase": lakebase},
     )
-    return {"state": "stopping", **triggered}
+    return {"state": "stopping", "lakebase": lakebase, **triggered}
 
 
 # ---------------------------------------------------------------------------

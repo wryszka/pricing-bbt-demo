@@ -6,7 +6,7 @@
 # MAGIC  1. Lakebase online store (CU_2 — smallest performant tier)
 # MAGIC  2. Continuous publish of `unified_pricing_table_live` → online store
 # MAGIC  3. `pricing_scorer` champion logged + deployed to a route-optimised
-# MAGIC     Model Serving endpoint with `scale_to_zero=False`
+# MAGIC     Model Serving endpoint with `scale_to_zero=True`
 # MAGIC  4. 5-request warm-up so the first demo quote is sub-second
 # MAGIC  5. `live_pricing_metrics` table for the load-test chart
 # MAGIC
@@ -223,7 +223,7 @@ print(f"deploying {scorer_uc_name} v{scorer_version} → endpoint {endpoint_name
 served = [ServedEntityInput(
     entity_name           = scorer_uc_name,
     entity_version        = str(scorer_version),
-    scale_to_zero_enabled = False,
+    scale_to_zero_enabled = True,
     workload_size         = "Large",
 )]
 

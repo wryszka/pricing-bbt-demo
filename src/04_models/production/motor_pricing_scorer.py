@@ -363,7 +363,7 @@ w = WorkspaceClient()
 served = [ServedEntityInput(
     entity_name           = scorer_uc_name,
     entity_version        = str(latest),
-    scale_to_zero_enabled = False,
+    scale_to_zero_enabled = True,
     workload_size         = "Large",
 )]
 

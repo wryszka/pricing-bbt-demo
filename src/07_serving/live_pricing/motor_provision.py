@@ -183,7 +183,7 @@ if versions:
 if scorer_version:
     served = [ServedEntityInput(
         entity_name = scorer_uc, entity_version = scorer_version,
-        scale_to_zero_enabled = False, workload_size = "Large",
+        scale_to_zero_enabled = True, workload_size = "Large",
     )]
     try:
         existing = w.serving_endpoints.get(endpoint_name)

@@ -892,7 +892,7 @@ try:
     deployment = agents.deploy(
         model_name=agent_uc_name,
         model_version=latest,
-        scale_to_zero=False,  # keep warm for demo cadence
+        scale_to_zero=True,  # keep warm for demo cadence
         environment_vars=env_vars,
         tags={"project": "pricing_workbench", "purpose": "chat_agent",
               "personas": "factory+explain"},
@@ -906,7 +906,7 @@ except Exception as e:
     served = [ServedEntityInput(
         entity_name=agent_uc_name,
         entity_version=str(latest),
-        scale_to_zero_enabled=False,  # keep warm for demo cadence
+        scale_to_zero_enabled = True,  # keep warm for demo cadence
         workload_size="Small",
         environment_vars=env_vars,
     )]
@@ -944,7 +944,7 @@ if set(_merged.keys()) != set(_existing_env.keys()) or any(_merged[k] != _existi
         served_entities=[_SEI(
             entity_name=agent_uc_name,
             entity_version=str(latest),
-            scale_to_zero_enabled=False,
+            scale_to_zero_enabled = True,
             workload_size="Small",
             environment_vars=_merged,
         )],

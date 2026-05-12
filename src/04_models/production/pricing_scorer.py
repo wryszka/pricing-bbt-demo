@@ -522,7 +522,7 @@ except Exception as e:
 # MAGIC %md
 # MAGIC ## Deploy as a Model Serving endpoint
 # MAGIC
-# MAGIC scale_to_zero=False — the live demo's whole point is sub-second
+# MAGIC scale_to_zero=True — the live demo's whole point is sub-second
 # MAGIC response. Provision/teardown notebooks bring this up before a demo
 # MAGIC and wind it down afterwards (cost discipline).
 
@@ -537,7 +537,7 @@ w = WorkspaceClient()
 served = [ServedEntityInput(
     entity_name           = scorer_uc_name,
     entity_version        = str(latest),
-    scale_to_zero_enabled = False,
+    scale_to_zero_enabled = True,
     workload_size         = "Large",
 )]
 
