@@ -76,11 +76,11 @@ def _save_responses() -> None:
         return
     _ensure_vol()
     path = f"{_vol_path()}/{CACHE_FILE}"
+    # UC Volume FUSE doesn't support os.replace across the mount, so write
+    # the target file directly. Single-writer config so a race is unlikely.
     try:
-        tmp = f"{path}.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(_response_cache, f, ensure_ascii=False, separators=(",", ":"))
-        os.replace(tmp, path)
     except Exception as e:
         logger.warning("ai_cache: could not persist cache to %s: %s", path, e)
 
@@ -107,10 +107,8 @@ def _persist_mode(mode: str) -> None:
     _ensure_vol()
     path = f"{_vol_path()}/{MODE_FILE}"
     try:
-        tmp = f"{path}.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write(mode)
-        os.replace(tmp, path)
     except Exception as e:
         logger.warning("ai_cache: could not persist mode to %s: %s", path, e)
 
