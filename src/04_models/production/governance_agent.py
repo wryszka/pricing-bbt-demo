@@ -557,6 +557,18 @@ print(f"Deploying {agent_uc_name} v{latest} → endpoint '{endpoint_name}'")
 
 env_vars = {"AGENT_WAREHOUSE_ID": warehouse_id}
 
+# agents.deploy() wipes env_vars set out-of-band. Snapshot so we can merge.
+from databricks.sdk import WorkspaceClient as _W
+_w_pre = _W()
+try:
+    _existing = (_w_pre.serving_endpoints.get(endpoint_name)
+                 .config.served_entities[0].environment_vars or {})
+    for k, v in _existing.items():
+        env_vars.setdefault(k, v)
+    print(f"Preserving existing env vars: {sorted(_existing.keys())}")
+except Exception as _e:
+    print(f"No existing endpoint to inherit env_vars from: {_e}")
+
 # Use databricks-agents if present, else fall back to serving_endpoints
 try:
     from databricks import agents
@@ -593,6 +605,35 @@ except Exception as e:
     except Exception:
         w.serving_endpoints.create(name=endpoint_name, config=cfg)
         print("Created new endpoint.")
+
+# COMMAND ----------
+
+# Re-assert env_vars after agents.deploy (which strips them on each update).
+import time as _t
+from databricks.sdk import WorkspaceClient as _W2
+from databricks.sdk.service.serving import ServedEntityInput as _SEI
+_w2 = _W2()
+for _attempt in range(60):
+    _ep = _w2.serving_endpoints.get(endpoint_name)
+    _cur_v = _ep.config.served_entities[0].entity_version if _ep.config else None
+    _upd = str(_ep.state.config_update) if _ep.state else ""
+    if _cur_v == str(latest) and "NOT_UPDATING" in _upd:
+        break
+    _t.sleep(15)
+_existing_env = (_ep.config.served_entities[0].environment_vars or {}) if _ep.config else {}
+_merged = {**env_vars, **_existing_env, "AGENT_WAREHOUSE_ID": warehouse_id}
+if set(_merged.keys()) != set(_existing_env.keys()) or any(_merged[k] != _existing_env.get(k) for k in _merged):
+    print(f"Re-asserting env_vars: {sorted(_merged.keys())}")
+    _w2.serving_endpoints.update_config(
+        name=endpoint_name,
+        served_entities=[_SEI(
+            entity_name=agent_uc_name,
+            entity_version=str(latest),
+            scale_to_zero_enabled=False,
+            workload_size="Small",
+            environment_vars=_merged,
+        )],
+    )
 
 # COMMAND ----------
 
