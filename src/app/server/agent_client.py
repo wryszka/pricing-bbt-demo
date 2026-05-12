@@ -131,10 +131,38 @@ async def invoke_agent(endpoint_name: str,
         usage:   dict (prompt/completion/total tokens)
         persona: str | None (echoed back by the agent if set)
         error:   str — populated when not ok
+        cached:  bool — true if returned from the AI response cache
 
     `history` is an optional list of prior messages ({role, content}); if
     omitted a single user-message is sent.
+
+    Cache behaviour: when the global AI mode is `cached`, this call looks
+    up a deterministic hash of (endpoint, question, custom_inputs) in the
+    on-volume cache first and returns the stored response on hit. On miss
+    it falls through to the live endpoint and writes the response back so
+    a subsequent identical call lands fast and verbatim.
     """
-    return await asyncio.to_thread(
+    from server import ai_cache
+    mode = ai_cache.get_mode()
+    key  = ai_cache.cache_key(endpoint_name, question, custom_inputs)
+    if mode == "cached":
+        hit = ai_cache.get_cached(key)
+        if hit is not None:
+            hit = dict(hit)
+            hit["cached"] = True
+            return hit
+
+    result = await asyncio.to_thread(
         _invoke_sync, endpoint_name, question, custom_inputs, history, timeout,
     )
+
+    if mode == "cached" and result.get("ok"):
+        # Don't cache history-driven conversations — only single-question
+        # invocations are reliably reproducible.
+        if not history:
+            try:
+                ai_cache.put_cached(key, result, endpoint_name, question, custom_inputs)
+            except Exception as e:
+                logger.warning("ai_cache.put_cached failed for %s: %s", endpoint_name, e)
+    result["cached"] = False
+    return result

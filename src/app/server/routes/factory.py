@@ -686,6 +686,7 @@ async def factory_chat(req: ChatRequest) -> dict:
         "usage":          result.get("usage", {}),
         "trace":          result.get("trace", []),
         "error":          result.get("error"),
+        "cached":         bool(result.get("cached")),
     }
 
 

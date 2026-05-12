@@ -1,9 +1,11 @@
-"""Admin endpoints — demo reset, status."""
+"""Admin endpoints — demo reset, status, AI response cache toggle."""
 import asyncio
 import logging
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
+from server import ai_cache
 from server.audit import log_audit_event
 from server.config import get_catalog, get_schema, get_workspace_client, get_workspace_host
 
@@ -60,3 +62,57 @@ async def reset_demo() -> dict:
         "run_id":       run_id,
         "run_page_url": f"{host}/jobs/{job_id}/runs/{run_id}" if host and run_id else None,
     }
+
+
+class AiModeRequest(BaseModel):
+    mode: str  # "live" or "cached"
+
+
+@router.get("/ai-mode")
+async def get_ai_mode() -> dict:
+    """Return the current AI response mode + cached-entry summary."""
+    return {
+        "mode":         ai_cache.get_mode(),
+        "entries":      len(ai_cache.list_entries()),
+        "modes":        ["live", "cached"],
+        "description": {
+            "live":   "Always call the real serving endpoint.",
+            "cached": "Try the on-volume cache first; on miss call live and write the response back so repeats are instant.",
+        },
+    }
+
+
+@router.post("/ai-mode")
+async def set_ai_mode(req: AiModeRequest) -> dict:
+    """Flip the global AI response mode. Persists to a UC Volume so a new
+    replica picks up the same setting."""
+    try:
+        new_mode = ai_cache.set_mode(req.mode)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    await log_audit_event(
+        event_type="ai_mode_changed",
+        entity_type="config",
+        entity_id="ai_response_mode",
+        details={"mode": new_mode},
+    )
+    return {"mode": new_mode, "entries": len(ai_cache.list_entries())}
+
+
+@router.get("/ai-cache")
+async def list_ai_cache() -> dict:
+    return {"mode": ai_cache.get_mode(), "entries": ai_cache.list_entries()}
+
+
+@router.delete("/ai-cache")
+async def clear_ai_cache() -> dict:
+    """Remove every cached response. Use after a model rebuild so cached
+    answers can be re-recorded against the new champion."""
+    n = ai_cache.clear_cache()
+    await log_audit_event(
+        event_type="ai_cache_cleared",
+        entity_type="config",
+        entity_id="ai_response_mode",
+        details={"removed": n},
+    )
+    return {"removed": n}

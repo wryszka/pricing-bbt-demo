@@ -771,6 +771,7 @@ async def ask_governance_agent(req: AskRequest) -> dict:
         "usage":    result.get("usage", {}),
         "endpoint": AGENT_ENDPOINT,
         "error":    result.get("error"),
+        "cached":   bool(result.get("cached")),
     }
 
 
@@ -926,6 +927,7 @@ async def bias_investigate(req: BiasInvestigateRequest) -> dict:
         "usage":     result.get("usage", {}),
         "endpoint":  CHAT_AGENT_ENDPOINT,
         "error":     result.get("error"),
+        "cached":    bool(result.get("cached")),
     }
 
 
@@ -998,6 +1000,7 @@ async def bias_review_candidate(req: BiasReviewCandidateRequest) -> dict:
         "usage":     result.get("usage", {}),
         "endpoint":  CHAT_AGENT_ENDPOINT,
         "error":     result.get("error"),
+        "cached":    bool(result.get("cached")),
     }
 
 
@@ -1290,4 +1293,5 @@ async def adequacy_investigate(req: AdequacyInvestigateRequest) -> dict:
         "usage":            result.get("usage", {}),
         "endpoint":         AGENT_ENDPOINT,
         "error":            result.get("error"),
+        "cached":           bool(result.get("cached")),
     }

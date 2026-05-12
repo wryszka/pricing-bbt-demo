@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
-import { Database, FlaskConical, Shield, Code, Rocket, Home as HomeIcon, Table2, Package, Sparkles, Calculator } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Database, FlaskConical, Shield, Code, Rocket, Home as HomeIcon, Table2, Package, Sparkles, Calculator, Zap, Archive } from 'lucide-react';
 import Home from './pages/Home';
 import DatasetList from './pages/DatasetList';
 import DatasetDetail from './pages/DatasetDetail';
@@ -58,11 +59,68 @@ function Sidebar() {
         ))}
       </nav>
 
+      <AiModeBadge />
+
       {/* Footer */}
       <div className="px-4 py-3 border-t border-white/10 text-[10px] text-gray-500">
         Demo accelerator — not a Databricks product
       </div>
     </aside>
+  );
+}
+
+function AiModeBadge() {
+  const [mode, setMode] = useState<'live' | 'cached' | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [entries, setEntries] = useState<number>(0);
+
+  useEffect(() => {
+    fetch('/api/admin/ai-mode')
+      .then((r) => r.json())
+      .then((d) => { setMode(d.mode); setEntries(d.entries ?? 0); })
+      .catch(() => setMode('live'));
+  }, []);
+
+  async function flip() {
+    if (busy || !mode) return;
+    setBusy(true);
+    const next = mode === 'live' ? 'cached' : 'live';
+    try {
+      const r = await fetch('/api/admin/ai-mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ mode: next }),
+      });
+      const d = await r.json();
+      setMode(d.mode);
+      setEntries(d.entries ?? 0);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const isCached = mode === 'cached';
+  const Icon = isCached ? Archive : Zap;
+  const colour = isCached ? 'bg-amber-500/15 text-amber-300 hover:bg-amber-500/25 border-amber-400/30'
+                          : 'bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 border-emerald-400/30';
+  return (
+    <div className="px-3 py-2 border-t border-white/10">
+      <button
+        type="button"
+        onClick={flip}
+        disabled={!mode || busy}
+        title={isCached
+          ? `Serving cached AI responses (${entries} stored). Click to switch to live.`
+          : 'Calling real serving endpoints. Click to switch to cached / consistent / fast.'}
+        className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md border text-[11px] font-medium transition-colors disabled:opacity-50 ${colour}`}
+      >
+        <Icon className="w-3.5 h-3.5 shrink-0" />
+        <span className="flex-1 text-left">AI: {mode ?? '…'}</span>
+        {isCached && entries > 0 && (
+          <span className="text-[10px] opacity-70">{entries}</span>
+        )}
+      </button>
+    </div>
   );
 }
 

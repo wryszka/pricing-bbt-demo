@@ -65,6 +65,7 @@ async def run_explainability(req: ExplainRequest):
         "success":     result.get("ok"),
         "endpoint":    CHAT_AGENT_ENDPOINT,
         "explanation": explanation,
+        "cached":      bool(result.get("cached")),
         "transparency": {
             "persona":      "explain",
             "raw_response": raw,
