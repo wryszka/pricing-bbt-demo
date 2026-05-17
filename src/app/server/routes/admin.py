@@ -119,6 +119,99 @@ async def clear_ai_cache() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Warm-up — populate the cache with canonical demo questions so the first
+# click in a recorded demo run lands instantly. Called by /reset-demo at the
+# end of the data-reset job so the cache rebuilds against fresh champions.
+# ---------------------------------------------------------------------------
+
+# Curated list — covers the buttons most likely to be clicked during a live
+# demo. New entries: add (endpoint, question, custom_inputs).
+_WARMUP_PROMPTS: list[dict] = [
+    # Bias investigator — every protected attribute the UI exposes
+    {"endpoint": "pricing_chat_agent",
+     "question": "Brief: is there a director_gender bias signal in the live champions? Headline finding only.",
+     "custom_inputs": {"persona": "bias_investigator", "mode": "live", "protected_attribute": "director_gender"}},
+    {"endpoint": "pricing_chat_agent",
+     "question": "Brief: is there a postcode_demographic bias signal in the live champions?",
+     "custom_inputs": {"persona": "bias_investigator", "mode": "live", "protected_attribute": "postcode_demographic"}},
+    {"endpoint": "pricing_chat_agent",
+     "question": "Brief: is there an ethnicity_proxy bias signal in the live champions?",
+     "custom_inputs": {"persona": "bias_investigator", "mode": "live", "protected_attribute": "ethnicity_proxy"}},
+    {"endpoint": "pricing_chat_agent",
+     "question": "Brief: is there a director_age_band bias signal in the live champions?",
+     "custom_inputs": {"persona": "bias_investigator", "mode": "live", "protected_attribute": "director_age_band"}},
+    # Governance agent — one canonical lookup per family
+    *[{"endpoint": "pricing_governance_agent",
+       "question": f"Brief: which pack governs the latest {fam} champion?",
+       "custom_inputs": {"pack_id": ""}}
+      for fam in ("freq_glm", "sev_glm", "demand_gbm", "fraud_gbm",
+                  "freq_glm_motor", "sev_glm_motor",
+                  "demand_gbm_motor", "fraud_gbm_motor")],
+    # Impact explainer — one rolling summary
+    {"endpoint": "pricing_chat_agent",
+     "question": "Why did premiums change in the latest data update?",
+     "custom_inputs": {"persona": "explain"}},
+]
+
+
+@router.post("/ai-cache/warm")
+async def warm_ai_cache(clear_first: bool = False) -> dict:
+    """Fire the curated canonical questions once so the cache holds an entry
+    for each. Flips into `cached` mode for the duration of the warm-up so
+    `invoke_agent` writes to the cache, then restores the prior mode.
+
+    Optional `clear_first=true` wipes the existing cache before warming —
+    use that after a champion rebuild so stale answers are discarded."""
+    from server.agent_client import invoke_agent
+
+    if clear_first:
+        ai_cache.clear_cache()
+
+    prior_mode = ai_cache.get_mode()
+    ai_cache.set_mode("cached")
+    try:
+        results: list[dict] = []
+        for p in _WARMUP_PROMPTS:
+            try:
+                r = await invoke_agent(
+                    endpoint_name=p["endpoint"],
+                    question=p["question"],
+                    custom_inputs=p["custom_inputs"],
+                    timeout=300,
+                )
+                results.append({
+                    "endpoint": p["endpoint"],
+                    "persona":  (p["custom_inputs"] or {}).get("persona"),
+                    "ok":       bool(r.get("ok")),
+                    "cached":   bool(r.get("cached")),  # true if it was already cached
+                    "error":    (r.get("error") or "")[:200],
+                })
+            except Exception as e:
+                logger.warning("warm failed for %s: %s", p["endpoint"], e)
+                results.append({"endpoint": p["endpoint"], "ok": False, "error": str(e)[:200]})
+    finally:
+        ai_cache.set_mode(prior_mode)
+
+    ok_count    = sum(1 for r in results if r["ok"])
+    fail_count  = len(results) - ok_count
+    await log_audit_event(
+        event_type="ai_cache_warmed",
+        entity_type="config",
+        entity_id="ai_response_mode",
+        details={"ok": ok_count, "failed": fail_count, "clear_first": clear_first,
+                 "restored_mode": prior_mode},
+    )
+    return {
+        "ok":              ok_count,
+        "failed":          fail_count,
+        "total":           len(results),
+        "entries_in_cache": len(ai_cache.list_entries()),
+        "restored_mode":   prior_mode,
+        "results":         results,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Cost controls — pause every always-on compute resource the workbench
 # leans on, so the demo can sit idle without burning budget. Restart with
 # `POST /api/admin/wake` (or just `POST /api/live-pricing/start`).

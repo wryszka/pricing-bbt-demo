@@ -322,9 +322,48 @@ spark.sql(f"""
 
 # COMMAND ----------
 
+warm_outcome = {"called": False}
+try:
+    from databricks.sdk import WorkspaceClient as _W
+    import requests as _rq
+    _w = _W()
+    _host = _w.config.host.rstrip("/")
+    _token_hdr = _w.config._header_factory()
+    # Find the workbench app on this workspace — name is stable across targets.
+    _app_url = None
+    try:
+        for _a in _w.apps.list():
+            if (_a.name or "").startswith("pricing-workbench"):
+                _app_url = (_a.url or "").rstrip("/")
+                break
+    except Exception:
+        _app_url = None
+    if _app_url:
+        # Wipe stale cached AI responses (champions / packs just got rebuilt)
+        # then re-warm so a recorded demo lands on instant, identical answers.
+        try:
+            _rq.delete(f"{_app_url}/api/admin/ai-cache",
+                       headers=_token_hdr, timeout=30)
+        except Exception as _e:
+            print(f"⚠ ai-cache clear failed (non-fatal): {_e}")
+        try:
+            r = _rq.post(f"{_app_url}/api/admin/ai-cache/warm",
+                         headers=_token_hdr, timeout=600)
+            warm_outcome = {"called": True, "status": r.status_code,
+                            "body": r.text[:300]}
+            print(f"ai-cache warm: {r.status_code}")
+        except Exception as _e:
+            warm_outcome = {"called": True, "error": str(_e)[:200]}
+            print(f"⚠ ai-cache warm failed (non-fatal): {_e}")
+    else:
+        print("ℹ pricing-workbench app not found in this workspace — skipping warm-up")
+except Exception as _e:
+    print(f"⚠ ai-cache step skipped (non-fatal): {_e}")
+
 dbutils.notebook.exit(json.dumps({
     "champion_aliases": CHAMPION_VERSIONS,
     "cleanup":          cleanup_counts,
     "geospatial_rows":  n,
     "reset_at":         datetime.utcnow().isoformat() + "Z",
+    "ai_cache_warm":    warm_outcome,
 }))
