@@ -94,6 +94,37 @@ class RunRequest(BaseModel):
     scenario_id: str = "none"
 
 
+async def _find_cached_compare(family: str, versions: list, scenario: str,
+                               portfolio_size: int) -> dict | None:
+    """In cached mode, find the most recent compare_results row matching the
+    full request signature. Returns the cache_key + metadata so the caller
+    can return a synthetic "already done" response and skip the 2-min job."""
+    # Versions stored as comma-joined string in compare_results.
+    version_str = ",".join(str(v) for v in versions)
+    try:
+        rows = await execute_query(f"""
+            SELECT cache_key, requested_by, generated_at
+            FROM {fqn('compare_results')}
+            WHERE family = '{family}'
+              AND versions = '{version_str}'
+              AND scenario = '{scenario}'
+              AND portfolio_size = {int(portfolio_size)}
+            ORDER BY generated_at DESC
+            LIMIT 1
+        """)
+    except Exception as e:
+        logger.info("cache lookup failed (compare_results not queryable yet): %s", e)
+        return None
+    if not rows:
+        return None
+    r = rows[0]
+    return {
+        "cache_key":    r["cache_key"],
+        "requested_by": r.get("requested_by"),
+        "generated_at": str(r.get("generated_at", "")),
+    }
+
+
 @router.post("/run")
 async def trigger_run(req: RunRequest) -> dict:
     if req.family not in VALID_FAMILIES:
@@ -103,6 +134,29 @@ async def trigger_run(req: RunRequest) -> dict:
     scenario = req.scenario_id or "none"
     if scenario not in {s["id"] for s in SCENARIOS}:
         raise HTTPException(400, f"unknown scenario_id '{scenario}'")
+
+    # Cache mode: if a prior identical run exists in compare_results, reuse
+    # its cache_key. Returns a synthetic "completed" response so the UI skips
+    # straight to /api/compare/cache/{key} and renders instantly.
+    from server import ai_cache
+    if ai_cache.get_mode() == "cached":
+        hit = await _find_cached_compare(req.family, req.versions, scenario, req.portfolio_size)
+        if hit:
+            return {
+                "job_id":         None,
+                "job_run_id":     None,
+                "run_page_url":   None,
+                "family":         req.family,
+                "versions":       req.versions,
+                "scenario_id":    scenario,
+                "portfolio_size": req.portfolio_size,
+                "cached":         True,
+                "cache_key":      hit["cache_key"],
+                "life_cycle":     "TERMINATED",
+                "result":         "SUCCESS",
+                "generated_at":   hit["generated_at"],
+                "requested_by":   hit["requested_by"],
+            }
 
     user = get_current_user()
     w = get_workspace_client()
@@ -149,6 +203,7 @@ async def trigger_run(req: RunRequest) -> dict:
         "versions":     req.versions,
         "scenario_id":  scenario,
         "portfolio_size": req.portfolio_size,
+        "cached":       False,
     }
 
 
