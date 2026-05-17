@@ -1,5 +1,6 @@
 """Admin endpoints — demo reset, status, AI response cache toggle."""
 import asyncio
+import json
 import logging
 
 from fastapi import APIRouter, HTTPException
@@ -26,6 +27,44 @@ def _find_job_id(w, name: str) -> int | None:
                 return j.job_id
     except Exception: pass
     return None
+
+
+@router.get("/reset-demo/status")
+async def reset_demo_status(run_id: int) -> dict:
+    """Poll the demo_reset job run. Returns life-cycle / result + the
+    notebook's exit payload (including the ai-cache warm outcome) once
+    the run terminates."""
+    w = get_workspace_client()
+    try:
+        run = await asyncio.to_thread(w.jobs.get_run, run_id=run_id)
+    except Exception as e:
+        raise HTTPException(500, f"Could not fetch run {run_id}: {e}")
+
+    state  = run.state
+    life   = str(state.life_cycle_state).split(".")[-1] if state and state.life_cycle_state else None
+    result = str(state.result_state).split(".")[-1] if state and state.result_state else None
+
+    exit_payload: dict | None = None
+    try:
+        for t in (run.tasks or []):
+            if t.run_id:
+                out = await asyncio.to_thread(w.jobs.get_run_output, run_id=t.run_id)
+                if out.notebook_output and out.notebook_output.result:
+                    try:
+                        exit_payload = json.loads(out.notebook_output.result)
+                    except Exception:
+                        exit_payload = {"raw": out.notebook_output.result}
+                    break
+    except Exception as e:
+        logger.info("could not read reset run %s output yet: %s", run_id, e)
+
+    return {
+        "run_id":        run_id,
+        "life_cycle":    life,                # PENDING / RUNNING / TERMINATED / ...
+        "result":        result,              # SUCCESS / FAILED / CANCELED / None
+        "state_message": state.state_message if state else None,
+        "summary":       exit_payload,        # populated once notebook exits
+    }
 
 
 @router.post("/reset-demo")

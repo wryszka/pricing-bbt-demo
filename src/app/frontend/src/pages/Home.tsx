@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Database, FlaskConical, Table2, Shield, ArrowRight, Code, Rocket, Package, Sparkles,
@@ -231,10 +231,11 @@ function ResetDemoButton() {
   const [confirming, setConfirming] = useState(false);
   const [running, setRunning]       = useState(false);
   const [result, setResult]         = useState<any>(null);
+  const [status, setStatus]         = useState<any>(null);
   const [error, setError]           = useState<string | null>(null);
 
   const fire = async () => {
-    setRunning(true); setError(null); setResult(null);
+    setRunning(true); setError(null); setResult(null); setStatus(null);
     try {
       const r = await api.resetDemo();
       setResult(r);
@@ -246,16 +247,50 @@ function ResetDemoButton() {
     }
   };
 
+  // Poll the reset run so the user can see when it lands without leaving the page.
+  useEffect(() => {
+    if (!result?.run_id) return;
+    if (status?.life_cycle === 'TERMINATED') return;
+    const t = setInterval(async () => {
+      try {
+        const r = await fetch(`/api/admin/reset-demo/status?run_id=${result.run_id}`);
+        if (!r.ok) return;
+        const s = await r.json();
+        setStatus(s);
+        if (s.life_cycle === 'TERMINATED') clearInterval(t);
+      } catch {/* swallow */}
+    }, 6000);
+    return () => clearInterval(t);
+  }, [result, status?.life_cycle]);
+
   if (result) {
+    const finished = status?.life_cycle === 'TERMINATED';
+    const success  = status?.result === 'SUCCESS';
+    const phase    = status?.life_cycle || 'PENDING';
+    const warm     = status?.summary?.ai_cache_warm;
+    const bgClass  = !finished ? 'bg-blue-50 border-blue-200 text-blue-800'
+                  : success    ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                               : 'bg-red-50 border-red-200 text-red-800';
     return (
-      <div className="inline-flex items-center gap-2 px-4 py-2 rounded bg-emerald-50 border border-emerald-200 text-sm text-emerald-800">
-        <CheckCircle2 className="w-4 h-4" />
-        Reset queued —
-        <a href={result.run_page_url} target="_blank" rel="noreferrer"
-           className="font-medium underline inline-flex items-center gap-1">
-          run #{result.run_id} <ExternalLink className="w-3 h-3" />
-        </a>
-        <button onClick={() => setResult(null)} className="ml-2 text-[11px] text-emerald-700 hover:underline">
+      <div className={`inline-flex items-center gap-2 px-4 py-2 rounded border text-sm ${bgClass}`}>
+        {finished
+          ? (success ? <CheckCircle2 className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />)
+          : <Loader2 className="w-4 h-4 animate-spin" />}
+        <span>
+          Reset {finished ? (success ? 'complete' : 'failed') : phase.toLowerCase()} —
+          {' '}
+          <a href={result.run_page_url} target="_blank" rel="noreferrer"
+             className="font-medium underline inline-flex items-center gap-1">
+            run #{result.run_id} <ExternalLink className="w-3 h-3" />
+          </a>
+        </span>
+        {finished && warm?.called && (
+          <span className="text-[11px] opacity-80">
+            · AI cache warmed
+          </span>
+        )}
+        <button onClick={() => { setResult(null); setStatus(null); }}
+                className="ml-2 text-[11px] hover:underline">
           dismiss
         </button>
       </div>
