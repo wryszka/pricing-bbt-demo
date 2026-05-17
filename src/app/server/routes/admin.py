@@ -190,6 +190,17 @@ _WARMUP_PROMPTS: list[dict] = [
     {"endpoint": "pricing_chat_agent",
      "question": "Why did premiums change in the latest data update?",
      "custom_inputs": {"persona": "explain"}},
+    # Multi-agent fan-out — warming each leg individually so the supervisor's
+    # parallel fan-out also lands instantly from cache.
+    {"endpoint": "pricing_governance_agent",
+     "question": "For freq_glm_motor v4: which pack defends it, is there a director_gender disparity in its predictions, and why did premiums move on the last data refresh?",
+     "custom_inputs": {"pack_id": ""}},
+    {"endpoint": "pricing_chat_agent",
+     "question": "For freq_glm_motor v4: which pack defends it, is there a director_gender disparity in its predictions, and why did premiums move on the last data refresh?",
+     "custom_inputs": {"persona": "bias_investigator", "mode": "live"}},
+    {"endpoint": "pricing_chat_agent",
+     "question": "For freq_glm_motor v4: which pack defends it, is there a director_gender disparity in its predictions, and why did premiums move on the last data refresh?",
+     "custom_inputs": {"persona": "explain"}},
 ]
 
 

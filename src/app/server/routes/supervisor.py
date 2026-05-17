@@ -45,7 +45,7 @@ SUB_AGENTS: list[dict[str, Any]] = [
         "persona":     None,
         "tools":       ["query_pack_index", "read_pack_artefact", "query_audit_log"],
         "good_for":    [
-            "What pack defends frequency v53?",
+            "What pack defends frequency v14?",
             "Show me audit events for fraud_gbm in March",
             "Draft an FCA Consumer Duty response",
         ],
@@ -115,8 +115,20 @@ SUB_AGENTS: list[dict[str, Any]] = [
             "Which quotes were outliers vs market median?",
         ],
     },
+    {
+        "id":          "multi",
+        "label":       "Multi-agent",
+        "subtitle":    "fan one question out to governance + bias + explain in parallel",
+        "endpoint":    "multi_agent",
+        "tools":       ["governance · bias · explain (parallel fan-out)"],
+        "good_for":    [
+            "For freq_glm_motor v4: which pack defends it, is there a director_gender disparity in its predictions, and why did premiums move on the last data refresh?",
+        ],
+    },
 ]
 _AGENT_BY_ID = {a["id"]: a for a in SUB_AGENTS}
+# Sub-agents the `multi` virtual agent fans the question out to.
+_MULTI_FANOUT_IDS = ("governance", "bias", "explain")
 
 
 @router.get("/agents")
@@ -193,7 +205,7 @@ class AskRequest(BaseModel):
     question:    str
     # 'auto' = let the supervisor classify; otherwise must be a SUB_AGENTS id
     sub_agent:   Literal["auto", "governance", "bias", "explain", "factory",
-                         "genie_mart", "genie_quote"] = "auto"
+                         "genie_mart", "genie_quote", "multi"] = "auto"
     # Optional context for sub-agents that need it
     pack_id:     str | None = None    # governance / bias_investigator
     run_id:      str | None = None    # factory persona
@@ -218,7 +230,59 @@ async def ask_supervisor(req: AskRequest) -> dict:
     agent = _AGENT_BY_ID[chosen]
     result: dict[str, Any] = {}
 
-    if agent["endpoint"] == "ai_bi_genie":
+    if chosen == "multi":
+        # Fan the same question out to a fixed set of specialist sub-agents in
+        # parallel. Each one returns its own structured answer; we stitch them
+        # together as a single multi-section reply so the chat panel renders
+        # one turn with three labelled blocks.
+        fanout = [_AGENT_BY_ID[i] for i in _MULTI_FANOUT_IDS]
+
+        async def _call_one(a: dict) -> dict:
+            ci: dict[str, Any] = {}
+            if a.get("persona"):
+                ci["persona"] = a["persona"]
+            if a["id"] == "governance":
+                ci["pack_id"] = req.pack_id or ""
+            if a["id"] == "bias":
+                ci.setdefault("mode", "live")
+                if req.family:
+                    ci["family"] = req.family
+            r = await invoke_agent(
+                endpoint_name=a["endpoint"],
+                question=req.question,
+                custom_inputs=ci,
+                timeout=300,
+            )
+            return {"agent": a, "result": r}
+
+        outs = await asyncio.gather(*(_call_one(a) for a in fanout))
+        sections: list[str] = []
+        traces: list[Any] = []
+        total_tokens = 0
+        any_ok = False
+        first_error: str | None = None
+        for o in outs:
+            a = o["agent"]; r = o["result"]
+            sections.append(f"## {a['label']} — {a['subtitle']}\n\n" +
+                            (r.get("answer") or f"_(no answer — {r.get('error') or 'unknown'})_"))
+            traces.append({"sub_agent": a["id"], "trace": r.get("trace", [])})
+            total_tokens += int((r.get("usage") or {}).get("total_tokens") or 0)
+            if r.get("ok"):
+                any_ok = True
+            elif first_error is None:
+                first_error = r.get("error")
+        result = {
+            "ok":       any_ok,
+            "kind":     "multi",
+            "answer":   "\n\n---\n\n".join(sections),
+            "trace":    traces,
+            "model":    "multi_agent",
+            "usage":    {"total_tokens": total_tokens},
+            "endpoint": "multi_agent",
+            "error":    None if any_ok else first_error,
+            "fanout":   [o["agent"]["id"] for o in outs],
+        }
+    elif agent["endpoint"] == "ai_bi_genie":
         # The supervisor doesn't proxy Genie conversations — Genie has its own
         # streaming UX. Surface the space_id so the frontend can either embed
         # the chat or hand the user off into the existing Genie panel.
