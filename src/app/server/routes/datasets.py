@@ -441,6 +441,8 @@ async def _compute_portfolio_impact(dataset_id, join_key, upt, raw, silver):
 
     if dataset_id == "geospatial_hazard_enrichment":
         # Join on postcode_sector — re-rate with old vs new flood/crime scores
+        # Row-level shadow pricing — millions of policies × wide columns blow
+        # past the inline 25 MiB cap; route via EXTERNAL_LINKS.
         result = await execute_query(f"""
             WITH changes AS (
                 SELECT r.postcode_sector,
@@ -479,7 +481,7 @@ async def _compute_portfolio_impact(dataset_id, join_key, upt, raw, silver):
             SELECT *, (new_price - old_price) AS premium_delta,
                 ROUND(CASE WHEN old_price > 0 THEN (new_price - old_price) / old_price * 100 ELSE 0 END, 1) AS delta_pct
             FROM repriced
-        """)
+        """, large=True)
     elif dataset_id == "market_pricing_benchmark":
         # Market data doesn't directly change technical price, but shifts competitive position
         result = await execute_query(f"""
@@ -504,7 +506,7 @@ async def _compute_portfolio_impact(dataset_id, join_key, upt, raw, silver):
             SELECT *, 0 AS premium_delta,
                 ROUND(CASE WHEN old_rate > 0 THEN (new_rate - old_rate) / old_rate * 100 ELSE 0 END, 1) AS delta_pct
             FROM repriced WHERE old_rate IS NOT NULL
-        """)
+        """, large=True)
     else:  # credit_bureau
         result = await execute_query(f"""
             WITH changes AS (
@@ -530,7 +532,7 @@ async def _compute_portfolio_impact(dataset_id, join_key, upt, raw, silver):
             SELECT *, (new_price - old_price) AS premium_delta,
                 ROUND(CASE WHEN old_price > 0 THEN (new_price - old_price) / old_price * 100 ELSE 0 END, 1) AS delta_pct
             FROM repriced
-        """)
+        """, large=True)
 
     if not result:
         return {"affected_policies": 0, "total_policies": 0}
