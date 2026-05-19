@@ -436,40 +436,34 @@ def _i(v) -> int:
         return 0
 
 
-async def _compute_portfolio_impact(dataset_id, join_key, upt, raw, silver):
-    """Shadow-price affected policies: old features vs new features."""
-
+def _impact_repriced_cte(dataset_id: str, upt: str, raw: str, silver: str) -> str:
+    """Return the WITH ... `repriced` CTE for a given dataset_id. The CTE
+    has columns: policy_id, postcode_sector, industry_risk_tier, region,
+    current_premium, old_price, new_price, premium_delta, delta_pct."""
     if dataset_id == "geospatial_hazard_enrichment":
-        # Join on postcode_sector — re-rate with old vs new flood/crime scores
-        # Row-level shadow pricing — millions of policies × wide columns blow
-        # past the inline 25 MiB cap; route via EXTERNAL_LINKS.
-        result = await execute_query(f"""
+        return f"""
             WITH changes AS (
                 SELECT r.postcode_sector,
                     CAST(s.flood_zone_rating AS DOUBLE) AS old_flood,
                     CAST(r.flood_zone_rating AS DOUBLE) AS new_flood,
                     CAST(s.crime_theft_index AS DOUBLE) AS old_crime,
-                    CAST(r.crime_theft_index AS DOUBLE) AS new_crime,
-                    CAST(s.subsidence_risk AS DOUBLE) AS old_subsidence,
-                    CAST(r.subsidence_risk AS DOUBLE) AS new_subsidence
+                    CAST(r.crime_theft_index AS DOUBLE) AS new_crime
                 FROM {raw} r JOIN {silver} s ON r.postcode_sector = s.postcode_sector
                 WHERE CAST(r.flood_zone_rating AS STRING) != CAST(s.flood_zone_rating AS STRING)
                    OR CAST(r.crime_theft_index AS STRING) != CAST(s.crime_theft_index AS STRING)
                    OR CAST(r.subsidence_risk AS STRING) != CAST(s.subsidence_risk AS STRING)
             ),
             repriced AS (
-                SELECT p.policy_id, p.postcode_sector, p.sic_code,
-                    p.industry_risk_tier, p.construction_type, p.region,
-                    p.sum_insured, p.current_premium, p.renewal_date,
-                    c.old_flood, c.new_flood,
-                    -- Old technical price
+                SELECT p.policy_id, p.postcode_sector,
+                    COALESCE(p.industry_risk_tier, 'Unknown') AS industry_risk_tier,
+                    COALESCE(p.region, substr(p.postcode_sector, 1, 2), 'Unknown') AS region,
+                    p.current_premium,
                     ROUND(5.0 * (p.sum_insured / 1000.0)
                         * CASE p.industry_risk_tier WHEN 'High' THEN 1.8 WHEN 'Medium' THEN 1.2 ELSE 0.85 END
                         * (0.7 + (COALESCE(c.old_flood, 5) - 1) * 0.2)
                         * (0.8 + COALESCE(c.old_crime, 50) / 100.0 * 0.7)
                         * CASE p.construction_type WHEN 'Fire Resistive' THEN 0.7 WHEN 'Non-Combustible' THEN 0.85 WHEN 'Heavy Timber' THEN 1.15 WHEN 'Frame' THEN 1.4 ELSE 1.0 END
                     , 0) AS old_price,
-                    -- New technical price
                     ROUND(5.0 * (p.sum_insured / 1000.0)
                         * CASE p.industry_risk_tier WHEN 'High' THEN 1.8 WHEN 'Medium' THEN 1.2 ELSE 0.85 END
                         * (0.7 + (COALESCE(c.new_flood, 5) - 1) * 0.2)
@@ -478,13 +472,9 @@ async def _compute_portfolio_impact(dataset_id, join_key, upt, raw, silver):
                     , 0) AS new_price
                 FROM {upt} p JOIN changes c ON p.postcode_sector = c.postcode_sector
             )
-            SELECT *, (new_price - old_price) AS premium_delta,
-                ROUND(CASE WHEN old_price > 0 THEN (new_price - old_price) / old_price * 100 ELSE 0 END, 1) AS delta_pct
-            FROM repriced
-        """, large=True)
-    elif dataset_id == "market_pricing_benchmark":
-        # Market data doesn't directly change technical price, but shifts competitive position
-        result = await execute_query(f"""
+        """
+    if dataset_id == "market_pricing_benchmark":
+        return f"""
             WITH changes AS (
                 SELECT r.match_key_sic_region,
                     CAST(s.market_median_rate AS DOUBLE) AS old_rate,
@@ -493,125 +483,174 @@ async def _compute_portfolio_impact(dataset_id, join_key, upt, raw, silver):
                 WHERE CAST(r.market_median_rate AS STRING) != CAST(s.market_median_rate AS STRING)
             ),
             repriced AS (
-                SELECT p.policy_id, p.postcode_sector, p.sic_code,
-                    p.industry_risk_tier, p.construction_type, p.region,
-                    p.sum_insured, p.current_premium, p.renewal_date,
-                    c.old_rate, c.new_rate,
+                SELECT p.policy_id, p.postcode_sector,
+                    COALESCE(p.industry_risk_tier, 'Unknown') AS industry_risk_tier,
+                    COALESCE(p.region, substr(p.postcode_sector, 1, 2), 'Unknown') AS region,
+                    p.current_premium,
                     p.current_premium AS old_price,
                     p.current_premium AS new_price
                 FROM {upt} p
                 JOIN (SELECT DISTINCT sic_code FROM {silver}) sk ON p.sic_code = sk.sic_code
-                LEFT JOIN changes c ON c.match_key_sic_region = CONCAT(p.sic_code, '_', p.region)
+                JOIN changes c ON c.match_key_sic_region = CONCAT(p.sic_code, '_', p.region)
             )
-            SELECT *, 0 AS premium_delta,
-                ROUND(CASE WHEN old_rate > 0 THEN (new_rate - old_rate) / old_rate * 100 ELSE 0 END, 1) AS delta_pct
-            FROM repriced WHERE old_rate IS NOT NULL
-        """, large=True)
-    else:  # credit_bureau
-        result = await execute_query(f"""
-            WITH changes AS (
-                SELECT r.policy_id,
-                    CAST(s.credit_score AS INT) AS old_score,
-                    CAST(r.credit_score AS INT) AS new_score,
-                    CAST(s.ccj_count AS INT) AS old_ccj,
-                    CAST(r.ccj_count AS INT) AS new_ccj
-                FROM {raw} r JOIN {silver} s ON r.policy_id = s.policy_id
-                WHERE CAST(r.credit_score AS STRING) != CAST(s.credit_score AS STRING)
-                   OR CAST(r.ccj_count AS STRING) != CAST(s.ccj_count AS STRING)
-            ),
-            repriced AS (
-                SELECT p.policy_id, p.postcode_sector, p.sic_code,
-                    p.industry_risk_tier, p.construction_type, p.region,
-                    p.sum_insured, p.current_premium, p.renewal_date,
-                    c.old_score, c.new_score,
-                    p.current_premium AS old_price,
-                    -- Credit-adjusted price: +/- 5% per 100 credit score points shift
-                    ROUND(p.current_premium * (1.0 + (c.old_score - c.new_score) / 100.0 * 0.05), 0) AS new_price
-                FROM {upt} p JOIN changes c ON p.policy_id = c.policy_id
-            )
-            SELECT *, (new_price - old_price) AS premium_delta,
-                ROUND(CASE WHEN old_price > 0 THEN (new_price - old_price) / old_price * 100 ELSE 0 END, 1) AS delta_pct
-            FROM repriced
-        """, large=True)
+        """
+    # credit_bureau
+    return f"""
+        WITH changes AS (
+            SELECT r.policy_id,
+                CAST(s.credit_score AS INT) AS old_score,
+                CAST(r.credit_score AS INT) AS new_score
+            FROM {raw} r JOIN {silver} s ON r.policy_id = s.policy_id
+            WHERE CAST(r.credit_score AS STRING) != CAST(s.credit_score AS STRING)
+               OR CAST(r.ccj_count AS STRING) != CAST(s.ccj_count AS STRING)
+        ),
+        repriced AS (
+            SELECT p.policy_id, p.postcode_sector,
+                COALESCE(p.industry_risk_tier, 'Unknown') AS industry_risk_tier,
+                COALESCE(p.region, substr(p.postcode_sector, 1, 2), 'Unknown') AS region,
+                p.current_premium,
+                p.current_premium AS old_price,
+                ROUND(p.current_premium * (1.0 + (c.old_score - c.new_score) / 100.0 * 0.05), 0) AS new_price
+            FROM {upt} p JOIN changes c ON p.policy_id = c.policy_id
+        )
+    """
 
-    if not result:
+
+async def _compute_portfolio_impact(dataset_id, join_key, upt, raw, silver):
+    """Shadow-price affected policies via 4 small server-side aggregates.
+
+    The previous implementation pulled row-level reprice data into the app
+    process and aggregated in Python — which blew past the 25 MiB inline
+    cap for the geospatial dataset (millions of policies × wide columns)
+    and EXTERNAL_LINKS isn't reachable from the Apps egress zone.
+    """
+    cte = _impact_repriced_cte(dataset_id, upt, raw, silver)
+
+    # 1. Overall totals + histogram counts (1 row, ~20 columns)
+    totals = await execute_query(f"""
+        {cte},
+        scored AS (
+          SELECT current_premium,
+                 (new_price - old_price) AS premium_delta,
+                 ROUND(CASE WHEN old_price > 0 THEN (new_price - old_price) / old_price * 100 ELSE 0 END, 1) AS delta_pct
+          FROM repriced
+        )
+        SELECT
+          COUNT(*)                                                AS affected,
+          SUM(current_premium)                                    AS affected_gwp,
+          SUM(premium_delta)                                      AS delta_total,
+          AVG(premium_delta)                                      AS delta_avg,
+          percentile_approx(premium_delta, 0.5)                   AS delta_median,
+          SUM(CASE WHEN premium_delta > 0 THEN 1 ELSE 0 END)      AS pol_increase,
+          SUM(CASE WHEN premium_delta < 0 THEN 1 ELSE 0 END)      AS pol_decrease,
+          SUM(CASE WHEN premium_delta = 0 THEN 1 ELSE 0 END)      AS pol_unchanged,
+          SUM(CASE WHEN delta_pct < -10 THEN 1 ELSE 0 END)        AS h_lt_n10,
+          SUM(CASE WHEN delta_pct >= -10 AND delta_pct < -5 THEN 1 ELSE 0 END) AS h_n10_n5,
+          SUM(CASE WHEN delta_pct >= -5  AND delta_pct < 0  THEN 1 ELSE 0 END) AS h_n5_0,
+          SUM(CASE WHEN delta_pct = 0 THEN 1 ELSE 0 END)          AS h_0,
+          SUM(CASE WHEN delta_pct > 0   AND delta_pct < 5  THEN 1 ELSE 0 END)  AS h_0_5,
+          SUM(CASE WHEN delta_pct >= 5  AND delta_pct < 10 THEN 1 ELSE 0 END)  AS h_5_10,
+          SUM(CASE WHEN delta_pct >= 10 THEN 1 ELSE 0 END)        AS h_gt_10,
+          SUM(CASE WHEN ABS(delta_pct) > 10 THEN 1 ELSE 0 END)    AS flagged_count
+        FROM scored
+    """)
+    if not totals or _i(totals[0].get("affected", 0)) == 0:
         return {"affected_policies": 0, "total_policies": 0}
+    t = totals[0]
+    affected = _i(t.get("affected", 0))
 
     total_q = await execute_query(f"SELECT COUNT(*) AS cnt FROM {upt}")
-    total = _i(total_q[0]["cnt"]) if total_q else 0
+    total   = _i(total_q[0]["cnt"]) if total_q else 0
 
-    affected = len(result)
-    deltas = [_f(r.get("premium_delta", 0)) for r in result]
-    pcts = [_f(r.get("delta_pct", 0)) for r in result]
-    premiums = [_f(r.get("current_premium", 0)) for r in result]
+    # 2. Per-industry
+    by_industry_rows = await execute_query(f"""
+        {cte}
+        SELECT industry_risk_tier AS industry,
+               COUNT(*)                                  AS policies,
+               SUM(current_premium)                      AS gwp,
+               SUM(new_price - old_price)                AS total_delta
+        FROM repriced
+        GROUP BY industry_risk_tier
+        ORDER BY ABS(SUM(new_price - old_price)) DESC
+    """)
+    by_industry = [{
+        "industry":    r.get("industry") or "Unknown",
+        "policies":    _i(r.get("policies", 0)),
+        "gwp":         _f(r.get("gwp", 0)),
+        "total_delta": _f(r.get("total_delta", 0)),
+    } for r in by_industry_rows]
 
-    # Histogram buckets for premium change %
-    buckets = {"< -10%": 0, "-10 to -5%": 0, "-5 to 0%": 0, "0%": 0,
-               "0 to 5%": 0, "5 to 10%": 0, "> 10%": 0}
-    for p in pcts:
-        if p < -10: buckets["< -10%"] += 1
-        elif p < -5: buckets["-10 to -5%"] += 1
-        elif p < 0: buckets["-5 to 0%"] += 1
-        elif p == 0: buckets["0%"] += 1
-        elif p < 5: buckets["0 to 5%"] += 1
-        elif p < 10: buckets["5 to 10%"] += 1
-        else: buckets["> 10%"] += 1
+    # 3. Per-region (top 15)
+    by_region_rows = await execute_query(f"""
+        {cte}
+        SELECT region,
+               COUNT(*)                                  AS policies,
+               SUM(current_premium)                      AS gwp,
+               SUM(new_price - old_price)                AS total_delta
+        FROM repriced
+        GROUP BY region
+        ORDER BY ABS(SUM(new_price - old_price)) DESC
+        LIMIT 15
+    """)
+    by_region = [{
+        "region":      r.get("region") or "Unknown",
+        "policies":    _i(r.get("policies", 0)),
+        "gwp":         _f(r.get("gwp", 0)),
+        "total_delta": _f(r.get("total_delta", 0)),
+    } for r in by_region_rows]
 
-    histogram = [{"bucket": k, "count": v} for k, v in buckets.items()]
+    # 4. Flagged policies (top 30 by |delta_pct| over 10%)
+    flagged_rows = await execute_query(f"""
+        {cte},
+        scored AS (
+          SELECT policy_id, postcode_sector, industry_risk_tier, current_premium,
+                 (new_price - old_price) AS premium_delta,
+                 ROUND(CASE WHEN old_price > 0 THEN (new_price - old_price) / old_price * 100 ELSE 0 END, 1) AS delta_pct
+          FROM repriced
+        )
+        SELECT policy_id, postcode_sector, industry_risk_tier,
+               current_premium, premium_delta, delta_pct
+        FROM scored
+        WHERE ABS(delta_pct) > 10
+        ORDER BY ABS(delta_pct) DESC
+        LIMIT 30
+    """)
+    flagged = [{
+        "policy_id":       r.get("policy_id"),
+        "postcode":        r.get("postcode_sector"),
+        "industry":        r.get("industry_risk_tier"),
+        "current_premium": _f(r.get("current_premium")),
+        "premium_delta":   _f(r.get("premium_delta")),
+        "delta_pct":       _f(r.get("delta_pct")),
+    } for r in flagged_rows]
 
-    # By industry
-    ind_map: dict[str, dict] = {}
-    for r in result:
-        tier = r.get("industry_risk_tier", "Unknown") or "Unknown"
-        if tier not in ind_map:
-            ind_map[tier] = {"industry": tier, "policies": 0, "gwp": 0, "total_delta": 0}
-        ind_map[tier]["policies"] += 1
-        ind_map[tier]["gwp"] += _f(r.get("current_premium", 0))
-        ind_map[tier]["total_delta"] += _f(r.get("premium_delta", 0))
-    by_industry = sorted(ind_map.values(), key=lambda x: abs(x["total_delta"]), reverse=True)
-
-    # By region
-    reg_map: dict[str, dict] = {}
-    for r in result:
-        region = r.get("region") or (r.get("postcode_sector", "?")[:2] if r.get("postcode_sector") else "Unknown")
-        if region not in reg_map:
-            reg_map[region] = {"region": region, "policies": 0, "gwp": 0, "total_delta": 0}
-        reg_map[region]["policies"] += 1
-        reg_map[region]["gwp"] += _f(r.get("current_premium", 0))
-        reg_map[region]["total_delta"] += _f(r.get("premium_delta", 0))
-    by_region = sorted(reg_map.values(), key=lambda x: abs(x["total_delta"]), reverse=True)
-
-    # Flagged policies (>10% change)
-    flagged = [
-        {
-            "policy_id": r.get("policy_id"),
-            "postcode": r.get("postcode_sector"),
-            "industry": r.get("industry_risk_tier"),
-            "current_premium": _f(r.get("current_premium")),
-            "premium_delta": _f(r.get("premium_delta")),
-            "delta_pct": _f(r.get("delta_pct")),
-        }
-        for r in result if abs(_f(r.get("delta_pct", 0))) > 10
+    histogram = [
+        {"bucket": "< -10%",     "count": _i(t.get("h_lt_n10", 0))},
+        {"bucket": "-10 to -5%", "count": _i(t.get("h_n10_n5", 0))},
+        {"bucket": "-5 to 0%",   "count": _i(t.get("h_n5_0",   0))},
+        {"bucket": "0%",         "count": _i(t.get("h_0",      0))},
+        {"bucket": "0 to 5%",    "count": _i(t.get("h_0_5",    0))},
+        {"bucket": "5 to 10%",   "count": _i(t.get("h_5_10",   0))},
+        {"bucket": "> 10%",      "count": _i(t.get("h_gt_10",  0))},
     ]
-    flagged.sort(key=lambda x: abs(x["delta_pct"]), reverse=True)
 
     return {
-        "total_policies": total,
-        "affected_policies": affected,
-        "affected_pct": round(affected / total * 100, 1) if total else 0,
-        "total_gwp": round(sum(premiums)),
-        "affected_gwp": round(sum(premiums)),
-        "premium_delta_total": round(sum(deltas)),
-        "premium_delta_avg": round(sum(deltas) / affected) if affected else 0,
-        "premium_delta_median": round(sorted(deltas)[len(deltas) // 2]) if deltas else 0,
-        "policies_increase": sum(1 for d in deltas if d > 0),
-        "policies_decrease": sum(1 for d in deltas if d < 0),
-        "policies_unchanged": sum(1 for d in deltas if d == 0),
-        "histogram": histogram,
-        "by_industry": by_industry,
-        "by_region": by_region[:15],
-        "flagged_policies": flagged[:30],
-        "flagged_count": len(flagged),
+        "total_policies":      total,
+        "affected_policies":   affected,
+        "affected_pct":        round(affected / total * 100, 1) if total else 0,
+        "total_gwp":           round(_f(t.get("affected_gwp", 0))),
+        "affected_gwp":        round(_f(t.get("affected_gwp", 0))),
+        "premium_delta_total": round(_f(t.get("delta_total", 0))),
+        "premium_delta_avg":   round(_f(t.get("delta_avg", 0))),
+        "premium_delta_median":round(_f(t.get("delta_median", 0))),
+        "policies_increase":   _i(t.get("pol_increase", 0)),
+        "policies_decrease":   _i(t.get("pol_decrease", 0)),
+        "policies_unchanged":  _i(t.get("pol_unchanged", 0)),
+        "histogram":           histogram,
+        "by_industry":         by_industry,
+        "by_region":           by_region,
+        "flagged_policies":    flagged,
+        "flagged_count":       _i(t.get("flagged_count", 0)),
     }
 
 
