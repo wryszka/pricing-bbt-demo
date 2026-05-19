@@ -14,5 +14,10 @@ env:
     value: ""
   - name: GENIE_QUOTE_SPACE_ID
     value: ""
+  - name: MART_DASHBOARD_ID
+    # Lakeview dashboard powering the Modelling Mart "Dashboard" tab on dev
+    # — cloned from prod (01f13f48d2571b28bb650277cceea811) with catalog refs
+    # retargeted to lr_dev_aws_us_catalog.
+    value: "01f153bd770f16cf89ed8bc93fff45ab"
   - name: BUNDLE_NOTEBOOKS_BASE
     value: "/Workspace/Users/laurence.ryszka@databricks.com/.bundle/pricing-upt-demo/dev/files/src/04_models"
