@@ -25,7 +25,7 @@ from pydantic import BaseModel
 
 from server.agent_client import invoke_agent
 from server.audit import log_audit_event
-from server.config import get_workspace_client
+from server.config import get_workspace_client, get_workspace_host
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/supervisor", tags=["supervisor"])
@@ -284,23 +284,38 @@ async def ask_supervisor(req: AskRequest) -> dict:
         }
     elif agent["endpoint"] == "ai_bi_genie":
         # The supervisor doesn't proxy Genie conversations — Genie has its own
-        # streaming UX. Surface the space_id so the frontend can either embed
-        # the chat or hand the user off into the existing Genie panel.
+        # streaming UX. Hand the embed URL back so the chat panel can render
+        # the room inline (with the user's question pre-filled), or fall back
+        # to a clear error when the env var isn't wired.
         space_id = os.getenv(agent["space_env"], "")
+        host     = get_workspace_host() or ""
+        if space_id and host:
+            # Pre-filling the question via ?query= lets the Genie iframe
+            # show the answer on first paint without a manual second click.
+            from urllib.parse import quote
+            q_param  = f"?query={quote(req.question[:1000])}"
+            embed    = f"{host}/embed/genie/rooms/{space_id}{q_param}"
+            open_url = f"{host}/genie/rooms/{space_id}{q_param}"
+            answer = (
+                f"Genie is best driven inline — opening the **{agent['label']}** room "
+                f"with your question pre-filled. Click *Open in Databricks* to take "
+                f"the chat full-page if you want history + saved follow-ups."
+            )
+        else:
+            embed = open_url = ""
+            answer = f"Genie space env var {agent['space_env']} is not set."
         result = {
-            "ok":       bool(space_id),
-            "kind":     "genie",
-            "space_id": space_id,
-            "answer":   ("Mart Genie is best driven through its own panel — "
-                         "the supervisor surfaces the space id here so the UI "
-                         "can render the chat inline."
-                         if space_id else
-                         f"Genie space env var {agent['space_env']} is not set."),
-            "trace":    [],
-            "usage":    {},
-            "model":    "ai_bi_genie",
-            "endpoint": agent["endpoint"],
-            "error":    None if space_id else f"{agent['space_env']} not configured",
+            "ok":         bool(space_id),
+            "kind":       "genie",
+            "space_id":   space_id,
+            "embed_url":  embed,
+            "open_url":   open_url,
+            "answer":     answer,
+            "trace":      [],
+            "usage":      {},
+            "model":      "ai_bi_genie",
+            "endpoint":   agent["endpoint"],
+            "error":      None if space_id else f"{agent['space_env']} not configured",
         }
     else:
         custom_inputs: dict[str, Any] = {}

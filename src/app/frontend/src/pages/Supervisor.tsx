@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   Bot, Send, Loader2, Sparkles, ChevronDown, ChevronUp, Wrench,
-  Database, Shield, Scale, Workflow, FlaskConical,
+  Database, Shield, Scale, Workflow, FlaskConical, ExternalLink,
 } from 'lucide-react';
 import { api } from '../lib/api';
 
@@ -33,7 +33,11 @@ type Turn = {
   sub_agent?: string;
   sub_agent_label?: string;
   classifier_used?: boolean;
-  kind?: 'agent' | 'genie';
+  kind?: 'agent' | 'genie' | 'multi';
+  space_id?: string;
+  embed_url?: string;
+  open_url?: string;
+  question?: string;
   error?: string;
 };
 
@@ -68,7 +72,7 @@ export default function Supervisor() {
     setBusy(true);
     setTurns(t => [...t, { role: 'user', text }]);
     try {
-      const r = await api.askSupervisor({ question: text, sub_agent: chosen });
+      const r: any = await api.askSupervisor({ question: text, sub_agent: chosen });
       setTurns(t => [...t, {
         role:             'assistant',
         text:             r.answer || (r.error ? `[error: ${r.error}]` : '(empty response)'),
@@ -79,6 +83,10 @@ export default function Supervisor() {
         sub_agent_label:  r.sub_agent_label,
         classifier_used:  r.classifier_used,
         kind:             r.kind,
+        space_id:         r.space_id,
+        embed_url:        r.embed_url,
+        open_url:         r.open_url,
+        question:         text,
         error:            r.error,
       }]);
     } catch (e: any) {
@@ -274,6 +282,22 @@ function TurnView({ turn }: { turn: Turn }) {
           </div>
         )}
         <div className="whitespace-pre-wrap leading-relaxed">{turn.text}</div>
+        {turn.kind === 'genie' && turn.embed_url && (
+          <div className="mt-3">
+            <div className="flex items-center justify-end mb-2">
+              <a href={turn.open_url || turn.embed_url} target="_blank" rel="noopener noreferrer"
+                 className="inline-flex items-center gap-1 text-[11px] text-blue-600 hover:text-blue-800">
+                Open in Databricks <ExternalLink className="w-3 h-3" />
+              </a>
+            </div>
+            <iframe
+              src={turn.embed_url}
+              title={turn.sub_agent_label || 'Genie chat'}
+              className="w-full rounded-lg border border-gray-200 bg-white"
+              style={{ height: 600 }}
+            />
+          </div>
+        )}
         {(turn.trace?.length || turn.usage?.total_tokens || turn.model) && (
           <div className="mt-2 pt-2 border-t border-gray-200">
             <button onClick={() => setShowTrace(s => !s)}
