@@ -317,6 +317,45 @@ def _num(v, default=0.0):
 # Serving-endpoint scoring — the live pricing runtime
 # ---------------------------------------------------------------------------
 
+async def _score_via_inference_logs(policy_id: str) -> dict | None:
+    """Fallback when the live `pricing_scorer` endpoint isn't deployed on
+    this workspace (e.g. dev). Returns the most recent batch-scored row
+    from `inference_logs` so the MTA / Quote Runner still has model
+    predictions to drive the rating engine."""
+    try:
+        rows = await execute_query(f"""
+            SELECT freq_pred, sev_pred, demand_pred, fraud_pred,
+                   base_premium, fraud_loading, demand_adj,
+                   technical_premium,
+                   freq_version, sev_version, demand_version, fraud_version
+            FROM {fqn('inference_logs')}
+            WHERE policy_id = '{policy_id}'
+            ORDER BY scored_at DESC
+            LIMIT 1
+        """)
+    except Exception as e:
+        logger.info("inference_logs lookup for %s failed: %s", policy_id, e)
+        return None
+    if not rows:
+        return None
+    r = rows[0]
+    return {
+        "freq_pred":   _num(r.get("freq_pred")),
+        "sev_pred":    _num(r.get("sev_pred")),
+        "demand_pred": _num(r.get("demand_pred")),
+        "fraud_pred":  _num(r.get("fraud_pred")),
+        "fraud_load":  _num(r.get("fraud_loading")),
+        "demand_adj":  _num(r.get("demand_adj")),
+        "technical_premium": _num(r.get("technical_premium")),
+        # We synthesise final_premium from technical + the in-process
+        # rating-engine config later; the endpoint normally returns it
+        # directly. Leave None to force the recompute path.
+        "final_premium":         None,
+        "rating_engine_version": None,
+        "_source": "inference_logs",
+    }
+
+
 async def _score_via_endpoint(policy_id: str) -> dict | None:
     """Call the unified `pricing_scorer` Model Serving endpoint with a
     policy_id. The endpoint resolves features against UPT (online store at
@@ -607,6 +646,11 @@ async def _run_quote(features: dict, policy_id: str | None,
     champion_row = None
     if pid and all(champions[f] in resolved[f] for f in FAMILIES):
         champion_row = await _score_via_endpoint(pid)
+        if not champion_row:
+            # No live endpoint on this workspace — fall back to the last
+            # batch-scored row from inference_logs so the rating engine
+            # still has freq/sev/demand/fraud predictions to work with.
+            champion_row = await _score_via_inference_logs(pid)
 
     out = []
     for vf, vs_, vd, vfr in itertools.product(
@@ -891,8 +935,9 @@ async def simulate_mta(req: MtaRequest) -> dict:
     if not q_before.get("price_buildup"):
         raise HTTPException(
             503,
-            f"{SCORER_ENDPOINT} endpoint isn't deployed on this workspace — "
-            "MTA simulation can't run. Deploy the scorer or use the motor demo.",
+            "Could not price this policy — no live scorer endpoint and no "
+            "prior inference_logs row to fall back on. Run a batch scoring "
+            "job first, or deploy the pricing_scorer endpoint.",
         )
 
     si_before = _num(before.get("sum_insured"))
