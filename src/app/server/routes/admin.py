@@ -205,13 +205,15 @@ _WARMUP_PROMPTS: list[dict] = [
 
 
 @router.post("/ai-cache/warm")
-async def warm_ai_cache(clear_first: bool = False) -> dict:
+async def warm_ai_cache(clear_first: bool = False, keep_cached: bool = True) -> dict:
     """Fire the curated canonical questions once so the cache holds an entry
-    for each. Flips into `cached` mode for the duration of the warm-up so
-    `invoke_agent` writes to the cache, then restores the prior mode.
+    for each. Flips into `cached` mode for the warm-up so `invoke_agent`
+    writes the responses back.
 
-    Optional `clear_first=true` wipes the existing cache before warming —
-    use that after a champion rebuild so stale answers are discarded."""
+    By default (`keep_cached=true`) the endpoint leaves the workbench in
+    `cached` mode when it returns — that's the point of warming. Pass
+    `keep_cached=false` if you want the mode restored to whatever it was
+    before the call. `clear_first=true` wipes the cache before warming."""
     from server.agent_client import invoke_agent
 
     if clear_first:
@@ -240,23 +242,26 @@ async def warm_ai_cache(clear_first: bool = False) -> dict:
                 logger.warning("warm failed for %s: %s", p["endpoint"], e)
                 results.append({"endpoint": p["endpoint"], "ok": False, "error": str(e)[:200]})
     finally:
-        ai_cache.set_mode(prior_mode)
+        if not keep_cached:
+            ai_cache.set_mode(prior_mode)
 
     ok_count    = sum(1 for r in results if r["ok"])
     fail_count  = len(results) - ok_count
+    final_mode  = ai_cache.get_mode()
     await log_audit_event(
         event_type="ai_cache_warmed",
         entity_type="config",
         entity_id="ai_response_mode",
         details={"ok": ok_count, "failed": fail_count, "clear_first": clear_first,
-                 "restored_mode": prior_mode},
+                 "prior_mode": prior_mode, "final_mode": final_mode},
     )
     return {
         "ok":              ok_count,
         "failed":          fail_count,
         "total":           len(results),
         "entries_in_cache": len(ai_cache.list_entries()),
-        "restored_mode":   prior_mode,
+        "prior_mode":      prior_mode,
+        "final_mode":      final_mode,
         "results":         results,
     }
 

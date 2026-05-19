@@ -35,9 +35,14 @@ CACHE_FILE = "ai_response_cache.json"
 MODE_FILE  = "ai_response_mode.txt"
 
 _VALID_MODES = {"live", "cached"}
-_DEFAULT_MODE = os.environ.get("AI_RESPONSE_MODE", "live").strip().lower()
+# Default to `cached` so demo cadence (consistent + instant) is the
+# baseline. Operators flip to `live` when they want to demonstrate the
+# real round-trip, and that choice persists to the volume so the next
+# app restart picks it back up. `AI_RESPONSE_MODE` env var still wins
+# if explicitly set.
+_DEFAULT_MODE = os.environ.get("AI_RESPONSE_MODE", "cached").strip().lower()
 if _DEFAULT_MODE not in _VALID_MODES:
-    _DEFAULT_MODE = "live"
+    _DEFAULT_MODE = "cached"
 
 _lock = threading.RLock()
 _mode_cache: str | None = None
