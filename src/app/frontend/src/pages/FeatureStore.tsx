@@ -21,9 +21,8 @@ type Feature = {
   pii: boolean | string;
 };
 
-// Lakeview dashboard that powers the Dashboard tab. Created via
-// /api/2.0/lakeview/dashboards — see git log for the build script.
-const DASHBOARD_ID = '01f13f48d2571b28bb650277cceea811';
+// Lakeview dashboard id comes from /api/config (env var MART_DASHBOARD_ID
+// in app.{dev,prod}.yaml) so the build is portable across workspaces.
 
 const GROUP_COLORS: Record<string, string> = {
   rating_factor: 'bg-blue-100 text-blue-700 border-blue-200',
@@ -181,7 +180,7 @@ export default function FeatureStore() {
       )}
 
       {/* Dashboard — embedded Databricks Lakeview dashboard */}
-      {tab === 'dashboard' && <DashboardTab dashboardId={DASHBOARD_ID} host={config?.workspace_host} />}
+      {tab === 'dashboard' && <DashboardTab dashboardId={config?.mart_dashboard_id} host={config?.workspace_host} />}
 
       {/* Details — lineage, catalog, offline/online state, tags. No Genie here. */}
       {tab === 'details' && (
@@ -204,8 +203,14 @@ export default function FeatureStore() {
 function DashboardTab({ dashboardId, host }: { dashboardId?: string; host?: string }) {
   if (!dashboardId) {
     return (
-      <div className="bg-amber-50 border border-amber-200 rounded-lg p-5 text-sm text-amber-800">
-        Dashboard not configured. Set <code>DASHBOARD_ID</code> in <code>FeatureStore.tsx</code>.
+      <div className="bg-amber-50 border border-amber-200 rounded-lg p-5 text-sm text-amber-800 space-y-2">
+        <div className="font-semibold">Modelling Mart dashboard not configured for this workspace.</div>
+        <div>
+          Each workspace has its own Lakeview dashboard id. Set
+          {' '}<code className="bg-white px-1 rounded border">MART_DASHBOARD_ID</code> in
+          {' '}<code className="bg-white px-1 rounded border">src/app/app.&lt;target&gt;.yaml</code>
+          {' '}and redeploy.
+        </div>
       </div>
     );
   }

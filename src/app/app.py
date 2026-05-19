@@ -67,6 +67,7 @@ async def config():
     host = get_workspace_host()
     genie_id = os.getenv("GENIE_SPACE_ID", "")
     genie_quote_id = os.getenv("GENIE_QUOTE_SPACE_ID", "")
+    mart_dashboard_id = os.getenv("MART_DASHBOARD_ID", "")
     return {
         "workspace_host": host,
         "genie_space_id": genie_id,
@@ -75,6 +76,9 @@ async def config():
         "genie_quote_space_id": genie_quote_id,
         "genie_quote_url": f"{host}/genie/rooms/{genie_quote_id}" if genie_quote_id else None,
         "genie_quote_embed_url": f"{host}/embed/genie/rooms/{genie_quote_id}" if genie_quote_id else None,
+        "mart_dashboard_id": mart_dashboard_id,
+        "mart_dashboard_url": f"{host}/dashboardsv3/{mart_dashboard_id}"            if mart_dashboard_id else None,
+        "mart_dashboard_embed_url": f"{host}/embed/dashboardsv3/{mart_dashboard_id}" if mart_dashboard_id else None,
     }
 
 
