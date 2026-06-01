@@ -50,12 +50,15 @@ targets:
     workspace:
       host: https://fevm-lr-serverless-aws-us.cloud.databricks.com
       profile: DEFAULT
+      root_path: /Workspace/Users/laurence.ryszka@databricks.com/.bundle/${bundle.name}/${bundle.target}
     variables:
       catalog_name:        lr_serverless_aws_us_catalog
       warehouse_id:        "ab79eced8207d29b"
-      app_service_principal_id: "452a9d33-f698-4124-b573-912c6fe6e929"
-      genie_space_id:        "01f134e996251f40bf521eac22ad10f1"
-      genie_quote_space_id:  "01f13e30dcd418ae88295599f23780b8"
+      # App SP minted on the 2026-06-01 clean redeploy (old 452a9d33 SP died
+      # with the previous app). Genie ids re-wired after recreation below.
+      app_service_principal_id: "bf8989e3-3a38-48b5-8a31-67421e6d648b"
+      genie_space_id:        "01f15d9ed6a61ca18f578f91ad1c76b7"
+      genie_quote_space_id:  "01f15d9ed72c1a44aa4e4fe208de54c2"
 
   dev:
     mode: development
