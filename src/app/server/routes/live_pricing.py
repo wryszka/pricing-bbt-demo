@@ -33,6 +33,7 @@ import logging
 import time
 import uuid
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
 
@@ -683,6 +684,13 @@ class _LiveStream:
 
 _stream = _LiveStream()
 
+# Dedicated thread pool for firing quotes. asyncio.to_thread uses the loop's
+# default executor (~min(32, cpu+4) — only ~5-6 threads on a small app
+# container), which caps achievable QPS far below target. A bigger pool keeps
+# more requests in flight (requests releases the GIL during socket I/O), so the
+# app-driven stream can approach the slider target instead of stalling ~30 QPS.
+_stream_executor = ThreadPoolExecutor(max_workers=96, thread_name_prefix="qstream")
+
 
 async def _stream_fire_one(pid: str, url: str, headers: dict, session) -> None:
     def _call():
@@ -693,7 +701,8 @@ async def _stream_fire_one(pid: str, url: str, headers: dict, session) -> None:
             return (time.perf_counter() - t0) * 1000.0, r.status_code == 200
         except Exception:
             return (time.perf_counter() - t0) * 1000.0, False
-    lat, ok = await asyncio.to_thread(_call)
+    loop = asyncio.get_running_loop()
+    lat, ok = await loop.run_in_executor(_stream_executor, _call)
     _stream.samples.append((time.time(), lat, ok))
     _stream.total += 1
     if not ok:
@@ -721,7 +730,10 @@ async def _stream_worker(target_qps: int, my_epoch: int) -> None:
             _stream._policy_ids = [r["policy_id"] for r in rows] or ["POL-MOTOR-00000001"]
         except Exception:
             _stream._policy_ids = ["POL-MOTOR-00000001"]
-    sem = asyncio.Semaphore(max(4, min(32, target_qps)))
+    # Allow enough in-flight requests to actually hit target_qps given the
+    # per-request latency (concurrency ≈ qps × latency). Capped to the thread
+    # pool size so we don't queue behind it.
+    sem = asyncio.Semaphore(max(8, min(90, target_qps)))
     period = 1.0 / max(1, target_qps)
     deadline = time.time() + _STREAM_MAX_DURATION_S
     i = 0
