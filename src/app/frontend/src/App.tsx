@@ -15,6 +15,8 @@ import NewDataImpact from './pages/NewDataImpact';
 import RatingEngineIntegration from './pages/RatingEngineIntegration';
 import Supervisor from './pages/Supervisor';
 import PricingEngine from './pages/PricingEngine';
+import QuoteSystem from './pages/QuoteSystem';
+import BlackBox from './pages/BlackBox';
 
 const NAV_ITEMS = [
   { to: '/',              label: 'Home',              icon: HomeIcon,     match: (p: string) => p === '/' },
@@ -124,7 +126,26 @@ function AiModeBadge() {
   );
 }
 
+// Standalone, chrome-less routes (no workbench sidebar) — these read as
+// separate external products for the live demo.
+function StandaloneRoutes() {
+  return (
+    <Routes>
+      <Route path="/quote" element={<QuoteSystem />} />
+      <Route path="/blackbox" element={<BlackBox />} />
+    </Routes>
+  );
+}
+
 export default function App() {
+  const path = window.location.pathname;
+  if (path === '/quote' || path === '/blackbox') {
+    return (
+      <BrowserRouter>
+        <StandaloneRoutes />
+      </BrowserRouter>
+    );
+  }
   return (
     <BrowserRouter>
       <div className="min-h-screen bg-gray-100 font-[system-ui] flex">

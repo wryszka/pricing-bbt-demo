@@ -145,6 +145,73 @@ async def status() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Policy profile — driver / vehicle / live telematics, for the external
+# quote UI and the black-box panel.
+# ---------------------------------------------------------------------------
+
+@router.get("/policy/{policy_id}")
+async def policy_profile(policy_id: str) -> dict:
+    """Display-friendly snapshot of a motor policy: driver, vehicle, and the
+    current live telematics signal. Powers the /quote and /blackbox pages."""
+    pid = policy_id.strip().upper()
+    rows = await execute_query(f"""
+        SELECT policy_id, driver_age, gender, marital_status, occupation_class,
+               license_years_held, no_claims_years, postcode_area, region,
+               vehicle_make, vehicle_model, vehicle_year, vehicle_value,
+               vehicle_group, annual_mileage, parking_overnight, current_premium,
+               renewal_date, behaviour_score, avg_speed_mph, night_driving_pct,
+               recent_speeding_events, recent_curfew_breaches,
+               recent_harsh_braking_30d, telematics_recent_event_count
+        FROM {fqn(UPT_TABLE_NAME)}
+        WHERE policy_id = '{pid}' LIMIT 1
+    """)
+    if not rows:
+        raise HTTPException(404, f"policy {pid} not found")
+    r = rows[0]
+
+    def _i(v, d=0):
+        try: return int(float(v))
+        except Exception: return d
+    def _f(v, d=0.0):
+        try: return float(v)
+        except Exception: return d
+
+    return {
+        "policy_id":   r.get("policy_id"),
+        "driver": {
+            "age":            _i(r.get("driver_age")),
+            "gender":         r.get("gender"),
+            "marital_status": r.get("marital_status"),
+            "occupation":     r.get("occupation_class"),
+            "license_years":  _i(r.get("license_years_held")),
+            "no_claims_years":_i(r.get("no_claims_years")),
+            "postcode_area":  r.get("postcode_area"),
+            "region":         r.get("region"),
+        },
+        "vehicle": {
+            "make":    r.get("vehicle_make"),
+            "model":   r.get("vehicle_model"),
+            "year":    _i(r.get("vehicle_year")),
+            "value":   _f(r.get("vehicle_value")),
+            "group":   _i(r.get("vehicle_group")),
+            "mileage": _i(r.get("annual_mileage")),
+            "parking": r.get("parking_overnight"),
+        },
+        "telematics": {
+            "behaviour_score":        _i(r.get("behaviour_score")),
+            "avg_speed_mph":          _f(r.get("avg_speed_mph")),
+            "night_driving_pct":      _f(r.get("night_driving_pct")),
+            "recent_speeding_events": _i(r.get("recent_speeding_events")),
+            "recent_curfew_breaches": _i(r.get("recent_curfew_breaches")),
+            "recent_harsh_braking_30d": _i(r.get("recent_harsh_braking_30d")),
+            "recent_event_count":     _i(r.get("telematics_recent_event_count")),
+        },
+        "current_premium": _f(r.get("current_premium")),
+        "renewal_date":    str(r.get("renewal_date") or ""),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Start / stop
 # ---------------------------------------------------------------------------
 

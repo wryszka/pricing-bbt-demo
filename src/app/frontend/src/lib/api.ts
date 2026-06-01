@@ -273,6 +273,8 @@ export const api = {
   livePricingStop:   () => fetchJson<any>('/live-pricing/stop',   { method: 'POST', body: JSON.stringify({}) }),
   livePricingQuote: (policyId: string) =>
     fetchJson<any>('/live-pricing/quote', { method: 'POST', body: JSON.stringify({ policy_id: policyId }) }),
+  livePricingPolicy: (policyId: string) =>
+    fetchJson<any>(`/live-pricing/policy/${encodeURIComponent(policyId)}`),
   livePricingClaim: (body: { policy_id: string; claim_amount: number; claim_type?: string }) =>
     fetchJson<any>('/live-pricing/claim', { method: 'POST', body: JSON.stringify(body) }),
   livePricingTelematicsEvent: (body: { policy_id: string; speeding_event?: boolean; curfew_breach?: boolean; behaviour_score_delta?: number; harsh_braking_delta?: number }) =>
