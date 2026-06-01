@@ -371,7 +371,7 @@ class TelematicsEventRequest(BaseModel):
     policy_id:               str
     speeding_event:          bool = True
     curfew_breach:           bool = True
-    behaviour_score_delta:   int  = -15
+    behaviour_score_delta:   int  = -8
     harsh_braking_delta:     int  = 1
 
 

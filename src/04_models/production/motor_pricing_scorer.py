@@ -63,12 +63,20 @@ print("Motor champions:", CHAMPIONS)
 
 # Motor rating engine config — baked into the artifact.
 RATING_CFG = {
-    "version":                       "motor_v1.1",
+    "version":                       "motor_v1.2",
     "expense_loading_pct":           18.0,
     "commission_bp":                 1500,    # 15.0 %
     "young_driver_threshold":        25,
     "young_driver_loading_pct":      15.0,
+    # Telematics surcharge SCALES with recent event count so every new
+    # black-box event pushes the quote up monotonically (no reset needed).
+    # load = loaded * min(events * per_event_pct, max_pct) / 100
+    # where events = recent_speeding_events + recent_curfew_breaches.
+    # Tuned so one event (≈2 units) ≈ 10% (matches the old binary surcharge)
+    # and it climbs to a 40% cap. Legacy key kept for back-compat readers.
     "telematics_event_loading_pct":  10.0,
+    "telematics_per_event_pct":      5.0,
+    "telematics_max_load_pct":       40.0,
     "fraud_loading_pct":             8.0,
     "fraud_loading_threshold":       0.20,
     # Demand adjustment: low demand → small discount to win, high demand → small loading.
@@ -251,11 +259,15 @@ class MotorPricingScorer(PythonModel):
         age = df["driver_age"].astype(float).values if "driver_age" in df.columns else np.zeros(len(df))
         young_driver_load = np.where(age < cfg["young_driver_threshold"],
                                      loaded * cfg["young_driver_loading_pct"] / 100.0, 0.0)
-        # Telematics-event surcharge
+        # Telematics-event surcharge — SCALES with recent event count so each
+        # new black-box event raises the quote monotonically (no reset needed).
         sp = df["recent_speeding_events"].astype(float).values if "recent_speeding_events" in df.columns else np.zeros(len(df))
         cb = df["recent_curfew_breaches"].astype(float).values if "recent_curfew_breaches" in df.columns else np.zeros(len(df))
-        telematics_load = np.where((sp > 0) | (cb > 0),
-                                   loaded * cfg["telematics_event_loading_pct"] / 100.0, 0.0)
+        events = sp + cb
+        per_event = cfg.get("telematics_per_event_pct", 5.0)
+        max_pct   = cfg.get("telematics_max_load_pct", 40.0)
+        telematics_pct = np.minimum(events * per_event, max_pct)
+        telematics_load = loaded * telematics_pct / 100.0
         # Fraud loading
         fraud_load = np.where(fraud > cfg["fraud_loading_threshold"],
                               loaded * cfg["fraud_loading_pct"] / 100.0, 0.0)
