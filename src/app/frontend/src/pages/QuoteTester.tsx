@@ -102,8 +102,9 @@ export default function QuoteTester() {
           </div>
           <Sparkline data={hist} />
           <div className="text-[11px] text-slate-500 mt-3">
-            App-driven stream · in-region calls to the Large endpoint. For max-throughput / ceiling
-            numbers use the job-based load test in the workbench.
+            Measures <span className="text-slate-400">client round-trip from the app</span> (network + serving),
+            so it reads a little higher than the server-side latency in the Databricks Serving UI.
+            For max-throughput / ceiling numbers use the job-based load test in the workbench.
           </div>
         </div>
       </div>

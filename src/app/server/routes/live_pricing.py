@@ -636,10 +636,14 @@ async def claim_run_status(run_id: int) -> dict:
 # max-throughput test.
 # ---------------------------------------------------------------------------
 
+_STREAM_MAX_DURATION_S = 180.0   # hard failsafe — a stream can never run longer
+
+
 class _LiveStream:
     def __init__(self) -> None:
         self.task: asyncio.Task | None = None
         self.running = False
+        self.epoch = 0           # bumped on every start/stop; stale workers self-exit
         self.target_qps = 0
         self.started_at = 0.0
         self.total = 0
@@ -680,14 +684,12 @@ class _LiveStream:
 _stream = _LiveStream()
 
 
-async def _stream_fire_one(pid: str, host: str, token: dict) -> None:
+async def _stream_fire_one(pid: str, url: str, headers: dict, session) -> None:
     def _call():
-        import requests as _rq
         t0 = time.perf_counter()
         try:
-            r = _rq.post(f"{host}/serving-endpoints/{ENDPOINT_NAME}/invocations",
-                         headers={**token, "Content-Type": "application/json"},
-                         json={"dataframe_records": [{"policy_id": pid}]}, timeout=15)
+            r = session.post(url, headers=headers,
+                             json={"dataframe_records": [{"policy_id": pid}]}, timeout=15)
             return (time.perf_counter() - t0) * 1000.0, r.status_code == 200
         except Exception:
             return (time.perf_counter() - t0) * 1000.0, False
@@ -698,11 +700,20 @@ async def _stream_fire_one(pid: str, host: str, token: dict) -> None:
         _stream.errors += 1
 
 
-async def _stream_worker(target_qps: int) -> None:
-    """Pace quotes at ~target_qps using a bounded concurrency pool."""
+async def _stream_worker(target_qps: int, my_epoch: int) -> None:
+    """Pace quotes at ~target_qps. Self-terminates the instant the epoch
+    changes (any start/stop bumps it), if running is cleared, or once the
+    hard max-duration failsafe elapses — so an orphaned loop can never keep
+    firing after stop."""
+    import requests as _rq
     w = get_workspace_client()
     host  = w.config.host.rstrip("/")
-    token = w.config._header_factory()
+    headers = {**w.config._header_factory(), "Content-Type": "application/json"}
+    url = f"{host}/serving-endpoints/{ENDPOINT_NAME}/invocations"
+    # Reuse one keep-alive session so we measure steady-state latency, not a
+    # fresh TLS handshake on every call (which inflated the numbers well above
+    # the server-side latency Databricks reports).
+    session = _rq.Session()
     if not _stream._policy_ids:
         try:
             rows = await execute_query(
@@ -712,18 +723,29 @@ async def _stream_worker(target_qps: int) -> None:
             _stream._policy_ids = ["POL-MOTOR-00000001"]
     sem = asyncio.Semaphore(max(4, min(32, target_qps)))
     period = 1.0 / max(1, target_qps)
+    deadline = time.time() + _STREAM_MAX_DURATION_S
     i = 0
     try:
-        while _stream.running:
+        while (_stream.running and _stream.epoch == my_epoch
+               and time.time() < deadline):
             pid = _stream._policy_ids[i % len(_stream._policy_ids)]
             i += 1
             async def _guarded(p=pid):
                 async with sem:
-                    await _stream_fire_one(p, host, token)
+                    # Drop late completions from a superseded epoch.
+                    if _stream.epoch != my_epoch:
+                        return
+                    await _stream_fire_one(p, url, headers, session)
             asyncio.create_task(_guarded())
             await asyncio.sleep(period)
     except asyncio.CancelledError:
         pass
+    finally:
+        try: session.close()
+        except Exception: pass
+        # If this was the active epoch, mark stopped on natural/deadline exit.
+        if _stream.epoch == my_epoch:
+            _stream.running = False
 
 
 class LiveStreamRequest(BaseModel):
@@ -732,20 +754,29 @@ class LiveStreamRequest(BaseModel):
 
 @router.post("/stream/start")
 async def stream_start(req: LiveStreamRequest) -> dict:
-    if _stream.running:
-        return {"running": True, "target_qps": _stream.target_qps, "note": "already running"}
+    # Always invalidate any prior worker (bump epoch + cancel) before starting,
+    # so a stuck/orphaned loop from an earlier start can't survive.
+    _stream.epoch += 1
+    if _stream.task:
+        _stream.task.cancel()
+        _stream.task = None
+    my_epoch = _stream.epoch
     _stream.running    = True
     _stream.target_qps = max(1, min(100, req.target_qps))
     _stream.started_at = time.time()
     _stream.total = 0
     _stream.errors = 0
     _stream.samples.clear()
-    _stream.task = asyncio.create_task(_stream_worker(_stream.target_qps))
-    return {"running": True, "target_qps": _stream.target_qps}
+    _stream.task = asyncio.create_task(_stream_worker(_stream.target_qps, my_epoch))
+    return {"running": True, "target_qps": _stream.target_qps,
+            "max_duration_s": _STREAM_MAX_DURATION_S}
 
 
 @router.post("/stream/stop")
 async def stream_stop() -> dict:
+    # Bump epoch so ANY in-flight worker (even an orphan) self-exits, clear
+    # the flag, and cancel the tracked task.
+    _stream.epoch += 1
     _stream.running = False
     if _stream.task:
         _stream.task.cancel()
