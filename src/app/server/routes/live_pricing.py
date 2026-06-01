@@ -32,6 +32,7 @@ import json
 import logging
 import time
 import uuid
+from collections import deque
 from datetime import datetime, timezone
 from typing import Any
 
@@ -624,6 +625,137 @@ async def claim_run_status(run_id: int) -> dict:
         "run_page_url": f"{get_workspace_host()}/jobs/{run.job_id}/runs/{run_id}"
                          if get_workspace_host() else None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Live quote stream — app-driven continuous load with in-memory rolling
+# metrics. Unlike the job-based load test (which has ~1-2 min startup lag),
+# this fires quotes from the app process the instant you hit start and
+# exposes live QPS/latency that the UI can poll sub-second. Modest QPS
+# (the app container is small) — it's a "watch it flow live" view, not a
+# max-throughput test.
+# ---------------------------------------------------------------------------
+
+class _LiveStream:
+    def __init__(self) -> None:
+        self.task: asyncio.Task | None = None
+        self.running = False
+        self.target_qps = 0
+        self.started_at = 0.0
+        self.total = 0
+        self.errors = 0
+        # rolling samples: (completion_ts, latency_ms, ok)
+        self.samples: deque = deque(maxlen=4000)
+        self._policy_ids: list[str] = []
+
+    def snapshot(self, window_s: float = 5.0) -> dict:
+        now = time.time()
+        recent = [(ts, lat, ok) for (ts, lat, ok) in self.samples if now - ts <= window_s]
+        lats = sorted(lat for (_, lat, ok) in recent if ok)
+        n = len(recent)
+        ok_n = len(lats)
+        def pct(p: float) -> float:
+            if not lats:
+                return 0.0
+            i = min(len(lats) - 1, int(round(p * (len(lats) - 1))))
+            return lats[i]
+        qps = round(n / window_s, 1) if n else 0.0
+        err_pct = round(100.0 * (n - ok_n) / n, 1) if n else 0.0
+        return {
+            "running":     self.running,
+            "target_qps":  self.target_qps,
+            "qps":         qps,
+            "p50_ms":      round(pct(0.50), 1),
+            "p95_ms":      round(pct(0.95), 1),
+            "p99_ms":      round(pct(0.99), 1),
+            "error_pct":   err_pct,
+            "total":       self.total,
+            "errors":      self.errors,
+            "uptime_s":    round(now - self.started_at, 1) if self.started_at else 0,
+            # small recent series for a sparkline (last ~60 completions)
+            "recent":      [round(lat, 1) for (_, lat, ok) in list(self.samples)[-60:]],
+        }
+
+
+_stream = _LiveStream()
+
+
+async def _stream_fire_one(pid: str, host: str, token: dict) -> None:
+    def _call():
+        import requests as _rq
+        t0 = time.perf_counter()
+        try:
+            r = _rq.post(f"{host}/serving-endpoints/{ENDPOINT_NAME}/invocations",
+                         headers={**token, "Content-Type": "application/json"},
+                         json={"dataframe_records": [{"policy_id": pid}]}, timeout=15)
+            return (time.perf_counter() - t0) * 1000.0, r.status_code == 200
+        except Exception:
+            return (time.perf_counter() - t0) * 1000.0, False
+    lat, ok = await asyncio.to_thread(_call)
+    _stream.samples.append((time.time(), lat, ok))
+    _stream.total += 1
+    if not ok:
+        _stream.errors += 1
+
+
+async def _stream_worker(target_qps: int) -> None:
+    """Pace quotes at ~target_qps using a bounded concurrency pool."""
+    w = get_workspace_client()
+    host  = w.config.host.rstrip("/")
+    token = w.config._header_factory()
+    if not _stream._policy_ids:
+        try:
+            rows = await execute_query(
+                f"SELECT policy_id FROM {fqn(UPT_TABLE_NAME)} ORDER BY rand() LIMIT 2000")
+            _stream._policy_ids = [r["policy_id"] for r in rows] or ["POL-MOTOR-00000001"]
+        except Exception:
+            _stream._policy_ids = ["POL-MOTOR-00000001"]
+    sem = asyncio.Semaphore(max(4, min(32, target_qps)))
+    period = 1.0 / max(1, target_qps)
+    i = 0
+    try:
+        while _stream.running:
+            pid = _stream._policy_ids[i % len(_stream._policy_ids)]
+            i += 1
+            async def _guarded(p=pid):
+                async with sem:
+                    await _stream_fire_one(p, host, token)
+            asyncio.create_task(_guarded())
+            await asyncio.sleep(period)
+    except asyncio.CancelledError:
+        pass
+
+
+class LiveStreamRequest(BaseModel):
+    target_qps: int = 25
+
+
+@router.post("/stream/start")
+async def stream_start(req: LiveStreamRequest) -> dict:
+    if _stream.running:
+        return {"running": True, "target_qps": _stream.target_qps, "note": "already running"}
+    _stream.running    = True
+    _stream.target_qps = max(1, min(100, req.target_qps))
+    _stream.started_at = time.time()
+    _stream.total = 0
+    _stream.errors = 0
+    _stream.samples.clear()
+    _stream.task = asyncio.create_task(_stream_worker(_stream.target_qps))
+    return {"running": True, "target_qps": _stream.target_qps}
+
+
+@router.post("/stream/stop")
+async def stream_stop() -> dict:
+    _stream.running = False
+    if _stream.task:
+        _stream.task.cancel()
+        _stream.task = None
+    return {"running": False, "total": _stream.total, "errors": _stream.errors}
+
+
+@router.get("/stream/metrics")
+async def stream_metrics() -> dict:
+    return _stream.snapshot()
 
 
 # ---------------------------------------------------------------------------

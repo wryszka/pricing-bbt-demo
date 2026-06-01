@@ -281,6 +281,11 @@ export const api = {
     fetchJson<any>('/live-pricing/telematics-event', { method: 'POST', body: JSON.stringify(body) }),
   livePricingClaimStatus: (runId: number | string) =>
     fetchJson<any>(`/live-pricing/claim/${runId}`),
+  livePricingStreamStart: (targetQps: number) =>
+    fetchJson<any>('/live-pricing/stream/start', { method: 'POST', body: JSON.stringify({ target_qps: targetQps }) }),
+  livePricingStreamStop: () =>
+    fetchJson<any>('/live-pricing/stream/stop', { method: 'POST', body: JSON.stringify({}) }),
+  livePricingStreamMetrics: () => fetchJson<any>('/live-pricing/stream/metrics'),
   livePricingLoadTestStart: (body: { target_qps?: number; duration_seconds?: number; concurrency?: number }) =>
     fetchJson<any>('/live-pricing/load-test/start', { method: 'POST', body: JSON.stringify(body) }),
   livePricingLoadTestStop: (runId: number | string) =>

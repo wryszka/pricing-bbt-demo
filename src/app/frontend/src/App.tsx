@@ -17,6 +17,7 @@ import Supervisor from './pages/Supervisor';
 import PricingEngine from './pages/PricingEngine';
 import QuoteSystem from './pages/QuoteSystem';
 import BlackBox from './pages/BlackBox';
+import QuoteTester from './pages/QuoteTester';
 
 const NAV_ITEMS = [
   { to: '/',              label: 'Home',              icon: HomeIcon,     match: (p: string) => p === '/' },
@@ -133,13 +134,16 @@ function StandaloneRoutes() {
     <Routes>
       <Route path="/quote" element={<QuoteSystem />} />
       <Route path="/blackbox" element={<BlackBox />} />
+      <Route path="/quotetester" element={<QuoteTester />} />
     </Routes>
   );
 }
 
+const STANDALONE = ['/quote', '/blackbox', '/quotetester'];
+
 export default function App() {
   const path = window.location.pathname;
-  if (path === '/quote' || path === '/blackbox') {
+  if (STANDALONE.includes(path)) {
     return (
       <BrowserRouter>
         <StandaloneRoutes />
