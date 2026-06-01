@@ -665,6 +665,24 @@ function LivePricing() {
         )}
       </div>
 
+      {/* Customer-facing demo pages — standalone, chrome-less UIs that drive
+          the same live endpoint. Open in a new tab (full page load) so they
+          render outside the workbench shell. */}
+      <div className="bg-white border border-gray-200 rounded-lg p-5 mb-5">
+        <h4 className="text-sm font-semibold text-gray-800 mb-1 flex items-center gap-1.5">
+          <ExternalLink className="w-4 h-4 text-violet-600" /> Demo pages
+        </h4>
+        <p className="text-xs text-gray-500 mb-3">
+          Standalone customer-facing UIs for the live pricing story. Best opened in their own tabs.
+          {status?.state !== 'on' && ' Activate the system above for them to return quotes.'}
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <DemoLink href="/quote"       title="Quote portal"   desc="Consumer quote, pre-filled for John" />
+          <DemoLink href="/blackbox"    title="Black-box panel" desc="Fire a telematics event" />
+          <DemoLink href="/quotetester" title="Live quote tester" desc="Streaming QPS + latency" />
+        </div>
+      </div>
+
       {/* Sections only show when ON */}
       {status?.state === 'on' && (
         <>
@@ -703,6 +721,21 @@ function LivePricing() {
         )}
       </section>
     </div>
+  );
+}
+
+function DemoLink({ href, title, desc }: { href: string; title: string; desc: string }) {
+  return (
+    <a href={href} target="_blank" rel="noopener noreferrer"
+       className="group flex items-start gap-2 px-3 py-2.5 rounded-lg border border-gray-200 hover:border-violet-300 hover:bg-violet-50 transition-colors">
+      <div className="flex-1 min-w-0">
+        <div className="text-sm font-medium text-gray-800 group-hover:text-violet-700 flex items-center gap-1">
+          {title} <ExternalLink className="w-3 h-3 opacity-50" />
+        </div>
+        <div className="text-[11px] text-gray-500">{desc}</div>
+        <div className="text-[10px] font-mono text-gray-400 mt-0.5">{href}</div>
+      </div>
+    </a>
   );
 }
 
