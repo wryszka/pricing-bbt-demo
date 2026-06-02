@@ -788,6 +788,7 @@ class _LiveStream:
         self.epoch = 0           # bumped on every start/stop; stale workers self-exit
         self.target_qps = 0
         self.started_at = 0.0
+        self.stopped_at = 0.0    # frozen run-end so uptime stops ticking when idle
         self.total = 0
         self.errors = 0
         # rolling samples: (completion_ts, latency_ms, ok)
@@ -817,7 +818,8 @@ class _LiveStream:
             "error_pct":   err_pct,
             "total":       self.total,
             "errors":      self.errors,
-            "uptime_s":    round(now - self.started_at, 1) if self.started_at else 0,
+            "uptime_s":    (round((now if self.running else self.stopped_at) - self.started_at, 1)
+                            if self.started_at else 0),
             # small recent series for a sparkline (last ~60 completions)
             "recent":      [round(lat, 1) for (_, lat, ok) in list(self.samples)[-60:]],
         }
@@ -899,6 +901,7 @@ async def _stream_worker(target_qps: int, my_epoch: int) -> None:
         # If this was the active epoch, mark stopped on natural/deadline exit.
         if _stream.epoch == my_epoch:
             _stream.running = False
+            _stream.stopped_at = time.time()
 
 
 class LiveStreamRequest(BaseModel):
@@ -917,6 +920,7 @@ async def stream_start(req: LiveStreamRequest) -> dict:
     _stream.running    = True
     _stream.target_qps = max(1, min(100, req.target_qps))
     _stream.started_at = time.time()
+    _stream.stopped_at = 0.0
     _stream.total = 0
     _stream.errors = 0
     _stream.samples.clear()
@@ -930,6 +934,8 @@ async def stream_stop() -> dict:
     # Bump epoch so ANY in-flight worker (even an orphan) self-exits, clear
     # the flag, and cancel the tracked task.
     _stream.epoch += 1
+    if _stream.running and not _stream.stopped_at:
+        _stream.stopped_at = time.time()
     _stream.running = False
     if _stream.task:
         _stream.task.cancel()
