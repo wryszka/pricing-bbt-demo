@@ -297,6 +297,59 @@ print(f"Pack history re-seeded: {len(seed_rows)} historical rows.")
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## 7.6 Reset the motor live-demo story (John → clean good driver)
+# MAGIC
+# MAGIC The black-box events accumulate in `motor_telematics_aggregate` and the
+# MAGIC UPT; reset the demo driver back to a pristine good-driver baseline
+# MAGIC (behaviour 75, zero recent events) in BOTH tables, then refresh the
+# MAGIC Lakebase online store so the live endpoint serves the clean state.
+
+# COMMAND ----------
+
+MOTOR_DEMO_POLICY = "POL-MOTOR-00000001"
+motor_reset = {"policy": MOTOR_DEMO_POLICY, "tables": [], "online_refresh": "skipped"}
+try:
+    for _tbl in ("motor_telematics_aggregate", "unified_motor_table_live"):
+        try:
+            spark.sql(f"""
+                UPDATE {fqn}.{_tbl} SET
+                    behaviour_score          = 75,
+                    recent_speeding_events   = 0,
+                    recent_curfew_breaches   = 0,
+                    recent_harsh_braking_30d = 0
+                WHERE policy_id = '{MOTOR_DEMO_POLICY}'
+            """)
+            motor_reset["tables"].append(_tbl)
+        except Exception as _e:
+            print(f"  motor reset {_tbl}: {_e}")
+    # telematics_recent_event_count lives only on the UPT
+    try:
+        spark.sql(f"""
+            UPDATE {fqn}.unified_motor_table_live
+            SET telematics_recent_event_count = 0
+            WHERE policy_id = '{MOTOR_DEMO_POLICY}'
+        """)
+    except Exception:
+        pass
+    # Refresh the motor online store so the live endpoint sees the reset.
+    try:
+        _rid = spark.sql(
+            f"SELECT value FROM {fqn}.live_motor_runtime_state WHERE key='publish_pipeline_id' LIMIT 1"
+        ).collect()
+        if _rid and _rid[0].value:
+            upd = w.pipelines.start_update(pipeline_id=_rid[0].value, full_refresh=False)
+            motor_reset["online_refresh"] = f"triggered ({getattr(upd,'update_id','?')})"
+        else:
+            motor_reset["online_refresh"] = "no publish_pipeline_id (system off)"
+    except Exception as _e:
+        motor_reset["online_refresh"] = f"skip: {str(_e)[:120]}"
+    print(f"✓ motor demo reset: {motor_reset}")
+except Exception as _e:
+    print(f"⚠ motor reset skipped (non-fatal): {_e}")
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## 8. Audit the reset
 
 # COMMAND ----------
@@ -364,6 +417,7 @@ dbutils.notebook.exit(json.dumps({
     "champion_aliases": CHAMPION_VERSIONS,
     "cleanup":          cleanup_counts,
     "geospatial_rows":  n,
+    "motor_reset":      motor_reset,
     "reset_at":         datetime.utcnow().isoformat() + "Z",
     "ai_cache_warm":    warm_outcome,
 }))

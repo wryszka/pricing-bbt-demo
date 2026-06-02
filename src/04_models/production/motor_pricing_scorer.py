@@ -369,15 +369,23 @@ print(f"New scorer version: v{latest}")
 
 # Deploy as a Model Serving endpoint. Race-safe reconcile.
 from databricks.sdk import WorkspaceClient
-from databricks.sdk.service.serving import EndpointCoreConfigInput, ServedEntityInput
+import requests as _rq, json as _json
 
 w = WorkspaceClient()
-served = [ServedEntityInput(
-    entity_name           = scorer_uc_name,
-    entity_version        = str(latest),
-    scale_to_zero_enabled = True,
-    workload_size         = "Large",
-)]
+target = str(latest)
+# Live demo endpoint: explicit 4-64 provisioned concurrency, scale_to_zero
+# DISABLED so it stays warm while the system is on. Set via REST so the
+# min/max concurrency fields apply regardless of databricks-sdk version.
+_served_entity = {
+    "entity_name": scorer_uc_name,
+    "entity_version": target,
+    "scale_to_zero_enabled": False,
+    "min_provisioned_concurrency": 4,
+    "max_provisioned_concurrency": 64,
+    "workload_type": "CPU",
+}
+_host = w.config.host.rstrip("/")
+_hdrs = {**w.config._header_factory(), "Content-Type": "application/json"}
 
 existing = None
 try:
@@ -385,13 +393,11 @@ try:
 except Exception:
     pass
 
-target = str(latest)
 if existing is None:
-    w.serving_endpoints.create(
-        name   = endpoint_name,
-        config = EndpointCoreConfigInput(name=endpoint_name, served_entities=served),
-    )
-    print(f"Created endpoint {endpoint_name} serving v{target}.")
+    _r = _rq.post(f"{_host}/api/2.0/serving-endpoints", headers=_hdrs,
+                  data=_json.dumps({"name": endpoint_name,
+                                    "config": {"served_entities": [_served_entity]}}), timeout=60)
+    print(f"Created endpoint {endpoint_name} serving v{target} -> {_r.status_code}")
 else:
     served_versions  = {e.entity_version for e in (existing.config.served_entities or [])} if existing.config else set()
     pending_versions = {e.entity_version for e in (existing.pending_config.served_entities or [])} if existing.pending_config else set()
@@ -400,8 +406,9 @@ else:
     elif target in served_versions and not pending_versions:
         print(f"Endpoint already serving v{target} — skip")
     else:
-        w.serving_endpoints.update_config(name=endpoint_name, served_entities=served)
-        print(f"Updated endpoint to v{target}")
+        _r = _rq.put(f"{_host}/api/2.0/serving-endpoints/{endpoint_name}/config", headers=_hdrs,
+                     data=_json.dumps({"served_entities": [_served_entity]}), timeout=60)
+        print(f"Updated endpoint to v{target} -> {_r.status_code}")
 
 # COMMAND ----------
 

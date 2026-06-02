@@ -181,23 +181,37 @@ if versions:
     print(f"scorer latest: v{scorer_version}")
 
 if scorer_version:
-    served = [ServedEntityInput(
-        entity_name = scorer_uc, entity_version = scorer_version,
-        scale_to_zero_enabled = True, workload_size = "Large",
-    )]
+    # Provision the live endpoint with explicit 4-64 concurrency and
+    # scale_to_zero DISABLED — the endpoint stays warm for the whole time the
+    # system is "on" and only comes down when the teardown button removes it
+    # (so it rises/falls with the system, not on its own idle timer). Set via
+    # REST so the min/max provisioned-concurrency fields apply regardless of
+    # the installed databricks-sdk version.
+    import requests as _rq, json as _json
+    _served_entity = {
+        "entity_name": scorer_uc,
+        "entity_version": scorer_version,
+        "scale_to_zero_enabled": False,
+        "min_provisioned_concurrency": 4,
+        "max_provisioned_concurrency": 64,
+        "workload_type": "CPU",
+    }
+    _host  = w.config.host.rstrip("/")
+    _hdrs  = {**w.config._header_factory(), "Content-Type": "application/json"}
     try:
         existing = w.serving_endpoints.get(endpoint_name)
     except Exception:
         existing = None
 
     if existing is None:
-        w.serving_endpoints.create(name=endpoint_name,
-            config=EndpointCoreConfigInput(name=endpoint_name, served_entities=served))
-        print(f"endpoint created serving v{scorer_version}")
+        _r = _rq.post(f"{_host}/api/2.0/serving-endpoints", headers=_hdrs,
+                      data=_json.dumps({"name": endpoint_name,
+                                        "config": {"served_entities": [_served_entity]}}), timeout=60)
+        print(f"endpoint create -> {_r.status_code}: {_r.text[:200]}")
     else:
-        # Force update_config to re-resolve online metadata
-        w.serving_endpoints.update_config(name=endpoint_name, served_entities=served)
-        print(f"endpoint reconciled to v{scorer_version}")
+        _r = _rq.put(f"{_host}/api/2.0/serving-endpoints/{endpoint_name}/config", headers=_hdrs,
+                     data=_json.dumps({"served_entities": [_served_entity]}), timeout=60)
+        print(f"endpoint reconcile -> {_r.status_code}: {_r.text[:200]}")
 
 # COMMAND ----------
 
