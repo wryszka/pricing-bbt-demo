@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Activity, Play, Square, ArrowRight, Zap } from 'lucide-react';
+import { Activity, Play, Square, ArrowRight, Zap, Server, Cpu } from 'lucide-react';
 import { api } from '../lib/api';
 
 // Standalone live quote-tester. Drives the app-side continuous quote stream
@@ -10,8 +10,10 @@ export default function QuoteTester() {
   const [targetQps, setTargetQps] = useState(25);
   const [running, setRunning]     = useState(false);
   const [m, setM]                 = useState<any>(null);
+  const [scale, setScale]         = useState<any>(null);
   const [hist, setHist]           = useState<number[]>([]);   // p50 over time for the chart
   const pollRef = useRef<number | null>(null);
+  const scaleRef = useRef<number | null>(null);
 
   const poll = async () => {
     try {
@@ -21,11 +23,20 @@ export default function QuoteTester() {
       if (s.running) setHist(h => [...h, s.p50_ms].slice(-120));
     } catch { /* ignore */ }
   };
+  // Endpoint scale (provisioned concurrency) refreshes on a ~1-min cadence
+  // server-side, so poll it less often than the stream metrics.
+  const pollScale = async () => {
+    try { setScale(await api.livePricingEndpointScale()); } catch { /* ignore */ }
+  };
 
   useEffect(() => {
-    poll();
-    pollRef.current = window.setInterval(poll, 700);
-    return () => { if (pollRef.current) window.clearInterval(pollRef.current); };
+    poll(); pollScale();
+    pollRef.current  = window.setInterval(poll, 700);
+    scaleRef.current = window.setInterval(pollScale, 4000);
+    return () => {
+      if (pollRef.current)  window.clearInterval(pollRef.current);
+      if (scaleRef.current) window.clearInterval(scaleRef.current);
+    };
   }, []);
 
   const start = async () => {
@@ -88,12 +99,15 @@ export default function QuoteTester() {
           <Tile label="p95 latency" value={m ? `${m.p95_ms.toFixed(0)} ms` : '—'} accent="text-amber-300" />
           <Tile label="p99 latency" value={m ? `${m.p99_ms.toFixed(0)} ms` : '—'} accent="text-amber-300" />
         </div>
-        <div className="grid grid-cols-3 gap-4 mb-8">
+        <div className="grid grid-cols-3 gap-4 mb-6">
           <Tile label="Total served" value={m ? m.total.toLocaleString() : '0'} small />
           <Tile label="Errors" value={m ? `${m.errors} (${m.error_pct}%)` : '0'} small
                 accent={m && m.error_pct > 1 ? 'text-red-300' : 'text-slate-300'} />
           <Tile label="Uptime" value={m ? `${Math.round(m.uptime_s)}s` : '0s'} small />
         </div>
+
+        {/* Compute size — live autoscale within min..max */}
+        <ComputeCard scale={scale} />
 
         {/* Live chart */}
         <div className="bg-white/5 border border-white/10 rounded-2xl p-6">
@@ -109,6 +123,42 @@ export default function QuoteTester() {
             load test in the workbench.
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function ComputeCard({ scale }: { scale: any }) {
+  const min  = scale?.min ?? 4;
+  const max  = scale?.max ?? 64;
+  const cur  = scale?.provisioned_concurrency;
+  const cpu  = scale?.cpu_pct;
+  const pct  = cur != null ? Math.max(0, Math.min(100, ((cur - min) / Math.max(1, max - min)) * 100)) : 0;
+  return (
+    <div className="bg-white/5 border border-white/10 rounded-2xl p-5 mb-6">
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+          <Server className="w-3.5 h-3.5" /> Endpoint compute — live autoscale
+        </div>
+        {cpu != null && (
+          <div className="text-[11px] text-slate-400 flex items-center gap-1">
+            <Cpu className="w-3.5 h-3.5" /> CPU {cpu}%
+          </div>
+        )}
+      </div>
+      <div className="flex items-end gap-3 mb-2">
+        <div className="text-3xl font-bold text-violet-300">{cur != null ? cur : '—'}</div>
+        <div className="text-sm text-slate-400 mb-1">/ {max} provisioned concurrency (slots)</div>
+      </div>
+      {/* scale bar from min..max */}
+      <div className="relative h-2 rounded-full bg-white/10 overflow-hidden">
+        <div className="absolute inset-y-0 left-0 bg-violet-500 rounded-full transition-all duration-500"
+             style={{ width: `${pct}%` }} />
+      </div>
+      <div className="flex justify-between text-[10px] text-slate-500 mt-1">
+        <span>min {min}</span>
+        <span>scales with load</span>
+        <span>max {max}</span>
       </div>
     </div>
   );

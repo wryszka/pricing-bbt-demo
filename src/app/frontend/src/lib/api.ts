@@ -288,6 +288,7 @@ export const api = {
   livePricingStreamStop: () =>
     fetchJson<any>('/live-pricing/stream/stop', { method: 'POST', body: JSON.stringify({}) }),
   livePricingStreamMetrics: () => fetchJson<any>('/live-pricing/stream/metrics'),
+  livePricingEndpointScale: () => fetchJson<any>('/live-pricing/endpoint-scale'),
   livePricingLoadTestStart: (body: { target_qps?: number; duration_seconds?: number; concurrency?: number }) =>
     fetchJson<any>('/live-pricing/load-test/start', { method: 'POST', body: JSON.stringify(body) }),
   livePricingLoadTestStop: (runId: number | string) =>

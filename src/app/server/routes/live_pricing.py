@@ -166,6 +166,44 @@ async def status() -> dict:
     }
 
 
+@router.get("/endpoint-scale")
+async def endpoint_scale() -> dict:
+    """Live compute size of the scorer endpoint: current provisioned
+    concurrency (the autoscaled 'size' within min..max) + CPU. Read from the
+    endpoint's Prometheus metrics. Powers the 'Compute' tile in the tester."""
+    import re
+
+    def _read() -> dict:
+        import requests as _rq
+        w = get_workspace_client()
+        host  = w.config.host.rstrip("/")
+        token = w.config._header_factory()
+        out: dict[str, Any] = {"endpoint": ENDPOINT_NAME}
+        # min/max from config
+        try:
+            ep = w.serving_endpoints.get(ENDPOINT_NAME)
+            e = (ep.config.served_entities or [None])[0] if ep.config else None
+            out["min"] = getattr(e, "min_provisioned_concurrency", None) if e else None
+            out["max"] = getattr(e, "max_provisioned_concurrency", None) if e else None
+            out["ready"] = str(getattr(ep.state, "ready", "")).split(".")[-1] if ep.state else None
+        except Exception as ex:
+            out["error"] = str(ex)[:150]
+        # current scale + cpu from Prometheus metrics
+        try:
+            r = _rq.get(f"{host}/api/2.0/serving-endpoints/{ENDPOINT_NAME}/metrics",
+                        headers=token, timeout=15)
+            txt = r.text
+            m = re.search(r"provisioned_concurrent_requests_total\{[^}]*\}\s+([0-9.]+)", txt)
+            c = re.search(r"cpu_usage_percentage\{[^}]*\}\s+([0-9.]+)", txt)
+            out["provisioned_concurrency"] = int(float(m.group(1))) if m else None
+            out["cpu_pct"] = round(float(c.group(1)), 1) if c else None
+        except Exception as ex:
+            out["metrics_error"] = str(ex)[:150]
+        return out
+
+    return await asyncio.to_thread(_read)
+
+
 # ---------------------------------------------------------------------------
 # Policy profile — driver / vehicle / live telematics, for the external
 # quote UI and the black-box panel.
