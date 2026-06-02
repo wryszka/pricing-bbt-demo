@@ -667,21 +667,24 @@ function LivePricing() {
 
       {/* Customer-facing demo pages — standalone, chrome-less UIs that drive
           the same live endpoint. Open in a new tab (full page load) so they
-          render outside the workbench shell. */}
-      <div className="bg-white border border-gray-200 rounded-lg p-5 mb-5">
-        <h4 className="text-sm font-semibold text-gray-800 mb-1 flex items-center gap-1.5">
-          <ExternalLink className="w-4 h-4 text-violet-600" /> Demo pages
-        </h4>
-        <p className="text-xs text-gray-500 mb-3">
-          Standalone customer-facing UIs for the live pricing story. Best opened in their own tabs.
-          {status?.state !== 'on' && ' Activate the system above for them to return quotes.'}
-        </p>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-          <DemoLink href="/quote"       title="Quote portal"   desc="Consumer quote, pre-filled for John" />
-          <DemoLink href="/blackbox"    title="Black-box panel" desc="Fire a telematics event" />
-          <DemoLink href="/quotetester" title="Live quote tester" desc="Streaming QPS + latency" />
+          render outside the workbench shell. Hidden when the system is not ON
+          (like the demo flow / load test below) — the pages can't return
+          quotes without a live endpoint, so we don't surface dead links. */}
+      {status?.state === 'on' && (
+        <div className="bg-white border border-gray-200 rounded-lg p-5 mb-5">
+          <h4 className="text-sm font-semibold text-gray-800 mb-1 flex items-center gap-1.5">
+            <ExternalLink className="w-4 h-4 text-violet-600" /> Demo pages
+          </h4>
+          <p className="text-xs text-gray-500 mb-3">
+            Standalone customer-facing UIs for the live pricing story. Best opened in their own tabs.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <DemoLink href="/quote"       title="Quote portal"   desc="Consumer quote, pre-filled for John" />
+            <DemoLink href="/blackbox"    title="Black-box panel" desc="Fire a telematics event" />
+            <DemoLink href="/quotetester" title="Live quote tester" desc="Streaming QPS + latency" />
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Sections only show when ON */}
       {status?.state === 'on' && (
@@ -694,7 +697,7 @@ function LivePricing() {
 
       {status?.state !== 'on' && (
         <div className="bg-gray-50 border border-gray-200 rounded-lg p-5 mb-5 text-sm text-gray-600">
-          Activate the system to access the demo flow, single-quote latency probe, and load-test chart.
+          Activate the system to access the customer-facing demo pages, demo flow, single-quote latency probe, and load-test chart.
           The first activation provisions a Lakebase online store at CU_2 and warm-starts the scorer endpoint —
           typically 5–10 minutes end-to-end. Subsequent activations on the same workspace reuse what's there.
         </div>

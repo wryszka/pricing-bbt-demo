@@ -68,6 +68,10 @@ fe = FeatureEngineeringClient()
 
 # COMMAND ----------
 
+import requests as _rq, json as _json
+_host = w.config.host.rstrip("/")
+_hdrs = lambda: {**w.config._header_factory(), "Content-Type": "application/json"}
+
 try:
     store = w.feature_store.get_online_store(online_store)
     print(f"store exists: {store.name} state={store.state} cap={store.capacity}")
@@ -76,14 +80,31 @@ except Exception:
     w.feature_store.create_online_store(
         online_store=OnlineStore(name=online_store, capacity=capacity))
 
-for i in range(60):
-    s = w.feature_store.get_online_store(online_store)
-    if str(s.state).endswith("AVAILABLE"):
-        print(f"store AVAILABLE after {i*5}s")
+# The online store is backed by a Lakebase instance the app STOPS on
+# deactivate. Resume it here (and retry through transitional states) before
+# waiting for AVAILABLE — otherwise this loop spins forever on a stopped store,
+# which is exactly the "Activate hangs" failure. Resuming inside the job (not
+# fire-and-forget from the app) makes activate reliable.
+def _instance():
+    r = _rq.get(f"{_host}/api/2.0/database/instances/{online_store}", headers=_hdrs(), timeout=30)
+    return r.json() if r.status_code == 200 else {}
+
+for i in range(72):   # ~6 min
+    inst = _instance()
+    state = (inst.get("state") or "").upper()
+    if state == "AVAILABLE" and not inst.get("effective_stopped"):
+        print(f"store AVAILABLE after ~{i*5}s")
         break
+    # Issue a resume whenever it's stopped/available-but-flagged and not already
+    # mid-transition; STARTING/UPDATING just need to be waited out.
+    if (state in ("STOPPED", "AVAILABLE")) and inst.get("effective_stopped", state == "STOPPED"):
+        rr = _rq.patch(
+            f"{_host}/api/2.0/database/instances/{online_store}?update_mask=stopped",
+            headers=_hdrs(), data=_json.dumps({"stopped": False}), timeout=30)
+        print(f"  resume PATCH (state={state}) -> {rr.status_code}")
     time.sleep(5)
 else:
-    raise RuntimeError(f"online store {online_store} not AVAILABLE in 5 min")
+    raise RuntimeError(f"online store {online_store} not AVAILABLE in 6 min")
 
 # COMMAND ----------
 

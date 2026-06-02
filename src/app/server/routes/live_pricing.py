@@ -196,15 +196,27 @@ async def status() -> dict:
         asyncio.to_thread(_online_store_state),
     )
 
-    endpoint_ready = ep_state["present"] and ep_state.get("ready") == "READY" and \
+    ep_present     = ep_state["present"]
+    endpoint_ready = ep_present and ep_state.get("ready") == "READY" and \
                      (ep_state.get("config_update") in (None, "", "NOT_UPDATING"))
-    store_ready    = store_state["present"] and (store_state.get("state") or "") == "AVAILABLE"
+    store_st       = (store_state.get("state") or "").upper()
+    store_ready    = store_state["present"] and store_st == "AVAILABLE"
+    # A stopped/absent online store is the DEACTIVATED resting state — not a
+    # transition. (Stopping the Lakebase instance leaves the online-store object
+    # present, so "present" alone must not imply "starting" or the UI deadlocks
+    # in "starting" forever with Activate greyed out.)
+    store_down     = (not store_state["present"]) or store_st in ("STOPPED", "STOPPING")
 
     if endpoint_ready and store_ready:
         state = "on"
     elif ep_state.get("config_update") == "UPDATE_FAILED":
         state = "error"
-    elif ep_state["present"] or store_state["present"]:
+    elif not ep_present and store_down:
+        # endpoint gone + store stopped/absent → fully off (deactivated)
+        state = "off"
+    elif ep_present or store_state["present"]:
+        # something genuinely mid-flight: endpoint creating/updating, store
+        # resuming, or store up but endpoint not yet recreated during activate
         state = "starting"
     else:
         state = "off"
@@ -349,34 +361,16 @@ async def _trigger_job(job_name: str, params: dict) -> dict:
     }
 
 
-def _resume_lakebase(name: str) -> dict:
-    """Lakebase instances are paused when the demo isn't running. Flip
-    `stopped=false` so the provision job's online-store check finds the
-    instance back in AVAILABLE state."""
-    import requests as _rq
-    w = get_workspace_client()
-    host  = w.config.host.rstrip("/")
-    token = w.config._header_factory()
-    try:
-        resp = _rq.patch(
-            f"{host}/api/2.0/database/instances/{name}?update_mask=stopped",
-            headers={**token, "Content-Type": "application/json"},
-            json={"stopped": False}, timeout=20,
-        )
-        if resp.status_code in (200, 204):
-            return {"resumed": True, "name": name}
-        return {"resumed": False, "name": name, "status": resp.status_code, "body": resp.text[:200]}
-    except Exception as e:
-        return {"resumed": False, "name": name, "error": str(e)[:200]}
-
-
 @router.post("/start")
 async def start() -> dict:
+    """Activate — fire the provision job, which resumes the Lakebase instance,
+    (re)publishes the online table, and recreates the route-optimized endpoint.
+
+    NOTE: the Lakebase resume happens INSIDE the job (which runs as the job
+    creator, who can manage the instance), NOT here — the app's service
+    principal is not authorized to stop/resume the instance (403). Doing it in
+    the job is what makes Activate reliable."""
     user = get_current_user()
-    # Resume the Lakebase instance first — it warms in the background
-    # (~60s) in parallel with the provision job, which also waits for
-    # AVAILABLE before proceeding to publish.
-    lakebase = await asyncio.to_thread(_resume_lakebase, ONLINE_STORE_NAME)
     triggered = await _trigger_job(PROVISION_JOB_NAME, {
         "catalog_name":      get_catalog(),
         "schema_name":       get_schema(),
@@ -388,50 +382,34 @@ async def start() -> dict:
         entity_type="endpoint",
         entity_id=ENDPOINT_NAME,
         details={"job_id": triggered["job_id"], "run_id": triggered["run_id"],
-                 "user": user, "lakebase": lakebase},
+                 "user": user},
     )
-    return {"state": "starting", "lakebase": lakebase, **triggered}
-
-
-def _stop_lakebase(name: str) -> dict:
-    import requests as _rq
-    w = get_workspace_client()
-    host  = w.config.host.rstrip("/")
-    token = w.config._header_factory()
-    try:
-        resp = _rq.patch(
-            f"{host}/api/2.0/database/instances/{name}?update_mask=stopped",
-            headers={**token, "Content-Type": "application/json"},
-            json={"stopped": True}, timeout=20,
-        )
-        if resp.status_code in (200, 204):
-            return {"stopped": True, "name": name}
-        return {"stopped": False, "name": name, "status": resp.status_code, "body": resp.text[:200]}
-    except Exception as e:
-        return {"stopped": False, "name": name, "error": str(e)[:200]}
+    return {"state": "starting", **triggered}
 
 
 @router.post("/stop")
 async def stop() -> dict:
-    """Soft stop — fires the motor_teardown job which deletes the Model
-    Serving endpoint, then pauses the Lakebase online store so neither is
-    burning compute. A subsequent /start resumes the Lakebase instance and
-    rebuilds the endpoint container (~60-90s warm-up)."""
+    """Deactivate — fire the motor_teardown job which deletes the Model Serving
+    endpoint AND stops the Lakebase instance, so the whole stack comes down.
+
+    Like resume, the Lakebase stop runs INSIDE the job (job creator identity,
+    which can manage the instance) — the app SP gets 403, which is why earlier
+    deactivates deleted the endpoint but left Lakebase running."""
     user = get_current_user()
     triggered = await _trigger_job(TEARDOWN_JOB_NAME, {
-        "catalog_name":  get_catalog(),
-        "schema_name":   get_schema(),
-        "endpoint_name": ENDPOINT_NAME,
+        "catalog_name":      get_catalog(),
+        "schema_name":       get_schema(),
+        "endpoint_name":     ENDPOINT_NAME,
+        "online_store_name": ONLINE_STORE_NAME,
     })
-    lakebase = await asyncio.to_thread(_stop_lakebase, ONLINE_STORE_NAME)
     await log_audit_event(
         event_type="live_pricing_stop_requested",
         entity_type="endpoint",
         entity_id=ENDPOINT_NAME,
         details={"job_id": triggered["job_id"], "run_id": triggered["run_id"],
-                 "user": user, "lakebase": lakebase},
+                 "user": user},
     )
-    return {"state": "stopping", "lakebase": lakebase, **triggered}
+    return {"state": "stopping", **triggered}
 
 
 # ---------------------------------------------------------------------------

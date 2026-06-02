@@ -2,6 +2,9 @@ resources:
   jobs:
     motor_provision:
       name: "Motor live serving: provision (Lakebase + endpoint reconcile)"
+      # One run at a time — repeated Activate clicks must not spawn parallel
+      # provisions that collide on resuming Lakebase / creating the endpoint.
+      max_concurrent_runs: 1
       parameters:
         - name: catalog_name
           default: ${var.catalog_name}

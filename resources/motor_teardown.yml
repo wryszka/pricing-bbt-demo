@@ -2,6 +2,9 @@ resources:
   jobs:
     motor_teardown:
       name: "Motor live serving: teardown (delete endpoint)"
+      # One run at a time — repeated Deactivate clicks must not spawn parallel
+      # teardowns.
+      max_concurrent_runs: 1
       parameters:
         - name: catalog_name
           default: ${var.catalog_name}
@@ -9,6 +12,8 @@ resources:
           default: ${var.schema_name}
         - name: endpoint_name
           default: "motor_pricing_scorer"
+        - name: online_store_name
+          default: "motor-pricing-online-store"
 
       permissions:
         - service_principal_name: ${var.app_service_principal_id}
@@ -19,9 +24,10 @@ resources:
           notebook_task:
             notebook_path: ../src/07_serving/live_pricing/motor_teardown.py
             base_parameters:
-              catalog_name:  "{{job.parameters.catalog_name}}"
-              schema_name:   "{{job.parameters.schema_name}}"
-              endpoint_name: "{{job.parameters.endpoint_name}}"
+              catalog_name:      "{{job.parameters.catalog_name}}"
+              schema_name:       "{{job.parameters.schema_name}}"
+              endpoint_name:     "{{job.parameters.endpoint_name}}"
+              online_store_name: "{{job.parameters.online_store_name}}"
           environment_key: env
 
       environments:
