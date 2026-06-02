@@ -1,6 +1,7 @@
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
-databricks-sdk>=0.50.0
+# >=0.95: needs serving_endpoints_data_plane (route-optimized scorer queries).
+databricks-sdk>=0.95.0
 pydantic>=2.0.0
 python-multipart>=0.0.9
 fpdf2>=2.7.0

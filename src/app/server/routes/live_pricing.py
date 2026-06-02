@@ -104,6 +104,57 @@ def _find_job_by_name(name: str) -> int | None:
 
 
 # ---------------------------------------------------------------------------
+# Route-optimized invocation (data plane)
+# ---------------------------------------------------------------------------
+# `motor_pricing_scorer` is route-optimized: it is queried through a dedicated
+# data-plane host (`*.serving.cloud.databricks.com`), NOT the workspace
+# `/serving-endpoints/{name}/invocations` path. It also rejects a generic OAuth
+# token with 401 — the token must carry per-endpoint `authorization_details`
+# (the `query_inference_endpoint` action). The SDK's data-plane API mints that
+# scoped token for us (cached + auto-refreshed); the app SP's OAuth creds (Apps
+# M2M) back it. We use the SDK to resolve the URL + scoped token, then drive the
+# requests against it with our own keep-alive session so the high-QPS stream
+# isn't bottlenecked by the SDK's small shared connection pool (~10).
+
+class _DataPlaneTarget:
+    """Route-optimized endpoint URL + a fresh-each-call scoped bearer."""
+    def __init__(self, url: str, dp, auth_details):
+        self.url = url
+        self._dp = dp
+        self._ad = auth_details
+
+    def bearer(self) -> str:
+        t = self._dp._dpts.token(self.url, self._ad)   # SDK-cached, auto-refreshed
+        return f"{t.token_type} {t.access_token}"
+
+
+def _dataplane_target(name: str) -> "_DataPlaneTarget | None":
+    """Resolve a route-optimized endpoint's data-plane URL + scoped-token source
+    via the SDK. Returns None (caller falls back to SDK query) if unavailable."""
+    try:
+        w = get_workspace_client()
+        dp = w.serving_endpoints_data_plane
+        info = dp._data_plane_info_query(name=name)
+        return _DataPlaneTarget(info.endpoint_url, dp, info.authorization_details)
+    except Exception as e:
+        logger.warning("data-plane target for %s unavailable: %s", name, str(e)[:200])
+        return None
+
+
+def _sdk_query_blocking(name: str, records: list[dict]) -> tuple[int, dict | None]:
+    """Robust fallback: query a (route-optimized) endpoint via the SDK, which
+    handles URL + scoped token itself. Lower throughput than the tuned session
+    but always correct. Returns (status_code, parsed_body)."""
+    try:
+        w = get_workspace_client()
+        resp = w.serving_endpoints_data_plane.query(name, dataframe_records=records)
+        preds = getattr(resp, "predictions", None)
+        return 200, {"predictions": preds if preds is not None else resp.as_dict()}
+    except Exception as e:
+        return 0, {"error": str(e)[:300]}
+
+
+# ---------------------------------------------------------------------------
 # Status
 # ---------------------------------------------------------------------------
 
@@ -429,14 +480,16 @@ async def quote(req: QuoteRequest) -> dict:
 
     def _call() -> tuple[float, int, dict | None]:
         import requests as _rq
-        w = get_workspace_client()
-        host  = w.config.host.rstrip("/")
-        token = w.config._header_factory()
+        tgt = _dataplane_target(ENDPOINT_NAME)
         t0 = time.perf_counter()
+        if tgt is None:
+            # Fallback to the SDK's own data-plane query (correct auth, slower).
+            sc, data = _sdk_query_blocking(ENDPOINT_NAME, [{"policy_id": pid}])
+            return (time.perf_counter() - t0) * 1000.0, sc, data
         try:
             resp = _rq.post(
-                f"{host}/serving-endpoints/{ENDPOINT_NAME}/invocations",
-                headers={**token, "Content-Type": "application/json"},
+                tgt.url,
+                headers={"Authorization": tgt.bearer(), "Content-Type": "application/json"},
                 json={"dataframe_records": [{"policy_id": pid}]},
                 timeout=30,
             )
@@ -835,11 +888,13 @@ _stream = _LiveStream()
 _stream_executor = ThreadPoolExecutor(max_workers=96, thread_name_prefix="qstream")
 
 
-async def _stream_fire_one(pid: str, url: str, headers: dict, session) -> None:
+async def _stream_fire_one(pid: str, tgt: "_DataPlaneTarget", session) -> None:
     def _call():
         t0 = time.perf_counter()
         try:
-            r = session.post(url, headers=headers,
+            r = session.post(tgt.url,
+                             headers={"Authorization": tgt.bearer(),
+                                      "Content-Type": "application/json"},
                              json={"dataframe_records": [{"policy_id": pid}]}, timeout=15)
             return (time.perf_counter() - t0) * 1000.0, r.status_code == 200
         except Exception:
@@ -858,14 +913,19 @@ async def _stream_worker(target_qps: int, my_epoch: int) -> None:
     hard max-duration failsafe elapses — so an orphaned loop can never keep
     firing after stop."""
     import requests as _rq
-    w = get_workspace_client()
-    host  = w.config.host.rstrip("/")
-    headers = {**w.config._header_factory(), "Content-Type": "application/json"}
-    url = f"{host}/serving-endpoints/{ENDPOINT_NAME}/invocations"
-    # Reuse one keep-alive session so we measure steady-state latency, not a
-    # fresh TLS handshake on every call (which inflated the numbers well above
-    # the server-side latency Databricks reports).
+    from requests.adapters import HTTPAdapter
+    # Resolve the route-optimized data-plane URL + scoped-token source once.
+    tgt = await asyncio.to_thread(_dataplane_target, ENDPOINT_NAME)
+    if tgt is None:
+        logger.warning("stream: could not resolve data-plane target — aborting")
+        _stream.running = False
+        _stream.stopped_at = time.time()
+        return
+    # Keep-alive session with a large connection pool so we measure steady-state
+    # latency (not a fresh TLS handshake per call) AND aren't bottlenecked by the
+    # default 10-connection pool when many requests are in flight at high QPS.
     session = _rq.Session()
+    session.mount("https://", HTTPAdapter(pool_connections=128, pool_maxsize=128, max_retries=0))
     if not _stream._policy_ids:
         try:
             rows = await execute_query(
@@ -890,7 +950,7 @@ async def _stream_worker(target_qps: int, my_epoch: int) -> None:
                     # Drop late completions from a superseded epoch.
                     if _stream.epoch != my_epoch:
                         return
-                    await _stream_fire_one(p, url, headers, session)
+                    await _stream_fire_one(p, tgt, session)
             asyncio.create_task(_guarded())
             await asyncio.sleep(period)
     except asyncio.CancelledError:

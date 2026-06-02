@@ -203,15 +203,50 @@ if scorer_version:
     except Exception:
         existing = None
 
+    # Endpoint is route-optimized (direct data-plane path for low-latency
+    # serving). Route optimization is create-time only, so the Start button's
+    # recreate must always set it — and if a non-route-optimized endpoint is
+    # found (e.g. a legacy one), delete and recreate it. Queried via endpoint_url
+    # with OAuth (the app resolves the host and uses the app SP's OAuth token).
+    _create_payload = {"name": endpoint_name, "route_optimized": True,
+                       "config": {"served_entities": [_served_entity]}}
+    _is_ro = bool(getattr(existing, "route_optimized", False)) if existing else False
+
     if existing is None:
         _r = _rq.post(f"{_host}/api/2.0/serving-endpoints", headers=_hdrs,
-                      data=_json.dumps({"name": endpoint_name,
-                                        "config": {"served_entities": [_served_entity]}}), timeout=60)
-        print(f"endpoint create -> {_r.status_code}: {_r.text[:200]}")
+                      data=_json.dumps(_create_payload), timeout=60)
+        print(f"route-optimized endpoint create -> {_r.status_code}: {_r.text[:200]}")
+    elif not _is_ro:
+        print(f"endpoint {endpoint_name} exists but is NOT route-optimized — deleting to recreate…")
+        _rq.delete(f"{_host}/api/2.0/serving-endpoints/{endpoint_name}", headers=_hdrs, timeout=60)
+        for _ in range(60):
+            try:
+                w.serving_endpoints.get(endpoint_name); time.sleep(5)
+            except Exception:
+                break
+        _r = _rq.post(f"{_host}/api/2.0/serving-endpoints", headers=_hdrs,
+                      data=_json.dumps(_create_payload), timeout=60)
+        print(f"route-optimized endpoint recreate -> {_r.status_code}: {_r.text[:200]}")
     else:
         _r = _rq.put(f"{_host}/api/2.0/serving-endpoints/{endpoint_name}/config", headers=_hdrs,
                      data=_json.dumps({"served_entities": [_served_entity]}), timeout=60)
-        print(f"endpoint reconcile -> {_r.status_code}: {_r.text[:200]}")
+        print(f"route-optimized endpoint reconcile -> {_r.status_code}: {_r.text[:200]}")
+
+    # Grant the app SP CAN_QUERY on the endpoint. A route-optimized endpoint
+    # mints its scoped query token from the caller's endpoint permission, and a
+    # teardown→recreate resets the ACL to creator-only — so without this the app
+    # would 401 after every Start. PATCH merges, so it's safe to re-run.
+    if app_sp_id:
+        try:
+            _eid = w.serving_endpoints.get(endpoint_name).id
+            _pr = _rq.patch(
+                f"{_host}/api/2.0/permissions/serving-endpoints/{_eid}", headers=_hdrs,
+                data=_json.dumps({"access_control_list": [
+                    {"service_principal_name": app_sp_id, "permission_level": "CAN_QUERY"}]}),
+                timeout=30)
+            print(f"app SP CAN_QUERY grant on endpoint {_eid} -> {_pr.status_code}")
+        except Exception as e:
+            print(f"endpoint query grant failed (continuing): {e}")
 
 # COMMAND ----------
 

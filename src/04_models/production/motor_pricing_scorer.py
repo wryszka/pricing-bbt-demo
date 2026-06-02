@@ -387,28 +387,51 @@ _served_entity = {
 _host = w.config.host.rstrip("/")
 _hdrs = {**w.config._header_factory(), "Content-Type": "application/json"}
 
+import time as _time
 existing = None
 try:
     existing = w.serving_endpoints.get(endpoint_name)
 except Exception:
     pass
 
+# Route optimization gives a direct data-plane path → lower, steadier latency
+# at QPS (the millisecond-pricing story). It is CREATE-TIME ONLY and cannot be
+# toggled on an existing endpoint, so if the endpoint exists but isn't
+# route-optimized we delete and recreate it. The endpoint is then queried via
+# its `endpoint_url` host (the app resolves this); OAuth is required (PATs are
+# rejected) — the app SP already authenticates via OAuth.
+_create_payload = {"name": endpoint_name, "route_optimized": True,
+                   "config": {"served_entities": [_served_entity]}}
+_is_ro = bool(getattr(existing, "route_optimized", False)) if existing else False
+
 if existing is None:
     _r = _rq.post(f"{_host}/api/2.0/serving-endpoints", headers=_hdrs,
-                  data=_json.dumps({"name": endpoint_name,
-                                    "config": {"served_entities": [_served_entity]}}), timeout=60)
-    print(f"Created endpoint {endpoint_name} serving v{target} -> {_r.status_code}")
+                  data=_json.dumps(_create_payload), timeout=60)
+    print(f"Created route-optimized endpoint {endpoint_name} v{target} -> {_r.status_code}: {_r.text[:200]}")
+elif not _is_ro:
+    print(f"Endpoint {endpoint_name} exists but is NOT route-optimized — deleting to recreate…")
+    _rq.delete(f"{_host}/api/2.0/serving-endpoints/{endpoint_name}", headers=_hdrs, timeout=60)
+    for _ in range(60):
+        try:
+            w.serving_endpoints.get(endpoint_name); _time.sleep(5)
+        except Exception:
+            break
+    _r = _rq.post(f"{_host}/api/2.0/serving-endpoints", headers=_hdrs,
+                  data=_json.dumps(_create_payload), timeout=60)
+    print(f"Recreated route-optimized endpoint {endpoint_name} v{target} -> {_r.status_code}: {_r.text[:200]}")
 else:
+    # Already route-optimized — reconcile the served version via PUT config
+    # (the route_optimized flag persists across config updates).
     served_versions  = {e.entity_version for e in (existing.config.served_entities or [])} if existing.config else set()
     pending_versions = {e.entity_version for e in (existing.pending_config.served_entities or [])} if existing.pending_config else set()
     if target in pending_versions:
         print(f"Endpoint pending v{target} — skip")
     elif target in served_versions and not pending_versions:
-        print(f"Endpoint already serving v{target} — skip")
+        print(f"Endpoint already serving v{target} (route-optimized) — skip")
     else:
         _r = _rq.put(f"{_host}/api/2.0/serving-endpoints/{endpoint_name}/config", headers=_hdrs,
                      data=_json.dumps({"served_entities": [_served_entity]}), timeout=60)
-        print(f"Updated endpoint to v{target} -> {_r.status_code}")
+        print(f"Updated route-optimized endpoint to v{target} -> {_r.status_code}")
 
 # COMMAND ----------
 
