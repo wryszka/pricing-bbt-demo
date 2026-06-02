@@ -62,7 +62,7 @@ export default function QuoteTester() {
         <div className="flex items-center gap-4 mb-8">
           <label className="text-sm text-slate-300 flex items-center gap-3">
             Target QPS
-            <input type="range" min={5} max={60} step={5} value={targetQps}
+            <input type="range" min={5} max={100} step={5} value={targetQps}
                    disabled={running}
                    onChange={e => setTargetQps(Number(e.target.value))}
                    className="w-48 accent-violet-500" />
@@ -103,9 +103,10 @@ export default function QuoteTester() {
           <Sparkline data={hist} />
           <div className="text-[11px] text-slate-500 mt-3">
             Measures <span className="text-slate-400">client round-trip from the app</span> (network + serving),
-            a little above the server-side latency in the Databricks Serving UI. This app-driven view is
-            capped at 60 QPS — the app container's clean limit. For 100+ QPS and endpoint-ceiling numbers,
-            use the in-region job-based load test in the workbench.
+            a little above the server-side latency in the Databricks Serving UI. Clean to ~60 QPS from this app
+            container; pushing toward 100 saturates the container (latency/errors climb) — that's the driver, not
+            the endpoint. For sustained 100+ QPS and true endpoint-ceiling numbers, use the in-region job-based
+            load test in the workbench.
           </div>
         </div>
       </div>
