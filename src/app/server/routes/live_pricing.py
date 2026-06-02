@@ -51,10 +51,30 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/live-pricing", tags=["live-pricing"])
 
 ENDPOINT_NAME       = "motor_pricing_scorer"
+DIRECT_ENDPOINT     = "motor_pricing_scorer_direct"   # plain pyfunc — what-if form
 ONLINE_STORE_NAME   = "motor-pricing-online-store"
 UPT_TABLE_NAME      = "unified_motor_table_live"
 TELEMATICS_TABLE    = "motor_telematics_aggregate"
 RUNTIME_STATE_TABLE = "live_motor_runtime_state"
+
+# The 28 features the motor models consume (must match UNION_FEATURES in the
+# scorer notebook). The what-if quote pulls these for a policy and overlays
+# the editable ones the form sends.
+WHATIF_FEATURES = [
+    "annual_mileage", "at_fault_count_5y", "avg_speed_mph", "behaviour_score",
+    "business_use", "claim_count_5y", "current_premium", "distinct_perils",
+    "driver_age", "fuel_type", "gender", "hours_driven_30d", "license_years_held",
+    "marital_status", "night_driving_pct", "no_claims_years", "occupation_class",
+    "open_claims_count", "parking_overnight", "prior_accidents_5y",
+    "prior_convictions", "recent_curfew_breaches", "recent_harsh_braking_30d",
+    "recent_speeding_events", "telematics_recent_event_count", "vehicle_age",
+    "vehicle_group", "vehicle_value",
+]
+# Fields the quote form may push (the rest are pulled from the feature table).
+WHATIF_EDITABLE = {
+    "annual_mileage", "vehicle_value", "vehicle_age", "driver_age",
+    "no_claims_years", "parking_overnight", "occupation_class",
+}
 METRICS_TABLE_NAME  = "live_motor_metrics"
 PROVISION_JOB_NAME  = "Motor live serving: provision (Lakebase + endpoint reconcile)"
 TEARDOWN_JOB_NAME   = "Motor live serving: teardown (delete endpoint)"
@@ -428,6 +448,89 @@ async def quote(req: QuoteRequest) -> dict:
         "latency_ms":   round(latency_ms, 1),
         "status_code":  status_code,
         "result":       row,
+    }
+
+
+# ---------------------------------------------------------------------------
+# What-if quote — interactive form. Pulls the policy's feature row, overlays
+# the editable fields the form sends, and scores the full vector against the
+# direct (non-FeatureLookup) endpoint so edits move the price.
+# ---------------------------------------------------------------------------
+
+class WhatIfRequest(BaseModel):
+    policy_id: str
+    overrides: dict[str, Any] = {}
+
+
+@router.post("/quote-whatif")
+async def quote_whatif(req: WhatIfRequest) -> dict:
+    pid = req.policy_id.strip().upper()
+    if not pid:
+        raise HTTPException(400, "policy_id required")
+
+    # Pull the policy's full feature row from the feature table.
+    cols = ", ".join(WHATIF_FEATURES)
+    rows = await execute_query(
+        f"SELECT {cols} FROM {fqn(UPT_TABLE_NAME)} WHERE policy_id = '{pid}' LIMIT 1")
+    if not rows:
+        raise HTTPException(404, f"policy {pid} not found")
+    feat = {k: rows[0].get(k) for k in WHATIF_FEATURES}
+
+    # Overlay only the whitelisted editable fields from the form.
+    applied = {}
+    for k, v in (req.overrides or {}).items():
+        if k in WHATIF_EDITABLE and v is not None and str(v) != "":
+            feat[k] = v
+            applied[k] = v
+
+    n_pulled = len(WHATIF_FEATURES) - len(applied)
+
+    def _call() -> tuple[float, int, dict | None]:
+        import requests as _rq
+        w = get_workspace_client()
+        host  = w.config.host.rstrip("/")
+        token = w.config._header_factory()
+        t0 = time.perf_counter()
+        try:
+            resp = _rq.post(
+                f"{host}/serving-endpoints/{DIRECT_ENDPOINT}/invocations",
+                headers={**token, "Content-Type": "application/json"},
+                json={"dataframe_records": [feat]},
+                timeout=60,
+            )
+        except Exception as e:
+            return (time.perf_counter() - t0) * 1000.0, 0, {"error": str(e)[:300]}
+        dt = (time.perf_counter() - t0) * 1000.0
+        try:
+            data = resp.json()
+        except Exception:
+            data = None
+        return dt, resp.status_code, data
+
+    latency_ms, status_code, data = await asyncio.to_thread(_call)
+
+    row: dict[str, Any] = {}
+    if status_code == 200 and isinstance(data, dict):
+        preds = data.get("predictions") or data.get("outputs") or data
+        if isinstance(preds, list) and preds:
+            row = preds[0] or {}
+        elif isinstance(preds, dict):
+            row = {k: (v[0] if isinstance(v, list) else v) for k, v in preds.items()}
+
+    if status_code != 200:
+        return {
+            "ok": False, "policy_id": pid, "latency_ms": round(latency_ms, 1),
+            "status_code": status_code,
+            "error": (data or {}).get("error") if isinstance(data, dict) else f"HTTP {status_code}",
+            "detail": "what-if scorer endpoint may be warming up (scale-to-zero) — retry in ~30s"
+                      if status_code in (0, 503) else None,
+        }
+
+    return {
+        "ok": True, "policy_id": pid, "latency_ms": round(latency_ms, 1),
+        "status_code": status_code, "result": row,
+        "features_pulled": n_pulled, "inputs_pushed": len(applied),
+        "applied_overrides": applied,
     }
 
 

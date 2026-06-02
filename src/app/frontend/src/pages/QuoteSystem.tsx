@@ -34,11 +34,22 @@ export default function QuoteSystem() {
   }, []);
 
   const getQuote = async () => {
+    if (!form) return;
     setLoading(true); setError(null);
+    // The 6 editable fields are pushed as live inputs; the rest are pulled
+    // from the feature store server-side.
+    const overrides: Record<string, any> = {
+      annual_mileage:   Number(form.mileage) || 0,
+      vehicle_value:    Number(form.value) || 0,
+      driver_age:       Number(form.age) || 0,
+      no_claims_years:  Number(form.ncd) || 0,
+      parking_overnight: form.parking,
+      occupation_class:  form.occupation,
+    };
     try {
-      const r = await api.livePricingQuote(JOHN);
+      const r = await api.livePricingQuoteWhatIf(JOHN, overrides);
       if (!r.ok || r.status_code !== 200) {
-        setError('Sorry — we couldn\'t price this right now. Please try again.');
+        setError(r.detail || 'Sorry — we couldn\'t price this right now. Please try again.');
       } else {
         setQuote(r);
       }
@@ -82,10 +93,14 @@ export default function QuoteSystem() {
                 <Field label="Make & model"><Input value={`${form.make} ${form.model}`} readOnly /></Field>
                 <div className="grid grid-cols-2 gap-3">
                   <Field label="Year"><Input value={String(form.year)} readOnly /></Field>
-                  <Field label="Estimated value"><Input value={`£${form.value.toLocaleString()}`} readOnly /></Field>
+                  <Field label="Estimated value (£)">
+                    <Input value={String(form.value)} onChange={v => setForm({ ...form, value: v.replace(/[^0-9]/g, '') })} />
+                  </Field>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
-                  <Field label="Annual mileage"><Input value={`${form.mileage.toLocaleString()} miles`} onChange={() => {}} /></Field>
+                  <Field label="Annual mileage">
+                    <Input value={String(form.mileage)} onChange={v => setForm({ ...form, mileage: v.replace(/[^0-9]/g, '') })} />
+                  </Field>
                   <Field label="Overnight parking">
                     <Select value={form.parking} onChange={v => setForm({ ...form, parking: v })}
                             options={['Driveway', 'Garage', 'On road', 'Car park']} />
@@ -95,16 +110,19 @@ export default function QuoteSystem() {
 
               <FormCard title="About you">
                 <div className="grid grid-cols-2 gap-3">
-                  <Field label="Age"><Input value={String(form.age)} onChange={() => {}} /></Field>
-                  <Field label="Years licence held"><Input value={String(form.licence)} onChange={() => {}} /></Field>
+                  <Field label="Age"><Input value={String(form.age)} onChange={v => setForm({ ...form, age: v.replace(/[^0-9]/g, '') })} /></Field>
+                  <Field label="Years licence held"><Input value={String(form.licence)} readOnly /></Field>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
-                  <Field label="Occupation"><Input value={form.occupation} onChange={v => setForm({ ...form, occupation: v })} /></Field>
-                  <Field label="Postcode"><Input value={form.postcode} mono onChange={v => setForm({ ...form, postcode: v })} /></Field>
+                  <Field label="Occupation">
+                    <Select value={form.occupation} onChange={v => setForm({ ...form, occupation: v })}
+                            options={['Student', 'Professional', 'Manual', 'Clerical', 'Retired', 'Self-employed', 'Unemployed']} />
+                  </Field>
+                  <Field label="Postcode"><Input value={form.postcode} mono readOnly /></Field>
                 </div>
                 <Field label="No-claims discount">
-                  <Select value={`${form.ncd} years`} onChange={() => {}}
-                          options={['0 years', '1 year', '2 years', '3 years', '4 years', '5+ years']} />
+                  <Select value={String(form.ncd)} onChange={v => setForm({ ...form, ncd: v.replace(/[^0-9]/g, '') })}
+                          options={['0', '1', '2', '3', '4', '5']} />
                 </Field>
               </FormCard>
 
@@ -175,6 +193,12 @@ export default function QuoteSystem() {
               <p className="text-[11px] text-slate-400 mt-3 px-1">
                 Quote valid for 30 days. Price based on the details provided and your telematics driving data.
               </p>
+              {quote?.inputs_pushed != null && (
+                <p className="text-[11px] text-slate-400 mt-1 px-1">
+                  Priced live from <span className="text-slate-500">{quote.features_pulled} features pulled</span> from the
+                  feature store + <span className="text-slate-500">{quote.inputs_pushed} inputs you set</span>.
+                </p>
+              )}
             </aside>
           </div>
         )}

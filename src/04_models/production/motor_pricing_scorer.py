@@ -412,10 +412,75 @@ else:
 
 # COMMAND ----------
 
+# MAGIC %md
+# MAGIC ## Direct scorer — interactive what-if quote form
+# MAGIC
+# MAGIC The same `MotorPricingScorer` class + artifacts, logged as a PLAIN
+# MAGIC pyfunc (no FeatureLookup) so it accepts a full feature vector directly.
+# MAGIC Backs a small, scale-to-zero `motor_pricing_scorer_direct` endpoint. The
+# MAGIC quote form pushes the editable fields; the app composes them onto the
+# MAGIC policy's other features (pulled from the feature table) and posts the
+# MAGIC full vector here — so edits (mileage, value, age…) move the price live.
+# MAGIC The FeatureLookup endpoint above (policy_id) is untouched and still
+# MAGIC powers the live demo + load tester.
+
+# COMMAND ----------
+
+direct_uc_name = f"{fqn}.motor_pricing_scorer_direct"
+direct_endpoint = "motor_pricing_scorer_direct"
+_sample_features = (
+    spark.table(f"{fqn}.unified_motor_table_live").select(*UNION_FEATURES).limit(1).toPandas()
+)
+with mlflow.start_run(run_name="motor_pricing_scorer_direct") as _drun:
+    mlflow.pyfunc.log_model(
+        artifact_path         = "scorer_direct",
+        python_model          = MotorPricingScorer(),
+        artifacts             = artifact_paths,
+        registered_model_name = direct_uc_name,
+        input_example         = _sample_features,
+        pip_requirements=[
+            "mlflow>=2.12",
+            "scikit-learn", "lightgbm", "statsmodels",
+            "pandas", "numpy", "databricks-sdk",
+        ],
+    )
+    print(f"Logged direct scorer for run {_drun.info.run_id}")
+
+direct_latest = max(int(v.version) for v in client.search_model_versions(f"name='{direct_uc_name}'"))
+client.set_registered_model_alias(direct_uc_name, "champion", direct_latest)
+print(f"Direct scorer v{direct_latest} aliased champion")
+
+# Deploy/reconcile the small scale-to-zero direct endpoint (REST for sizing).
+_direct_entity = {
+    "entity_name": direct_uc_name,
+    "entity_version": str(direct_latest),
+    "scale_to_zero_enabled": True,
+    "workload_size": "Small",
+    "workload_type": "CPU",
+}
+try:
+    w.serving_endpoints.get(direct_endpoint)
+    _de_exists = True
+except Exception:
+    _de_exists = False
+if _de_exists:
+    _r = _rq.put(f"{_host}/api/2.0/serving-endpoints/{direct_endpoint}/config", headers=_hdrs,
+                 data=_json.dumps({"served_entities": [_direct_entity]}), timeout=60)
+    print(f"direct endpoint reconcile -> {_r.status_code}")
+else:
+    _r = _rq.post(f"{_host}/api/2.0/serving-endpoints", headers=_hdrs,
+                  data=_json.dumps({"name": direct_endpoint, "config": {"served_entities": [_direct_entity]}}), timeout=60)
+    print(f"direct endpoint create -> {_r.status_code}")
+
+# COMMAND ----------
+
 dbutils.notebook.exit(json.dumps({
     "scorer_uc_name":        scorer_uc_name,
     "version":               latest,
     "endpoint":              endpoint_name,
+    "direct_uc_name":        direct_uc_name,
+    "direct_version":        direct_latest,
+    "direct_endpoint":       direct_endpoint,
     "champions":             CHAMPIONS,
     "rating_engine_version": RATING_CFG["version"],
 }))
