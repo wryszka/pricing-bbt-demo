@@ -22,6 +22,20 @@ def get_workspace_client() -> WorkspaceClient:
     return _workspace_client
 
 
+def reset_workspace_client() -> None:
+    """Drop the cached WorkspaceClient so the next call builds a fresh one.
+
+    The route-optimized scorer is queried via the SDK's data-plane token source,
+    which lives on the WorkspaceClient. When the endpoint is recreated
+    (deactivate→activate mints a new data-plane host), the long-running app's
+    cached client can't mint a scoped token for the new endpoint and every query
+    fails with `invalid_authorization_details` until the app restarts. Rebuilding
+    the client in-process re-mints correctly — same effect as a restart, no
+    redeploy needed."""
+    global _workspace_client
+    _workspace_client = None
+
+
 def get_catalog() -> str:
     return os.getenv("CATALOG_NAME", "lr_serverless_aws_us_catalog")
 

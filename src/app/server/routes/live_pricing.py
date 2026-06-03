@@ -43,7 +43,7 @@ from pydantic import BaseModel
 from server.audit import log_audit_event
 from server.config import (
     fqn, get_catalog, get_schema, get_current_user,
-    get_workspace_client, get_workspace_host,
+    get_workspace_client, get_workspace_host, reset_workspace_client,
 )
 from server.sql import execute_query
 
@@ -126,6 +126,15 @@ class _DataPlaneTarget:
     def bearer(self) -> str:
         t = self._dp._dpts.token(self.url, self._ad)   # SDK-cached, auto-refreshed
         return f"{t.token_type} {t.access_token}"
+
+
+def _is_dataplane_auth_error(msg: str) -> bool:
+    """A stale-client auth failure that a fresh WorkspaceClient would fix —
+    seen when the endpoint was recreated under the long-running app."""
+    m = (msg or "").lower()
+    return any(s in m for s in (
+        "invalid_authorization_details", "not authorized",
+        "permission_denied", "unauthorized", " 401", "403"))
 
 
 def _dataplane_target(name: str) -> "_DataPlaneTarget | None":
@@ -458,27 +467,35 @@ async def quote(req: QuoteRequest) -> dict:
 
     def _call() -> tuple[float, int, dict | None]:
         import requests as _rq
-        tgt = _dataplane_target(ENDPOINT_NAME)
-        t0 = time.perf_counter()
-        if tgt is None:
-            # Fallback to the SDK's own data-plane query (correct auth, slower).
-            sc, data = _sdk_query_blocking(ENDPOINT_NAME, [{"policy_id": pid}])
-            return (time.perf_counter() - t0) * 1000.0, sc, data
-        try:
-            resp = _rq.post(
-                tgt.url,
-                headers={"Authorization": tgt.bearer(), "Content-Type": "application/json"},
-                json={"dataframe_records": [{"policy_id": pid}]},
-                timeout=30,
-            )
-        except Exception as e:
-            return (time.perf_counter() - t0) * 1000.0, 0, {"error": str(e)[:300]}
-        dt = (time.perf_counter() - t0) * 1000.0
-        try:
-            data = resp.json()
-        except Exception:
-            data = None
-        return dt, resp.status_code, data
+        # Retry once on a stale-client auth error: the endpoint may have been
+        # recreated (activate) under the long-running app, leaving a cached
+        # client that can't mint a scoped token. Resetting rebuilds it.
+        for attempt in range(2):
+            tgt = _dataplane_target(ENDPOINT_NAME)
+            t0 = time.perf_counter()
+            if tgt is None:
+                sc, data = _sdk_query_blocking(ENDPOINT_NAME, [{"policy_id": pid}])
+                return (time.perf_counter() - t0) * 1000.0, sc, data
+            try:
+                resp = _rq.post(
+                    tgt.url,
+                    headers={"Authorization": tgt.bearer(), "Content-Type": "application/json"},
+                    json={"dataframe_records": [{"policy_id": pid}]},
+                    timeout=30,
+                )
+            except Exception as e:
+                if attempt == 0 and _is_dataplane_auth_error(str(e)):
+                    reset_workspace_client(); continue
+                return (time.perf_counter() - t0) * 1000.0, 0, {"error": str(e)[:300]}
+            dt = (time.perf_counter() - t0) * 1000.0
+            try:
+                data = resp.json()
+            except Exception:
+                data = None
+            if attempt == 0 and resp.status_code in (401, 403):
+                reset_workspace_client(); continue
+            return dt, resp.status_code, data
+        return 0.0, 0, {"error": "auth retry exhausted"}
 
     latency_ms, status_code, data = await asyncio.to_thread(_call)
 
@@ -892,6 +909,12 @@ async def _stream_worker(target_qps: int, my_epoch: int) -> None:
     firing after stop."""
     import requests as _rq
     from requests.adapters import HTTPAdapter
+    # Start from a fresh workspace client: if the endpoint was recreated since
+    # the app last queried it (every activate mints a new data-plane host), the
+    # cached client can't mint a scoped token for the new endpoint and the whole
+    # stream fails with invalid_authorization_details. Rebuilding it here is the
+    # in-process equivalent of an app restart.
+    await asyncio.to_thread(reset_workspace_client)
     # Resolve the route-optimized data-plane URL + scoped-token source once.
     tgt = await asyncio.to_thread(_dataplane_target, ENDPOINT_NAME)
     if tgt is None:
