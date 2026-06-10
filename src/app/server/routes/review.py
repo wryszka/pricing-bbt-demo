@@ -162,6 +162,13 @@ async def list_versions(family: str) -> dict:
 
     host = get_workspace_host()
 
+    # Resolve the current `champion` alias once so per-row marking is just a compare.
+    # Falls back to None when no champion is set yet (bootstrap state).
+    try:
+        champion_version = int(client.get_model_version_by_alias(uc_name, "champion").version)
+    except Exception:
+        champion_version = None
+
     # Fire all get_run calls in parallel — was the dominant 30s cost
     runs = await asyncio.gather(*[
         asyncio.to_thread(_fetch_run, client, v.run_id) for v in sorted_versions
@@ -172,20 +179,21 @@ async def list_versions(family: str) -> dict:
         primary = run.get("metrics", {}).get(meta["primary_metric"])
         exp_id = run.get("experiment_id") or ""
         rows.append({
-            "version":          int(v.version),
-            "run_id":           v.run_id,
-            "uc_name":          uc_name,
-            "story":            run.get("tags", {}).get("story"),
-            "story_text":       run.get("tags", {}).get("story_text"),
-            "simulated":        run.get("tags", {}).get("simulated", "false") == "true",
-            "simulation_date":  run.get("tags", {}).get("simulation_date"),
-            "trained_by":       run.get("tags", {}).get("mlflow.user"),
-            "trained_at":       _iso_from_ms(run.get("start_ms", 0)),
-            "status":           str(v.status).split(".")[-1] if v.status else None,
-            "primary_metric":   meta["primary_metric"],
-            "primary_value":    primary,
-            "metrics":          run.get("metrics", {}),
-            "mlflow_url":       f"{host}/ml/experiments/{exp_id}/runs/{v.run_id}" if host else None,
+            "version":             int(v.version),
+            "run_id":              v.run_id,
+            "uc_name":             uc_name,
+            "story":               run.get("tags", {}).get("story"),
+            "story_text":          run.get("tags", {}).get("story_text"),
+            "simulated":           run.get("tags", {}).get("simulated", "false") == "true",
+            "simulation_date":     run.get("tags", {}).get("simulation_date"),
+            "trained_by":          run.get("tags", {}).get("mlflow.user"),
+            "trained_at":          _iso_from_ms(run.get("start_ms", 0)),
+            "status":              str(v.status).split(".")[-1] if v.status else None,
+            "primary_metric":      meta["primary_metric"],
+            "primary_value":       primary,
+            "metrics":             run.get("metrics", {}),
+            "is_current_champion": champion_version is not None and int(v.version) == champion_version,
+            "mlflow_url":          f"{host}/ml/experiments/{exp_id}/runs/{v.run_id}" if host else None,
         })
 
     payload = {

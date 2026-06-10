@@ -171,9 +171,9 @@ async def rebuild_feature_table():
 
     def _find_and_run() -> tuple:
         w = get_workspace_client()
-        jobs = list(w.jobs.list(name="[dev laurence_ryszka] Build Unified Pricing Table (Gold)"))
-        if not jobs:
-            jobs = [j for j in w.jobs.list() if j.settings and "Build Unified Pricing Table" in (j.settings.name or "")]
+        # Match by base name — DAB development mode prefixes job names with
+        # "[dev <deployer>]", so we cannot hardcode the full name.
+        jobs = [j for j in w.jobs.list() if j.settings and "Build Unified Pricing Table" in (j.settings.name or "")]
         if not jobs:
             raise HTTPException(404, "build_upt job not found in this workspace")
         job = jobs[0]

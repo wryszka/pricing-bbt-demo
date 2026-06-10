@@ -707,6 +707,7 @@ function ApprovalTab({ datasetId }: { datasetId: string }) {
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<any>(null);
+  const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<any[]>([]);
 
   useEffect(() => {
@@ -715,10 +716,13 @@ function ApprovalTab({ datasetId }: { datasetId: string }) {
 
   const handleDecision = async (decision: string) => {
     setSubmitting(true);
+    setError(null);
     try {
       const res = await api.approveDataset(datasetId, decision, notes);
       setResult(res);
       setNotes('');
+    } catch (e: any) {
+      setError(e?.message || 'Approval request failed');
     } finally {
       setSubmitting(false);
     }
@@ -732,6 +736,12 @@ function ApprovalTab({ datasetId }: { datasetId: string }) {
             {result.message}
           </p>
           <p className="text-sm text-gray-600 mt-1">Reviewer: {result.reviewer}</p>
+        </div>
+      )}
+      {error && (
+        <div className="rounded-lg p-4 border bg-red-50 border-red-200">
+          <p className="font-semibold text-red-800">Approval request failed</p>
+          <p className="text-sm text-red-700 mt-1 font-mono break-all">{error}</p>
         </div>
       )}
 

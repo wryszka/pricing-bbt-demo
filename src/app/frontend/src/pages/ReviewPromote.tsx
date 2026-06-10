@@ -24,6 +24,7 @@ type Version = {
   primary_metric: string;
   primary_value: number | null;
   metrics: Record<string, number>;
+  is_current_champion?: boolean;
   mlflow_url?: string;
 };
 
@@ -92,7 +93,7 @@ export default function ReviewPromote() {
   }, [genRuns]);
 
   const filtered = useMemo(() => {
-    if (filter === 'champion')  return versions.filter(v => !v.simulated);
+    if (filter === 'champion')  return versions.filter(v => v.is_current_champion === true);
     if (filter === 'simulated') return versions.filter(v => v.simulated);
     return versions;
   }, [versions, filter]);
@@ -218,7 +219,7 @@ export default function ReviewPromote() {
                 const key = `${activeFamily}_v${v.version}`;
                 const gen = genRuns[key];
                 const isOpen = selectedVersion === v.version;
-                const isChampion = !v.simulated;
+                const isChampion = v.is_current_champion === true;
                 const metric = v.primary_value;
                 return (
                   <>

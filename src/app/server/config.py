@@ -22,8 +22,11 @@ def get_workspace_client() -> WorkspaceClient:
     return _workspace_client
 
 
+# Runtime config comes from env vars set in src/app/app.yaml (swapped per target
+# by deploy.sh). The fallbacks below are generic — a real deployment always sets
+# the env, so a fallback firing means the app.yaml env block is missing.
 def get_catalog() -> str:
-    return os.getenv("CATALOG_NAME", "lr_serverless_aws_us_catalog")
+    return os.getenv("CATALOG_NAME", "pricing_workbench")
 
 
 def get_schema() -> str:
@@ -31,7 +34,7 @@ def get_schema() -> str:
 
 
 def get_warehouse_id() -> str:
-    return os.getenv("WAREHOUSE_ID", "ab79eced8207d29b")
+    return os.getenv("WAREHOUSE_ID", "")
 
 
 def fqn(table: str) -> str:

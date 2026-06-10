@@ -33,12 +33,10 @@ router = APIRouter(prefix="/api/development", tags=["development"])
 # ---------------------------------------------------------------------------
 
 # Bundle deploy path: /Workspace/Users/<deployer>/.bundle/pricing-upt-demo/<target>/files/src/04_models
-# `BUNDLE_NOTEBOOKS_BASE` is set as an env var in resources/app.yml; falls back
-# to the prod path so legacy app instances still work without re-deploy.
-_BUNDLE_BASE = os.getenv(
-    "BUNDLE_NOTEBOOKS_BASE",
-    "/Workspace/Users/laurence.ryszka@databricks.com/.bundle/pricing-upt-demo/prod/files/src/04_models",
-)
+# `BUNDLE_NOTEBOOKS_BASE` is set per target in src/app/app.<target>.yaml. If it is
+# unset the notebook links cannot be resolved for this deployment, so we leave the
+# base empty rather than point at another workspace's folder.
+_BUNDLE_BASE = os.getenv("BUNDLE_NOTEBOOKS_BASE", "")
 
 NOTEBOOKS: list[dict[str, Any]] = [
     # ---- featured: the headline cards ----

@@ -24,7 +24,7 @@
 # -------- Widgets --------------------------------------------------------
 # Widgets turn a notebook into something parameterisable — the same code runs
 # against different catalogs / schemas just by changing the widget values.
-dbutils.widgets.text("catalog_name", "lr_serverless_aws_us_catalog")
+dbutils.widgets.text("catalog_name", "pricing_workbench")
 dbutils.widgets.text("schema_name",  "pricing_upt")
 
 catalog = dbutils.widgets.get("catalog_name")
