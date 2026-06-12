@@ -90,12 +90,8 @@ def _iso_from_ms(ms: int) -> str | None:
 
 
 def _find_pack_job_id(w) -> int | None:
-    try:
-        for j in w.jobs.list(name=PACK_JOB_NAME, limit=25):
-            return j.job_id
-    except Exception as e:
-        logger.warning("jobs.list for %s failed: %s", PACK_JOB_NAME, e)
-    return None
+    from server.config import find_job_id
+    return find_job_id(w, PACK_JOB_NAME)
 
 
 # ---------------------------------------------------------------------------

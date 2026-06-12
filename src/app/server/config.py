@@ -41,6 +41,20 @@ def fqn(table: str) -> str:
     return f"{get_catalog()}.{get_schema()}.{table}"
 
 
+def find_job_id(w, base_name: str):
+    """Find a job id by base name, tolerant of DAB development-mode job name
+    prefixes ('[dev <user>] '). The Jobs `name=` filter is an exact match, which
+    misses dev-prefixed names, so we list and substring-match. Returns the first
+    match or None."""
+    try:
+        for j in w.jobs.list():
+            if j.settings and base_name in (j.settings.name or ""):
+                return j.job_id
+    except Exception:
+        return None
+    return None
+
+
 def get_workspace_host() -> str:
     host = os.getenv("DATABRICKS_HOST", "")
     if not host:

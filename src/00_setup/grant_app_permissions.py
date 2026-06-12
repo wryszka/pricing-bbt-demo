@@ -197,6 +197,58 @@ for family in PRODUCTION_FAMILIES:
 
 # COMMAND ----------
 
+# MAGIC %md
+# MAGIC ## 4. CAN_MANAGE_RUN on app-triggered jobs
+# MAGIC Several app actions (Promote, Compare & Test, Demo reset, live pricing,
+# MAGIC backfills, feature-table rebuild) trigger bundle jobs via `jobs.run_now` as
+# MAGIC the app SP. The SP is auto-minted and is not an owner of those jobs, so it
+# MAGIC needs `CAN_MANAGE_RUN`. We grant it by base name (tolerant of the DAB
+# MAGIC development-mode `[dev <user>] ` prefix).
+
+# COMMAND ----------
+
+APP_TRIGGERED_JOBS = [
+    "Generate governance pack",
+    "Inference log backfill",
+    "Compare & test models",
+    "Historical quote score",
+    "Factory training (real)",
+    "Demo reset",
+    "Live pricing: load test",
+    "Motor live serving: provision",
+    "Motor live serving: teardown",
+    "Build Unified Pricing Table",
+]
+
+granted = 0
+try:
+    all_jobs = list(w.jobs.list())
+except Exception as e:
+    all_jobs = []
+    print(f"could not list jobs: {e}")
+
+for j in all_jobs:
+    name = (j.settings.name if j.settings else "") or ""
+    if not any(frag in name for frag in APP_TRIGGERED_JOBS):
+        continue
+    try:
+        # PATCH merges the SP into the job ACL without clobbering the owner.
+        w.api_client.do(
+            "PATCH",
+            f"/api/2.0/permissions/jobs/{j.job_id}",
+            body={"access_control_list": [
+                {"service_principal_name": sp, "permission_level": "CAN_MANAGE_RUN"}
+            ]},
+        )
+        granted += 1
+        print(f"OK   CAN_MANAGE_RUN on job {j.job_id} ({name})")
+    except Exception as e:
+        print(f"FAIL job {j.job_id} ({name}): {e}")
+
+print(f"Granted CAN_MANAGE_RUN on {granted} app-triggered job(s).")
+
+# COMMAND ----------
+
 print("Post-deploy bootstrap complete.")
 print(f"  App SP:      {sp}")
 print(f"  Catalog:     {catalog}")
