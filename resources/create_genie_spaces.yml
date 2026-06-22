@@ -17,6 +17,8 @@ resources:
           default: ${var.schema_name}
         - name: warehouse_id
           default: ${var.warehouse_id}
+        - name: app_name
+          default: ${var.app_name}
 
       tasks:
         - task_key: create_genie_spaces
@@ -26,6 +28,7 @@ resources:
               catalog_name: ${var.catalog_name}
               schema_name:  ${var.schema_name}
               warehouse_id: ${var.warehouse_id}
+              app_name:     ${var.app_name}
           environment_key: default
 
       environments:
