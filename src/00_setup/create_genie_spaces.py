@@ -21,10 +21,12 @@
 dbutils.widgets.text("catalog_name", "pricing_workbench")
 dbutils.widgets.text("schema_name", "pricing_upt")
 dbutils.widgets.text("warehouse_id", "")
+dbutils.widgets.text("app_name", "pricing-workbench")
 
 catalog = dbutils.widgets.get("catalog_name")
 schema = dbutils.widgets.get("schema_name")
 warehouse_id = dbutils.widgets.get("warehouse_id")
+app_name = dbutils.widgets.get("app_name")
 fqn = f"{catalog}.{schema}"
 
 import json
@@ -34,6 +36,29 @@ from databricks.sdk import WorkspaceClient
 w = WorkspaceClient()
 if not warehouse_id:
     raise RuntimeError("warehouse_id is required to create Genie spaces.")
+
+# The app queries Genie as its own service principal, so the SP needs CAN_RUN on
+# each space. Resolve it now (best-effort - if the app is not deployed yet we
+# still create the spaces; the grant just gets skipped).
+try:
+    app_sp = w.apps.get(name=app_name).service_principal_client_id
+except Exception:
+    app_sp = None
+
+def grant_sp_on_space(space_id: str) -> None:
+    if not (space_id and app_sp):
+        return
+    try:
+        w.api_client.do(
+            "PATCH",
+            f"/api/2.0/permissions/genie/{space_id}",
+            body={"access_control_list": [
+                {"service_principal_name": app_sp, "permission_level": "CAN_RUN"}
+            ]},
+        )
+        print(f"  granted app SP CAN_RUN on genie space {space_id}")
+    except Exception as e:
+        print(f"  FAILED to grant app SP on genie space {space_id}: {e}")
 
 user = dbutils.notebook.entry_point.getDbutils().notebook().getContext().userName().get()
 parent_path = f"/Workspace/Users/{user}/genie"
@@ -98,6 +123,7 @@ def ensure_space(config_key: str, title: str, description: str,
     existing = get_config(config_key)
     if space_exists(existing):
         print(f"{config_key}: space {existing} already exists - leaving as-is")
+        grant_sp_on_space(existing)
         return existing
     payload = {
         "title": title,
@@ -114,6 +140,7 @@ def ensure_space(config_key: str, title: str, description: str,
             return None
         set_config(config_key, space_id)
         print(f"{config_key}: created space {space_id}")
+        grant_sp_on_space(space_id)
         return space_id
     except Exception as e:
         print(f"{config_key}: FAILED to create ({e}) - panel stays hidden, app unaffected")
