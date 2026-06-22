@@ -1,0 +1,29 @@
+resources:
+  jobs:
+    set_motor_model_descriptions:
+      name: "Apply UC descriptions to motor production models"
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+
+      permissions:
+        - service_principal_name: ${var.app_service_principal_id}
+          level: CAN_MANAGE_RUN
+
+      tasks:
+        - task_key: set_descriptions
+          notebook_task:
+            notebook_path: ../src/04_models/production/set_motor_model_descriptions.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name:  "{{job.parameters.schema_name}}"
+          environment_key: env
+
+      environments:
+        - environment_key: env
+          spec:
+            client: "5"
+            dependencies:
+              - mlflow

@@ -1,0 +1,232 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC # Motor live serving — provision
+# MAGIC
+# MAGIC One-shot bring-up of the motor live-serving stack:
+# MAGIC   1. Lakebase online store
+# MAGIC   2. UPT (unified_motor_table_live) registered as FE table + SNAPSHOT
+# MAGIC      published to the online store
+# MAGIC   3. Endpoint `motor_pricing_scorer` re-deployed to pick up online
+# MAGIC      feature metadata (auto-resolves now that publish exists)
+# MAGIC   4. App SP granted CAN_MANAGE on the publish pipeline so the FastAPI
+# MAGIC      claim/event endpoint can fire SNAPSHOT refreshes
+# MAGIC   5. live_motor_metrics table for the load-test chart
+# MAGIC   6. live_motor_runtime_state stores the publish pipeline_id
+# MAGIC
+# MAGIC Idempotent. Re-run any time the motor scorer needs a fresh online sync.
+
+# COMMAND ----------
+
+dbutils.widgets.text("catalog_name",            "lr_serverless_aws_us_catalog")
+dbutils.widgets.text("schema_name",             "pricing_upt")
+dbutils.widgets.text("online_store_name",       "motor-pricing-online-store")
+dbutils.widgets.text("online_store_capacity",   "CU_4")
+dbutils.widgets.text("endpoint_name",           "motor_pricing_scorer")
+dbutils.widgets.text("app_service_principal_id","")
+
+# COMMAND ----------
+
+# MAGIC %pip install mlflow databricks-feature-engineering databricks-sdk --quiet
+# MAGIC dbutils.library.restartPython()
+
+# COMMAND ----------
+
+import json, time
+catalog       = dbutils.widgets.get("catalog_name")
+schema        = dbutils.widgets.get("schema_name")
+online_store  = dbutils.widgets.get("online_store_name")
+capacity      = dbutils.widgets.get("online_store_capacity")
+endpoint_name = dbutils.widgets.get("endpoint_name")
+app_sp_id     = dbutils.widgets.get("app_service_principal_id")
+fqn           = f"{catalog}.{schema}"
+upt_table     = f"{fqn}.unified_motor_table_live"
+online_table  = f"{upt_table}_online"      # MUST differ from source name
+scorer_uc     = f"{fqn}.motor_pricing_scorer"
+metrics_table = f"{fqn}.live_motor_metrics"
+state_table   = f"{fqn}.live_motor_runtime_state"
+
+user = dbutils.notebook.entry_point.getDbutils().notebook().getContext().userName().get()
+
+# COMMAND ----------
+
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.ml import OnlineStore, PublishSpec, PublishSpecPublishMode
+from databricks.sdk.service.serving import EndpointCoreConfigInput, ServedEntityInput
+from databricks.feature_engineering import FeatureEngineeringClient
+from mlflow.tracking import MlflowClient
+import mlflow
+
+mlflow.set_registry_uri("databricks-uc")
+w  = WorkspaceClient()
+mc = MlflowClient()
+fe = FeatureEngineeringClient()
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 1. Lakebase online store
+
+# COMMAND ----------
+
+try:
+    store = w.feature_store.get_online_store(online_store)
+    print(f"store exists: {store.name} state={store.state} cap={store.capacity}")
+except Exception:
+    print(f"creating store {online_store} at {capacity}…")
+    w.feature_store.create_online_store(
+        online_store=OnlineStore(name=online_store, capacity=capacity))
+
+for i in range(60):
+    s = w.feature_store.get_online_store(online_store)
+    if str(s.state).endswith("AVAILABLE"):
+        print(f"store AVAILABLE after {i*5}s")
+        break
+    time.sleep(5)
+else:
+    raise RuntimeError(f"online store {online_store} not AVAILABLE in 5 min")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 2. Register UPT as FE table + publish SNAPSHOT
+
+# COMMAND ----------
+
+# Enable CDF on UPT (idempotent — needed if we ever flip to CONTINUOUS)
+spark.sql(f"ALTER TABLE {upt_table} SET TBLPROPERTIES (delta.enableChangeDataFeed = true)")
+
+try:
+    fe.get_table(name=upt_table)
+    print(f"FE table already registered: {upt_table}")
+except Exception:
+    fe.create_table(name=upt_table, primary_keys="policy_id",
+                    df=spark.table(upt_table),
+                    description="Motor UPT for live-serving FeatureLookup.")
+    print(f"registered: {upt_table}")
+
+publish_pipeline_id = None
+try:
+    res = w.feature_store.publish_table(
+        source_table_name = upt_table,
+        publish_spec      = PublishSpec(
+            online_store      = online_store,
+            online_table_name = online_table,
+            publish_mode      = PublishSpecPublishMode.SNAPSHOT,
+        ),
+    )
+    publish_pipeline_id = getattr(res, "pipeline_id", None)
+    print(f"publish OK → {online_table}  pipeline={publish_pipeline_id}")
+except Exception as e:
+    if "already published" in str(e).lower() or "already exists" in str(e).lower():
+        for p in w.pipelines.list_pipelines():
+            if p.name and online_table in p.name:
+                publish_pipeline_id = p.pipeline_id; break
+        print(f"already published; pipeline={publish_pipeline_id}")
+    else:
+        raise
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 3. Persist pipeline_id + grant app SP CAN_MANAGE on pipeline
+
+# COMMAND ----------
+
+spark.sql(f"""
+    CREATE TABLE IF NOT EXISTS {state_table} (
+        key STRING, value STRING, ts TIMESTAMP
+    ) USING DELTA
+""")
+spark.sql(f"""
+    MERGE INTO {state_table} t
+    USING (SELECT 'publish_pipeline_id' AS key,
+                  '{publish_pipeline_id or ""}' AS value,
+                  current_timestamp() AS ts) s
+    ON t.key = s.key
+    WHEN MATCHED THEN UPDATE SET value = s.value, ts = s.ts
+    WHEN NOT MATCHED THEN INSERT (key, value, ts) VALUES (s.key, s.value, s.ts)
+""")
+print(f"persisted publish_pipeline_id={publish_pipeline_id} to {state_table}")
+
+if publish_pipeline_id and app_sp_id:
+    try:
+        from databricks.sdk.service.iam import AccessControlRequest, PermissionLevel
+        w.permissions.update(
+            request_object_type = "pipelines",
+            request_object_id   = publish_pipeline_id,
+            access_control_list = [AccessControlRequest(
+                service_principal_name = app_sp_id,
+                permission_level       = PermissionLevel.CAN_MANAGE,
+            )],
+        )
+        print(f"granted CAN_MANAGE to {app_sp_id} on pipeline {publish_pipeline_id}")
+    except Exception as e:
+        print(f"grant failed (continuing): {e}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 4. Reconcile motor_pricing_scorer endpoint
+# MAGIC
+# MAGIC With the Lakebase publish in place, the FE wrapper can now resolve
+# MAGIC online metadata. Trigger a config update so the endpoint moves out of
+# MAGIC the UPDATE_FAILED state.
+
+# COMMAND ----------
+
+scorer_version = None
+versions = list(mc.search_model_versions(f"name='{scorer_uc}'"))
+if versions:
+    scorer_version = str(max(int(v.version) for v in versions))
+    print(f"scorer latest: v{scorer_version}")
+
+if scorer_version:
+    served = [ServedEntityInput(
+        entity_name = scorer_uc, entity_version = scorer_version,
+        scale_to_zero_enabled = True, workload_size = "Large",
+    )]
+    try:
+        existing = w.serving_endpoints.get(endpoint_name)
+    except Exception:
+        existing = None
+
+    if existing is None:
+        w.serving_endpoints.create(name=endpoint_name,
+            config=EndpointCoreConfigInput(name=endpoint_name, served_entities=served))
+        print(f"endpoint created serving v{scorer_version}")
+    else:
+        # Force update_config to re-resolve online metadata
+        w.serving_endpoints.update_config(name=endpoint_name, served_entities=served)
+        print(f"endpoint reconciled to v{scorer_version}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 5. Metrics table
+
+# COMMAND ----------
+
+spark.sql(f"""
+    CREATE TABLE IF NOT EXISTS {metrics_table} (
+        ts             TIMESTAMP,
+        source         STRING,
+        policy_id      STRING,
+        latency_ms     DOUBLE,
+        final_premium  DOUBLE,
+        status_code    INT,
+        run_id         STRING
+    ) USING DELTA
+""")
+print(f"metrics table ready: {metrics_table}")
+
+# COMMAND ----------
+
+dbutils.notebook.exit(json.dumps({
+    "online_store":         online_store,
+    "online_table":         online_table,
+    "endpoint":             endpoint_name,
+    "scorer_version":       scorer_version,
+    "publish_pipeline_id":  publish_pipeline_id,
+    "metrics_table":        metrics_table,
+    "state_table":          state_table,
+}))

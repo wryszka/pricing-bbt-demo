@@ -5,6 +5,11 @@ resources:
   jobs:
     compare_scoring:
       name: "v1 — Compare & test models"
+
+      permissions:
+        - service_principal_name: ${var.app_service_principal_id}
+          level: CAN_MANAGE_RUN
+
       parameters:
         - name: catalog_name
           default: ${var.catalog_name}

@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from server.routes import datasets, agent, features, deployment, governance, quote_stream, genie, development, review, compare, factory, factory_real
+from server.routes import datasets, agent, features, deployment, governance, quote_stream, genie, development, review, compare, factory, factory_real, pricing, admin, supervisor, live_pricing
 import os
 from server.config import get_workspace_host
 
@@ -21,6 +21,7 @@ FRONTEND_DIR = Path(__file__).parent / "frontend" / "dist"
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
+    import asyncio
     logger.info("Starting Pricing Workbench")
     try:
         await datasets.ensure_approvals_table()
@@ -50,6 +51,10 @@ app.include_router(review.router)
 app.include_router(compare.router)
 app.include_router(factory.router)
 app.include_router(factory_real.router)
+app.include_router(pricing.router)
+app.include_router(admin.router)
+app.include_router(supervisor.router)
+app.include_router(live_pricing.router)
 
 
 @app.get("/api/health")
@@ -57,19 +62,58 @@ async def health():
     return {"status": "ok"}
 
 
+# IDs for Genie spaces / the mart dashboard normally come from env (set in
+# app.yaml). On a fresh deploy they are blank until the post-deploy
+# create_genie_and_dashboard job creates those objects and writes their ids to
+# the `app_config` UC table. We read that table as a fallback so the panels
+# light up without an app redeploy. Cached + fully fault-tolerant: any error
+# (table missing, no warehouse) just yields blanks and the panels stay hidden.
+_APP_CONFIG_CACHE: dict = {"value": None, "ts": 0.0}
+_APP_CONFIG_TTL_S = 60.0
+
+
+async def _app_config() -> dict:
+    import time as _time
+    from server.config import fqn
+    from server.sql import execute_query
+    now = _time.time()
+    if _APP_CONFIG_CACHE["value"] is not None and now - _APP_CONFIG_CACHE["ts"] < _APP_CONFIG_TTL_S:
+        return _APP_CONFIG_CACHE["value"]
+    cfg: dict = {}
+    try:
+        rows = await execute_query(f"SELECT key, value FROM {fqn('app_config')}")
+        cfg = {r["key"]: r["value"] for r in rows if r.get("value")}
+    except Exception:
+        cfg = {}
+    _APP_CONFIG_CACHE["value"] = cfg
+    _APP_CONFIG_CACHE["ts"] = now
+    return cfg
+
+
 @app.get("/api/config")
 async def config():
     host = get_workspace_host()
-    genie_id = os.getenv("GENIE_SPACE_ID", "")
-    genie_quote_id = os.getenv("GENIE_QUOTE_SPACE_ID", "")
+    cfg = await _app_config()
+    genie_id = os.getenv("GENIE_SPACE_ID", "") or cfg.get("genie_space_id", "")
+    genie_quote_id = os.getenv("GENIE_QUOTE_SPACE_ID", "") or cfg.get("genie_quote_space_id", "")
+    mart_dashboard_id = os.getenv("MART_DASHBOARD_ID", "") or cfg.get("mart_dashboard_id", "")
+    # Derive the new_data_impact workspace folder from the notebooks base
+    # (.../files/src/04_models -> .../files/src/new_data_impact) so the frontend
+    # deep-links resolve in whatever workspace deployed the bundle.
+    nb_base = os.getenv("BUNDLE_NOTEBOOKS_BASE", "")
+    new_data_impact_base = (nb_base.rsplit("/", 1)[0] + "/new_data_impact") if nb_base else ""
     return {
         "workspace_host": host,
+        "new_data_impact_base": new_data_impact_base,
         "genie_space_id": genie_id,
         "genie_url": f"{host}/genie/rooms/{genie_id}" if genie_id else None,
         "genie_embed_url": f"{host}/embed/genie/rooms/{genie_id}" if genie_id else None,
         "genie_quote_space_id": genie_quote_id,
         "genie_quote_url": f"{host}/genie/rooms/{genie_quote_id}" if genie_quote_id else None,
         "genie_quote_embed_url": f"{host}/embed/genie/rooms/{genie_quote_id}" if genie_quote_id else None,
+        "mart_dashboard_id": mart_dashboard_id,
+        "mart_dashboard_url": f"{host}/dashboardsv3/{mart_dashboard_id}"            if mart_dashboard_id else None,
+        "mart_dashboard_embed_url": f"{host}/embed/dashboardsv3/{mart_dashboard_id}" if mart_dashboard_id else None,
     }
 
 

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   ExternalLink, FileCheck2, Loader2, ShieldCheck,
-  ChevronDown, ChevronRight, Check, X, GitCompare,
+  ChevronDown, ChevronRight, Check, X, GitCompare, Bot,
 } from 'lucide-react';
 import { api } from '../lib/api';
 
@@ -24,6 +24,7 @@ type Version = {
   primary_metric: string;
   primary_value: number | null;
   metrics: Record<string, number>;
+  is_current_champion?: boolean;
   mlflow_url?: string;
 };
 
@@ -92,7 +93,7 @@ export default function ReviewPromote() {
   }, [genRuns]);
 
   const filtered = useMemo(() => {
-    if (filter === 'champion')  return versions.filter(v => !v.simulated);
+    if (filter === 'champion')  return versions.filter(v => v.is_current_champion === true);
     if (filter === 'simulated') return versions.filter(v => v.simulated);
     return versions;
   }, [versions, filter]);
@@ -218,7 +219,7 @@ export default function ReviewPromote() {
                 const key = `${activeFamily}_v${v.version}`;
                 const gen = genRuns[key];
                 const isOpen = selectedVersion === v.version;
-                const isChampion = !v.simulated;
+                const isChampion = v.is_current_champion === true;
                 const metric = v.primary_value;
                 return (
                   <>
@@ -317,6 +318,23 @@ function VersionDetail({ family, version }: { family: string; version: number })
   const [detail, setDetail]   = useState<any>(null);
   const [explain, setExplain] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+
+  // Bias pre-promotion review (agent-driven)
+  const [biasAttr, setBiasAttr]         = useState<'director_gender' | 'postcode_demographic'>('director_gender');
+  const [biasRunning, setBiasRunning]   = useState(false);
+  const [biasReview, setBiasReview]     = useState<any>(null);
+
+  const runBiasReview = async () => {
+    setBiasRunning(true); setBiasReview(null);
+    try {
+      const r = await api.biasReviewCandidate(family, String(version), biasAttr);
+      setBiasReview(r);
+    } catch (e: any) {
+      setBiasReview({ ok: false, error: e.message || String(e) });
+    } finally {
+      setBiasRunning(false);
+    }
+  };
 
   useEffect(() => {
     setLoading(true);
@@ -421,6 +439,74 @@ function VersionDetail({ family, version }: { family: string; version: number })
             <img src={shapUrl} alt="SHAP summary" className="w-full rounded border border-gray-200" />
           </DetailCard>
         )}
+      </div>
+
+      {/* Bias pre-promotion review — spans full width */}
+      <div className="lg:col-span-3 mt-2 rounded-lg border border-indigo-200 bg-indigo-50/40">
+        <div className="px-4 py-3 border-b border-indigo-200 flex items-center justify-between bg-indigo-50">
+          <div>
+            <div className="text-sm font-semibold text-indigo-900">
+              Pre-promotion bias review
+            </div>
+            <div className="text-xs text-indigo-700 mt-0.5">
+              Audit this candidate for disparate impact on a protected attribute before you promote.
+              The agent returns a DETECTION / DIAGNOSIS / JUSTIFICATION / EVIDENCE / MITIGATION / CONCLUSION report.
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="inline-flex rounded-md border border-indigo-300 bg-white overflow-hidden text-xs">
+              {([
+                { k: 'director_gender',      label: 'Gender' },
+                { k: 'postcode_demographic', label: 'Postcode' },
+              ] as const).map(opt => (
+                <button key={opt.k}
+                        onClick={() => setBiasAttr(opt.k)}
+                        className={`px-2.5 py-1 font-medium transition ${
+                          biasAttr === opt.k ? 'bg-indigo-600 text-white' : 'text-indigo-800 hover:bg-indigo-50'
+                        }`}>
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            <button onClick={runBiasReview}
+                    disabled={biasRunning}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-indigo-600 text-white text-xs font-medium hover:bg-indigo-700 disabled:opacity-50">
+              {biasRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Bot className="w-3.5 h-3.5" />}
+              {biasRunning ? 'Agent reviewing…' : 'Run bias review'}
+            </button>
+          </div>
+        </div>
+        <div className="px-4 py-3">
+          {!biasReview && !biasRunning && (
+            <div className="text-xs text-indigo-900/70 italic">
+              Click <span className="font-semibold">Run bias review</span> to see whether promoting v{version} would introduce (or inherit) a defensible gap.
+              Also auto-runs inside every generated governance pack.
+            </div>
+          )}
+          {biasReview?.ok === false && biasReview.error && (
+            <div className="text-sm text-red-700">Agent failed: {biasReview.error}</div>
+          )}
+          {biasReview?.ok && (
+            <>
+              <div className="flex flex-wrap gap-1 mb-2.5">
+                {(biasReview.trace || []).map((t: any, i: number) => (
+                  <span key={i}
+                        className="text-[10px] px-1.5 py-0.5 rounded border border-indigo-300 bg-white text-indigo-800">
+                    {t.tool}{String(t.result_summary || '').startsWith('error') ? ' ⚠' : ''}
+                  </span>
+                ))}
+              </div>
+              <div className="rounded bg-white border border-indigo-200 p-3 text-xs whitespace-pre-wrap leading-relaxed">
+                {biasReview.answer}
+              </div>
+              <div className="mt-1.5 text-[11px] text-indigo-800/70">
+                model: {biasReview.model} · {(biasReview.trace || []).length} tool calls ·
+                {biasReview.usage?.total_tokens?.toLocaleString() || '?'} tokens ·
+                logged as a <code>bias_pre_promotion_review</code> event.
+              </div>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

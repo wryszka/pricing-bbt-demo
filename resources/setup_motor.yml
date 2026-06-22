@@ -1,0 +1,32 @@
+# Motor insurance dataset — 1M policies, telematics aggregate, claims history.
+# Sits alongside the commercial book; backs the live-serving demo.
+resources:
+  jobs:
+    setup_motor:
+      name: "Setup — Motor Insurance dataset (1M policies)"
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: num_policies
+          default: "1000000"
+
+      permissions:
+        - service_principal_name: ${var.app_service_principal_id}
+          level: CAN_MANAGE_RUN
+
+      tasks:
+        - task_key: setup_motor
+          notebook_task:
+            notebook_path: ../src/00_setup/setup_motor.py
+            base_parameters:
+              catalog_name:  "{{job.parameters.catalog_name}}"
+              schema_name:   "{{job.parameters.schema_name}}"
+              num_policies:  "{{job.parameters.num_policies}}"
+          environment_key: default
+
+      environments:
+        - environment_key: default
+          spec:
+            client: "5"

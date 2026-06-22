@@ -12,6 +12,7 @@ the four production champions without competing with them.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -26,7 +27,7 @@ from server.sql import execute_query
 # Reuse the demo tab's variant enumerator + narrative + chat ground logic
 from server.routes.factory import (
     _variants_for_freq_glm,
-    _generate_narrative,
+    _static_plan_narrative,
     factory_chat as _demo_factory_chat,
     ChatRequest as _ChatRequest,
     ensure_factory_tables,
@@ -82,16 +83,19 @@ async def propose_plan(req: ProposeRequest) -> dict:
             "plan":     [],
             "narrative": "",
         }
+    from server.routes.factory import _agentic_plan_review
+    review = _agentic_plan_review(req.family)
     max_v = req.max_variants or DEFAULT_MAX_VARIANTS
-    full_plan = _variants_for_freq_glm()
+    full_plan = _variants_for_freq_glm(review["breakdown"])
     plan = _trim_plan(full_plan, max_v)
-    narrative = await _generate_narrative(req.family, plan)
+    narrative = _static_plan_narrative()
     return {
         "family": req.family,
         "status": "proposed",
         "mode":   "real",
         "plan":   plan,
         "narrative": narrative,
+        "review": review,
         "summary": {
             "total_variants":    len(plan),
             "by_category":       {
@@ -162,7 +166,8 @@ async def approve_and_train(req: ApproveRequest) -> dict:
             f"Job '{TRAIN_JOB_NAME}' not found. Deploy the bundle.")
 
     try:
-        run = w.jobs.run_now(
+        run = await asyncio.to_thread(
+            w.jobs.run_now,
             job_id=job_id,
             job_parameters={
                 "catalog_name":    get_catalog(),
@@ -372,18 +377,19 @@ async def generate_pack(run_id: str, variant_id: str) -> dict:
     # Pick the latest version of the factory UC model (typically 1)
     w = get_workspace_client()
     try:
-        versions = list(w.model_versions.list(full_name=uc_name))
+        versions = await asyncio.to_thread(lambda: list(w.model_versions.list(full_name=uc_name)))
         latest_version = str(max(int(v.version) for v in versions))
     except Exception as e:
         raise HTTPException(500, f"Could not list versions for {uc_name}: {e}")
 
-    job_id = _find_job_id(w, PACK_JOB_NAME)
+    job_id = await asyncio.to_thread(_find_job_id, w, PACK_JOB_NAME)
     if not job_id:
         raise HTTPException(500, f"Pack job '{PACK_JOB_NAME}' not found")
 
     user = get_current_user()
     try:
-        run = w.jobs.run_now(
+        run = await asyncio.to_thread(
+            w.jobs.run_now,
             job_id=job_id,
             job_parameters={
                 "catalog_name":  get_catalog(),

@@ -6,9 +6,6 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api';
 
-const BUNDLE_BASE =
-  '/Workspace/Users/laurence.ryszka@databricks.com/.bundle/pricing-upt-demo/dev/files/src/new_data_impact';
-
 const GITHUB_BASE =
   'https://github.com/wryszka/pricing-workbench/tree/main/src/new_data_impact';
 
@@ -72,12 +69,17 @@ const NOTEBOOKS = [
 
 export default function NewDataImpact() {
   const [host, setHost] = useState<string>('');
+  const [bundleBase, setBundleBase] = useState<string>('');
   useEffect(() => {
-    api.getConfig().then((c: any) => setHost(c.workspace_host || '')).catch(() => {});
+    api.getConfig().then((c: any) => {
+      setHost(c.workspace_host || '');
+      // Served by /api/config, derived from BUNDLE_NOTEBOOKS_BASE for this deployment.
+      setBundleBase(c.new_data_impact_base || '');
+    }).catch(() => {});
   }, []);
 
   const workspaceUrl = (file: string) =>
-    host ? `${host}/#workspace${BUNDLE_BASE.slice('/Workspace'.length)}/${file}` : '#';
+    host && bundleBase ? `${host}/#workspace${bundleBase.slice('/Workspace'.length)}/${file}` : '#';
 
   return (
     <div className="max-w-7xl mx-auto px-6 py-8">

@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Rocket, ExternalLink, Loader2, Undo2, ChevronDown, ChevronRight,
-  FileCheck2, ShieldCheck, Server, AlertCircle, Zap,
+  FileCheck2, ShieldCheck, Server, AlertCircle, Zap, Clock, Database,
+  Power, Play, Square, Activity, FileText, AlertTriangle,
 } from 'lucide-react';
 import { api } from '../lib/api';
 
@@ -216,6 +217,9 @@ function ProductionModels() {
           </table>
         )}
       </div>
+
+      {/* Serving SLO tiles — what the rating engine sees at quote time */}
+      <ServingSLOs />
 
       {/* Live endpoint metrics — placeholder stream, simulated client-side */}
       {families.length > 0 && <LiveEndpointMetrics families={families} />}
@@ -539,93 +543,648 @@ function RollbackDialog({ family, onClose, onDone }:
 }
 
 // ===========================================================================
-// Tab 2 — Live Pricing System (placeholder)
+// Tab 2 — Live Pricing System
 // ===========================================================================
 
+type LiveState = 'off' | 'starting' | 'on' | 'stopping' | 'unknown';
+type LiveStatus = {
+  state: LiveState;
+  endpoint:     { name: string; present: boolean; ready?: string; config_update?: string };
+  online_store: { name: string; present: boolean; state?: string; capacity?: string };
+  metrics_table?: string;
+};
+
 function LivePricing() {
+  const [status, setStatus] = useState<LiveStatus | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const [actionBusy, setActionBusy] = useState<'start' | 'stop' | null>(null);
+  const [archOpen, setArchOpen] = useState(false);
+
+  const inTransition = status?.state === 'starting' || status?.state === 'stopping';
+
+  // Poll status — 5s when idle, 2s during transitions.
+  useEffect(() => {
+    let cancelled = false;
+    const fetchOnce = async () => {
+      try {
+        const s = await api.livePricingStatus();
+        if (!cancelled) { setStatus(s); setStatusError(null); }
+      } catch (e: any) {
+        if (!cancelled) setStatusError(e?.message || String(e));
+      }
+    };
+    fetchOnce();
+    const interval = inTransition ? 2000 : 5000;
+    const t = window.setInterval(fetchOnce, interval);
+    return () => { cancelled = true; window.clearInterval(t); };
+  }, [inTransition]);
+
+  const togglePower = async () => {
+    if (!status) return;
+    if (status.state === 'on' || status.state === 'starting') {
+      setActionBusy('stop');
+      try { await api.livePricingStop(); }
+      catch (e: any) { setStatusError(e?.message || String(e)); }
+      finally { setActionBusy(null); }
+    } else {
+      setActionBusy('start');
+      try { await api.livePricingStart(); }
+      catch (e: any) { setStatusError(e?.message || String(e)); }
+      finally { setActionBusy(null); }
+    }
+  };
+
+  const stateBadge = (() => {
+    switch (status?.state) {
+      case 'on':       return { dot: 'bg-emerald-500',       label: 'On',         desc: 'Endpoint READY · online store live' };
+      case 'starting': return { dot: 'bg-amber-500 animate-pulse', label: 'Starting', desc: 'Provisioning Lakebase + warm-up (5–10 min)' };
+      case 'stopping': return { dot: 'bg-amber-500 animate-pulse', label: 'Stopping', desc: 'Tearing down endpoint + online store' };
+      case 'off':      return { dot: 'bg-gray-300',          label: 'Off',        desc: 'No live runtime — click Activate to bring up' };
+      default:         return { dot: 'bg-gray-300',          label: '—',          desc: 'Resolving state…' };
+    }
+  })();
+
   return (
     <div>
-      <div className="bg-gradient-to-br from-violet-50 to-blue-50 border border-blue-200 rounded-lg p-5 mb-5">
-        <div className="flex items-center gap-2 mb-1">
-          <h3 className="font-semibold text-gray-900 text-sm flex items-center gap-2">
-            <Zap className="w-4 h-4 text-violet-600" />
-            Live Pricing System
-          </h3>
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 font-medium uppercase tracking-wide">
-            Coming soon
-          </span>
+      {/* Header — power button + state */}
+      <div className="bg-white border border-gray-200 rounded-lg p-5 mb-5">
+        <div className="flex items-center justify-between gap-4 flex-wrap">
+          <div className="flex items-center gap-3">
+            <span className={`w-3 h-3 rounded-full ${stateBadge.dot}`} aria-hidden />
+            <div>
+              <h3 className="font-semibold text-gray-900 text-base flex items-center gap-2">
+                <Zap className="w-4 h-4 text-violet-600" />
+                Live Pricing System — <span className="text-gray-700">{stateBadge.label}</span>
+              </h3>
+              <p className="text-xs text-gray-500 mt-0.5">{stateBadge.desc}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={togglePower}
+              disabled={actionBusy !== null || inTransition}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-sm font-medium border transition
+                ${status?.state === 'on'
+                  ? 'border-rose-200 text-rose-700 bg-rose-50 hover:bg-rose-100'
+                  : 'border-emerald-200 text-emerald-700 bg-emerald-50 hover:bg-emerald-100'}
+                ${(actionBusy !== null || inTransition) ? 'opacity-50 cursor-not-allowed' : ''}`}
+            >
+              {actionBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Power className="w-3.5 h-3.5" />}
+              {status?.state === 'on' ? 'Deactivate' : 'Activate'}
+            </button>
+          </div>
         </div>
-        <p className="text-sm text-gray-700 mt-1">
-          Real-time scoring at scale — this tab will host the live pricing system: 10+ models running in parallel,
-          end-to-end quote response under 500ms. Demonstrates the platform's ability to serve complex pricing
-          workflows at aggregator-grade latency.
-        </p>
+        {statusError && (
+          <div className="mt-3 text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded px-3 py-2 flex items-start gap-2">
+            <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+            <span>{statusError}</span>
+          </div>
+        )}
+        {/* Component breakdown — small status chips */}
+        {status && (
+          <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-2">
+            <StatusChip
+              icon={<Server className="w-3.5 h-3.5" />}
+              label="Endpoint"
+              value={status.endpoint.name}
+              detail={status.endpoint.present
+                ? `ready=${status.endpoint.ready ?? '?'} · config=${status.endpoint.config_update ?? '?'}`
+                : 'not present'}
+              ok={status.endpoint.present && status.endpoint.ready === 'READY'}
+            />
+            <StatusChip
+              icon={<Database className="w-3.5 h-3.5" />}
+              label="Online store (Lakebase)"
+              value={status.online_store.name}
+              detail={status.online_store.present
+                ? `${status.online_store.state ?? '?'} · ${status.online_store.capacity ?? '?'}`
+                : 'not present'}
+              ok={status.online_store.present && (status.online_store.state ?? '').endsWith('AVAILABLE')}
+            />
+          </div>
+        )}
       </div>
 
-      <section className="bg-white border border-gray-200 rounded-lg p-5 mb-5">
-        <h4 className="text-sm font-semibold text-gray-800 mb-4">Architecture</h4>
-        <div className="flex justify-center overflow-x-auto">
-          <ArchitectureDiagram />
+      {/* Sections only show when ON */}
+      {status?.state === 'on' && (
+        <>
+          <DemoFlow />
+          <SingleQuote />
+          <LoadTest />
+        </>
+      )}
+
+      {status?.state !== 'on' && (
+        <div className="bg-gray-50 border border-gray-200 rounded-lg p-5 mb-5 text-sm text-gray-600">
+          Activate the system to access the demo flow, single-quote latency probe, and load-test chart.
+          The first activation provisions a Lakebase online store at CU_2 and warm-starts the scorer endpoint —
+          typically 5–10 minutes end-to-end. Subsequent activations on the same workspace reuse what's there.
         </div>
+      )}
+
+      {/* Architecture — collapsible */}
+      <section className="bg-white border border-gray-200 rounded-lg mb-5">
+        <button
+          onClick={() => setArchOpen(o => !o)}
+          className="w-full px-5 py-3 flex items-center justify-between text-sm font-semibold text-gray-800 hover:bg-gray-50"
+        >
+          <span className="flex items-center gap-2">
+            {archOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+            Architecture
+          </span>
+          <span className="text-[11px] font-normal text-gray-500">
+            {archOpen ? 'Hide diagram' : 'Show diagram'}
+          </span>
+        </button>
+        {archOpen && (
+          <div className="px-5 pb-5 flex justify-center overflow-x-auto">
+            <ArchitectureDiagram />
+          </div>
+        )}
       </section>
+    </div>
+  );
+}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-        <section className="bg-white border border-gray-200 rounded-lg p-4">
-          <h4 className="text-sm font-semibold text-gray-800 mb-3 flex items-center gap-1.5">
-            <Server className="w-4 h-4 text-gray-500" /> Capabilities
-          </h4>
-          <ul className="text-sm text-gray-700 space-y-1.5">
-            {[
-              'Sub-500ms end-to-end response',
-              'Automatic feature lookup via FeatureLookup',
-              'Parallel model invocation',
-              'Latency trace per request',
-              'Load testing with p50/p95/p99',
-              'Champion/challenger traffic splitting',
-            ].map(c => (
-              <li key={c} className="flex items-start gap-2">
-                <span className="w-1.5 h-1.5 rounded-full bg-violet-500 mt-2 shrink-0" />
-                <span>{c}</span>
-              </li>
-            ))}
-          </ul>
-        </section>
+function StatusChip({ icon, label, value, detail, ok }:
+  { icon: React.ReactNode; label: string; value: string; detail: string; ok: boolean }) {
+  return (
+    <div className={`flex items-center gap-2 px-3 py-2 rounded border text-xs
+      ${ok ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-gray-50 border-gray-200 text-gray-600'}`}>
+      {icon}
+      <span className="font-semibold">{label}</span>
+      <span className="font-mono text-[11px] truncate">{value}</span>
+      <span className="text-[11px] opacity-70 ml-auto">{detail}</span>
+    </div>
+  );
+}
 
-        <section className="bg-white border border-gray-200 rounded-lg p-4">
-          <h4 className="text-sm font-semibold text-gray-800 mb-3 flex items-center gap-1.5">
-            <Rocket className="w-4 h-4 text-gray-500" /> What's in the pipeline
-          </h4>
-          <ul className="text-sm text-gray-700 space-y-1.5">
-            <li className="flex items-start gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-blue-400 mt-2 shrink-0" />
-              <span>Databricks Model Serving endpoints per model family</span>
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-blue-400 mt-2 shrink-0" />
-              <span>Online feature store tables (sub-10ms lookup)</span>
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-blue-400 mt-2 shrink-0" />
-              <span>Pricing orchestrator: fan out, combine, apply business rules</span>
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-blue-400 mt-2 shrink-0" />
-              <span>Per-request tracing + latency dashboards</span>
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-blue-400 mt-2 shrink-0" />
-              <span>Load-test harness and traffic splitter for canary releases</span>
-            </li>
-          </ul>
-        </section>
+// ---------------------------------------------------------------------------
+// Demo Flow — three sequential cards: initial quote → file claim → re-quote
+// ---------------------------------------------------------------------------
+
+function DemoFlow() {
+  const [policyId, setPolicyId] = useState('POL-MOTOR-00000001');
+  const [step1, setStep1] = useState<any>(null);
+  const [step2, setStep2] = useState<any>(null);
+  const [step3, setStep3] = useState<any>(null);
+  const [busy,  setBusy]  = useState<1 | 2 | 3 | null>(null);
+  const [err,   setErr]   = useState<string | null>(null);
+
+  const reset = () => { setStep1(null); setStep2(null); setStep3(null); setErr(null); };
+
+  const runStep1 = async () => {
+    setBusy(1); setErr(null); setStep2(null); setStep3(null);
+    try {
+      const r = await api.livePricingQuote(policyId);
+      setStep1(r);
+    } catch (e: any) { setErr(e?.message || String(e)); }
+    finally { setBusy(null); }
+  };
+
+  const runStep2 = async () => {
+    setBusy(2); setErr(null); setStep3(null);
+    try {
+      const r = await api.livePricingTelematicsEvent({
+        policy_id: policyId, speeding_event: true, curfew_breach: true,
+        behaviour_score_delta: -15, harsh_braking_delta: 1,
+      });
+      setStep2(r);
+    } catch (e: any) { setErr(e?.message || String(e)); }
+    finally { setBusy(null); }
+  };
+
+  const runStep3 = async () => {
+    setBusy(3); setErr(null);
+    try {
+      const r = await api.livePricingQuote(policyId);
+      setStep3(r);
+    } catch (e: any) { setErr(e?.message || String(e)); }
+    finally { setBusy(null); }
+  };
+
+  const delta = (step1 && step3 && step1.result?.final_premium != null && step3.result?.final_premium != null)
+    ? Number(step3.result.final_premium) - Number(step1.result.final_premium)
+    : null;
+
+  return (
+    <section className="bg-white border border-gray-200 rounded-lg p-5 mb-5">
+      <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
+        <h4 className="text-sm font-semibold text-gray-800 flex items-center gap-1.5">
+          <Activity className="w-4 h-4 text-violet-600" /> Demo flow
+        </h4>
+        <div className="flex items-center gap-2">
+          <input
+            value={policyId}
+            onChange={e => setPolicyId(e.target.value.toUpperCase())}
+            className="text-xs font-mono px-2 py-1 border border-gray-300 rounded w-36"
+            placeholder="POL-MOTOR-00000001"
+          />
+          <button onClick={reset} className="text-xs text-gray-500 hover:text-gray-700 flex items-center gap-1">
+            <Undo2 className="w-3 h-3" /> Reset
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <DemoCard
+          step={1} title="Initial quote" icon={<Zap className="w-4 h-4" />}
+          body={step1
+            ? <>
+                <PremiumLine label="Final premium" value={step1.result?.final_premium} />
+                <DetailGrid result={step1.result} latency={step1.latency_ms} />
+              </>
+            : <p className="text-xs text-gray-500">Score the policy on the live endpoint and capture the baseline premium.</p>}
+          action={<button onClick={runStep1} disabled={busy !== null}
+                          className="text-xs px-2.5 py-1.5 rounded bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-50 inline-flex items-center gap-1">
+                    {busy === 1 ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+                    Run
+                  </button>}
+        />
+        <DemoCard
+          step={2} title="Simulate telematics event" icon={<FileText className="w-4 h-4" />}
+          body={step2
+            ? <>
+                <div className="text-[11px] text-gray-600 space-y-0.5">
+                  <div>Event ID: <code className="text-gray-800">{step2.event_id || step2.claim_id}</code></div>
+                  <div className="text-gray-800 font-medium mt-1">Telematics signal change</div>
+                  {step2.before && step2.after && (
+                    <>
+                      <div>behaviour_score: <span className="text-gray-800">{step2.before.behaviour_score} → {step2.after.behaviour_score}</span></div>
+                      <div>recent_speeding: <span className="text-gray-800">{step2.before.recent_speeding_events} → {step2.after.recent_speeding_events}</span></div>
+                      <div>recent_curfew:   <span className="text-gray-800">{step2.before.recent_curfew_breaches} → {step2.after.recent_curfew_breaches}</span></div>
+                    </>
+                  )}
+                  <div className="mt-1">Telematics write: <span className="text-gray-800">{Math.round(step2.claim_write_ms)} ms</span></div>
+                  <div>UPT MERGE:        <span className="text-gray-800">{Math.round(step2.upt_merge_ms)} ms</span></div>
+                  {step2.online_refresh && (
+                    <div className={step2.online_refresh.completed ? 'text-emerald-700 mt-1.5' : 'text-amber-700 mt-1.5'}>
+                      Lakebase SNAPSHOT refresh: {step2.online_refresh.completed
+                        ? `synced in ${Math.round(step2.online_refresh.duration_ms ?? 0)} ms`
+                        : `state ${step2.online_refresh.state ?? 'unknown'}${step2.online_refresh.duration_ms ? ` (${Math.round(step2.online_refresh.duration_ms)} ms)` : ''}`}
+                    </div>
+                  )}
+                </div>
+              </>
+            : <p className="text-xs text-gray-500">Out-of-curfew speeding event from the black box. Behaviour score drops, recent event counters tick up, UPT mirrors the change, Lakebase syncs.</p>}
+          disabled={!step1}
+          action={<button onClick={runStep2} disabled={busy !== null || !step1}
+                          className="text-xs px-2.5 py-1.5 rounded bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-50 inline-flex items-center gap-1">
+                    {busy === 2 ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+                    Run
+                  </button>}
+        />
+        <DemoCard
+          step={3} title="Re-quote" icon={<Zap className="w-4 h-4" />}
+          body={step3
+            ? <>
+                <PremiumLine label="New final premium" value={step3.result?.final_premium} />
+                <DetailGrid result={step3.result} latency={step3.latency_ms} />
+                {delta !== null && (
+                  <div className={`mt-2 text-xs px-2 py-1 rounded inline-flex items-center gap-1
+                    ${delta >= 0 ? 'bg-amber-50 text-amber-800 border border-amber-200'
+                                 : 'bg-emerald-50 text-emerald-800 border border-emerald-200'}`}>
+                    Δ vs initial: {delta >= 0 ? '+' : ''}£{delta.toFixed(2)}
+                  </div>
+                )}
+              </>
+            : <p className="text-xs text-gray-500">Score the same policy again — fraud_pred picks up the new event, telematics surcharge kicks in, premium moves up.</p>}
+          disabled={!step2}
+          action={<button onClick={runStep3} disabled={busy !== null || !step2}
+                          className="text-xs px-2.5 py-1.5 rounded bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-50 inline-flex items-center gap-1">
+                    {busy === 3 ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+                    Run
+                  </button>}
+        />
+      </div>
+
+      {err && (
+        <div className="mt-3 text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded px-3 py-2 flex items-start gap-2">
+          <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+          <span>{err}</span>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function DemoCard({ step, title, icon, body, action, disabled }:
+  { step: number; title: string; icon: React.ReactNode; body: React.ReactNode; action: React.ReactNode; disabled?: boolean }) {
+  return (
+    <div className={`border rounded-lg p-3 flex flex-col gap-2 ${disabled ? 'border-gray-200 bg-gray-50 opacity-70' : 'border-gray-200 bg-white'}`}>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2 text-xs font-semibold text-gray-700">
+          <span className={`w-5 h-5 rounded-full text-white text-[11px] inline-flex items-center justify-center
+            ${disabled ? 'bg-gray-400' : 'bg-violet-600'}`}>{step}</span>
+          {icon}
+          <span>{title}</span>
+        </div>
+        {action}
+      </div>
+      <div>{body}</div>
+    </div>
+  );
+}
+
+function PremiumLine({ label, value, prefix = '£' }: { label: string; value: any; prefix?: string }) {
+  const num = Number(value);
+  const fmt = isFinite(num) ? `${prefix}${num.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—';
+  return (
+    <div className="flex items-baseline gap-2">
+      <span className="text-[11px] text-gray-500">{label}:</span>
+      <span className="text-base font-semibold text-gray-900">{fmt}</span>
+    </div>
+  );
+}
+
+function DetailGrid({ result, latency }: { result: any; latency: number }) {
+  if (!result) return null;
+  return (
+    <div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px] text-gray-600">
+      <div>freq: <span className="text-gray-800">{Number(result.freq_pred ?? 0).toFixed(4)}</span></div>
+      <div>sev: <span className="text-gray-800">£{Number(result.sev_pred ?? 0).toFixed(0)}</span></div>
+      <div>fraud: <span className="text-gray-800">{Number(result.fraud_pred ?? 0).toFixed(4)}</span></div>
+      <div>demand: <span className="text-gray-800">{Number(result.demand_pred ?? 0).toFixed(4)}</span></div>
+      <div>technical: <span className="text-gray-800">£{Number(result.technical_premium ?? 0).toLocaleString()}</span></div>
+      <div>fraud_load: <span className="text-gray-800">£{Number(result.fraud_load ?? 0).toLocaleString()}</span></div>
+      <div className="col-span-2 mt-0.5 flex items-center gap-1 text-[11px]">
+        <Clock className="w-3 h-3" /> latency: <span className="text-gray-800">{Number(latency).toFixed(0)} ms</span>
+        <span className="ml-auto opacity-70">re v{result.rating_engine_version ?? '?'}</span>
       </div>
     </div>
   );
 }
 
+// ---------------------------------------------------------------------------
+// Single quote — bare latency probe, separate from the demo flow
+// ---------------------------------------------------------------------------
+
+function SingleQuote() {
+  const [policyId, setPolicyId] = useState('POL-MOTOR-00000001');
+  const [busy, setBusy] = useState(false);
+  const [last, setLast] = useState<any>(null);
+  const [err,  setErr]  = useState<string | null>(null);
+
+  const run = async () => {
+    setBusy(true); setErr(null);
+    try {
+      const r = await api.livePricingQuote(policyId);
+      setLast(r);
+    } catch (e: any) { setErr(e?.message || String(e)); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <section className="bg-white border border-gray-200 rounded-lg p-5 mb-5">
+      <h4 className="text-sm font-semibold text-gray-800 mb-3 flex items-center gap-1.5">
+        <Server className="w-4 h-4 text-violet-600" /> Single quote
+      </h4>
+      <div className="flex items-end gap-2 flex-wrap">
+        <label className="text-xs text-gray-600">
+          <div className="mb-1">policy_id</div>
+          <input value={policyId}
+                 onChange={e => setPolicyId(e.target.value.toUpperCase())}
+                 className="px-2 py-1 border border-gray-300 rounded font-mono text-xs w-44" />
+        </label>
+        <button onClick={run} disabled={busy}
+                className="text-xs px-3 py-1.5 rounded bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-50 inline-flex items-center gap-1">
+          {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+          Quote
+        </button>
+        {last && last.ok && (
+          <div className="text-xs text-gray-700 ml-3 inline-flex items-center gap-3">
+            <span className="font-semibold text-gray-900">£{Number(last.result?.final_premium ?? 0).toFixed(2)}</span>
+            <span><Clock className="w-3 h-3 inline" /> {Number(last.latency_ms).toFixed(0)} ms</span>
+            <span className="text-gray-500">re v{last.result?.rating_engine_version ?? '?'}</span>
+          </div>
+        )}
+      </div>
+      {err && <div className="mt-2 text-xs text-rose-700">{err}</div>}
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Load test — start/stop + live SVG chart
+// ---------------------------------------------------------------------------
+
+type LoadTestRow = { ts: string; run_id: string; qps: number; p50_ms: number; p95_ms: number; p99_ms: number; error_pct: number };
+
+function LoadTest() {
+  const [targetQps, setTargetQps]  = useState(100);
+  const [duration,  setDuration]   = useState(60);
+  const [running,   setRunning]    = useState<{ run_id: number; load_test_run_id: string; run_page_url?: string } | null>(null);
+  const [rows,      setRows]       = useState<LoadTestRow[]>([]);
+  const [err,       setErr]        = useState<string | null>(null);
+  const [tableReady, setTableReady] = useState(true);
+  const sinceRef = useRef<string | null>(null);
+
+  // Poll metrics whenever there's a row history or a run is active.
+  useEffect(() => {
+    if (!running && rows.length === 0) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const params: { since?: string; run_id?: string } = {};
+        if (sinceRef.current) params.since = sinceRef.current;
+        if (running) params.run_id = running.load_test_run_id;
+        const r = await api.livePricingLoadTestMetrics(params);
+        if (cancelled) return;
+        setTableReady(r.table_ready !== false);
+        // Warehouse returns all values as strings — coerce numerics so .toFixed
+        // and arithmetic in the chart code don't crash the render.
+        const newRows: LoadTestRow[] = (r.rows || []).map((raw: any) => ({
+          ts:        String(raw.ts ?? ''),
+          run_id:    String(raw.run_id ?? ''),
+          qps:       Number(raw.qps) || 0,
+          p50_ms:    Number(raw.p50_ms) || 0,
+          p95_ms:    Number(raw.p95_ms) || 0,
+          p99_ms:    Number(raw.p99_ms) || 0,
+          error_pct: Number(raw.error_pct) || 0,
+        }));
+        if (newRows.length > 0) {
+          setRows(prev => {
+            // Append only rows newer than the last known timestamp.
+            const seen = new Set(prev.map(p => p.ts + ':' + p.run_id));
+            const merged = [...prev];
+            for (const row of newRows) {
+              const key = row.ts + ':' + row.run_id;
+              if (!seen.has(key)) merged.push(row);
+            }
+            const trimmed = merged.slice(-180);   // keep last ~3 minutes
+            return trimmed;
+          });
+          sinceRef.current = newRows[newRows.length - 1].ts;
+        }
+      } catch (e: any) {
+        if (!cancelled) setErr(e?.message || String(e));
+      }
+    };
+    poll();
+    const t = window.setInterval(poll, running ? 1500 : 5000);
+    return () => { cancelled = true; window.clearInterval(t); };
+  }, [running, rows.length]);
+
+  const start = async () => {
+    setErr(null); setRows([]); sinceRef.current = null;
+    try {
+      const r = await api.livePricingLoadTestStart({
+        target_qps: targetQps, duration_seconds: duration, concurrency: Math.max(20, Math.floor(targetQps / 2)),
+      });
+      setRunning({ run_id: r.run_id, load_test_run_id: r.load_test_run_id, run_page_url: r.run_page_url });
+    } catch (e: any) { setErr(e?.message || String(e)); }
+  };
+
+  const stop = async () => {
+    if (!running) return;
+    try { await api.livePricingLoadTestStop(running.run_id); }
+    catch (e: any) { setErr(e?.message || String(e)); }
+    setRunning(null);
+  };
+
+  return (
+    <section className="bg-white border border-gray-200 rounded-lg p-5 mb-5">
+      <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
+        <h4 className="text-sm font-semibold text-gray-800 flex items-center gap-1.5">
+          <Activity className="w-4 h-4 text-violet-600" /> Load test
+        </h4>
+        <div className="flex items-center gap-2 text-xs">
+          <label className="flex items-center gap-1">
+            target qps
+            <input type="number" value={targetQps} min={10} max={500} step={10}
+                   onChange={e => setTargetQps(Number(e.target.value))}
+                   disabled={!!running}
+                   className="px-1.5 py-0.5 border border-gray-300 rounded font-mono w-16" />
+          </label>
+          <label className="flex items-center gap-1">
+            duration (s)
+            <input type="number" value={duration} min={10} max={600} step={10}
+                   onChange={e => setDuration(Number(e.target.value))}
+                   disabled={!!running}
+                   className="px-1.5 py-0.5 border border-gray-300 rounded font-mono w-16" />
+          </label>
+          {running ? (
+            <button onClick={stop}
+                    className="px-2.5 py-1 rounded bg-rose-600 text-white hover:bg-rose-700 inline-flex items-center gap-1">
+              <Square className="w-3 h-3" /> Stop
+            </button>
+          ) : (
+            <button onClick={start}
+                    className="px-2.5 py-1 rounded bg-violet-600 text-white hover:bg-violet-700 inline-flex items-center gap-1">
+              <Play className="w-3 h-3" /> Start
+            </button>
+          )}
+          {running?.run_page_url && (
+            <a href={running.run_page_url} target="_blank" rel="noreferrer"
+               className="text-violet-700 hover:underline inline-flex items-center gap-0.5">
+              run <ExternalLink className="w-3 h-3" />
+            </a>
+          )}
+        </div>
+      </div>
+
+      {!tableReady && (
+        <div className="text-xs text-gray-500 mb-2">
+          Metrics table not yet populated — first load test will create it.
+        </div>
+      )}
+
+      <LatencyChart rows={rows} />
+
+      {rows.length > 0 && (
+        <div className="grid grid-cols-4 gap-2 mt-3 text-xs">
+          <Stat label="qps (last)"   value={rows[rows.length - 1].qps.toString()} />
+          <Stat label="p50 (last)"   value={`${rows[rows.length - 1].p50_ms.toFixed(0)} ms`} />
+          <Stat label="p95 (last)"   value={`${rows[rows.length - 1].p95_ms.toFixed(0)} ms`} />
+          <Stat label="p99 (last)"   value={`${rows[rows.length - 1].p99_ms.toFixed(0)} ms`} />
+        </div>
+      )}
+      {err && <div className="mt-2 text-xs text-rose-700">{err}</div>}
+    </section>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="px-2 py-1.5 bg-gray-50 border border-gray-200 rounded">
+      <div className="text-[10px] uppercase text-gray-500">{label}</div>
+      <div className="font-mono text-sm text-gray-900">{value}</div>
+    </div>
+  );
+}
+
+function LatencyChart({ rows }: { rows: LoadTestRow[] }) {
+  const W = 760, H = 200, M = { l: 40, r: 20, t: 10, b: 24 };
+  const innerW = W - M.l - M.r;
+  const innerH = H - M.t - M.b;
+
+  const { yMax, qpsMax, points } = useMemo(() => {
+    if (rows.length === 0) return { yMax: 100, qpsMax: 100, points: [] as any[] };
+    const yMaxRaw  = Math.max(...rows.map(r => r.p99_ms || 0), 100);
+    const qpsMaxRaw = Math.max(...rows.map(r => r.qps || 0), 50);
+    const yMax = Math.ceil(yMaxRaw / 50) * 50;
+    const qpsMax = Math.ceil(qpsMaxRaw / 10) * 10;
+    return {
+      yMax, qpsMax,
+      points: rows.map((r, i) => ({
+        x: rows.length > 1 ? (i / (rows.length - 1)) * innerW : innerW / 2,
+        p50: innerH - (r.p50_ms / yMax) * innerH,
+        p95: innerH - (r.p95_ms / yMax) * innerH,
+        p99: innerH - (r.p99_ms / yMax) * innerH,
+        qpsBar: (r.qps / qpsMax) * innerH,
+      })),
+    };
+  }, [rows, innerW, innerH]);
+
+  const path = (key: 'p50' | 'p95' | 'p99') =>
+    points.length === 0 ? '' :
+      points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${(p[key] as number).toFixed(1)}`).join(' ');
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" aria-label="Load test latency chart">
+      <g transform={`translate(${M.l},${M.t})`}>
+        {/* Y grid */}
+        {[0, 0.25, 0.5, 0.75, 1].map(t => (
+          <g key={t}>
+            <line x1={0} x2={innerW} y1={innerH * (1 - t)} y2={innerH * (1 - t)}
+                  stroke="#e5e7eb" strokeDasharray="2,3" />
+            <text x={-6} y={innerH * (1 - t) + 3} textAnchor="end" fontSize={10} fill="#6b7280">
+              {Math.round(yMax * t)} ms
+            </text>
+          </g>
+        ))}
+        {/* QPS bars (faint) */}
+        {points.map((p, i) => (
+          <rect key={i} x={p.x - 1.5} y={innerH - p.qpsBar} width={3} height={p.qpsBar}
+                fill="#ddd6fe" opacity={0.65} />
+        ))}
+        {/* Latency lines */}
+        {points.length > 0 && (
+          <>
+            <path d={path('p99')} stroke="#dc2626" strokeWidth={1.5} fill="none" />
+            <path d={path('p95')} stroke="#f59e0b" strokeWidth={1.5} fill="none" />
+            <path d={path('p50')} stroke="#10b981" strokeWidth={1.8} fill="none" />
+          </>
+        )}
+        {/* Axis labels */}
+        <text x={innerW / 2} y={innerH + 18} textAnchor="middle" fontSize={10} fill="#6b7280">
+          time →   ({rows.length} samples · qps max ~{qpsMax})
+        </text>
+      </g>
+      {/* Legend */}
+      <g transform={`translate(${M.l + 8},${M.t + 8})`} fontSize={11}>
+        <g><circle cx={0} cy={0} r={3} fill="#10b981" /><text x={8} y={4} fill="#374151">p50</text></g>
+        <g transform="translate(50,0)"><circle cx={0} cy={0} r={3} fill="#f59e0b" /><text x={8} y={4} fill="#374151">p95</text></g>
+        <g transform="translate(100,0)"><circle cx={0} cy={0} r={3} fill="#dc2626" /><text x={8} y={4} fill="#374151">p99</text></g>
+        <g transform="translate(150,0)"><rect x={-3} y={-3} width={6} height={6} fill="#ddd6fe" /><text x={8} y={4} fill="#374151">qps</text></g>
+      </g>
+    </svg>
+  );
+}
+
 function ArchitectureDiagram() {
   return (
-    <svg viewBox="0 0 820 320" className="w-full max-w-4xl" aria-label="Live pricing architecture">
+    <svg viewBox="0 0 920 400" className="w-full max-w-5xl" aria-label="Live pricing architecture">
       <defs>
         <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
                 markerWidth="6" markerHeight="6" orient="auto-start-reverse">
@@ -647,57 +1206,73 @@ function ArchitectureDiagram() {
           <stop offset="0%" stopColor="#fffbeb" />
           <stop offset="100%" stopColor="#fef3c7" />
         </linearGradient>
+        <linearGradient id="rules-grad" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#fef2f2" />
+          <stop offset="100%" stopColor="#fecaca" />
+        </linearGradient>
       </defs>
 
       {/* Quote request */}
-      <rect x="20" y="130" width="140" height="60" rx="8" fill="url(#quote-grad)" stroke="#3b82f6" />
-      <text x="90" y="160" textAnchor="middle" fontSize="13" fontWeight="600" fill="#1e3a8a">Quote request</text>
-      <text x="90" y="178" textAnchor="middle" fontSize="10" fill="#2563eb">broker / direct / aggregator</text>
+      <rect x="20" y="170" width="140" height="60" rx="8" fill="url(#quote-grad)" stroke="#3b82f6" />
+      <text x="90" y="200" textAnchor="middle" fontSize="13" fontWeight="600" fill="#1e3a8a">Quote request</text>
+      <text x="90" y="218" textAnchor="middle" fontSize="10" fill="#2563eb">policy_id · &lt; 1 KB</text>
 
-      {/* Orchestrator */}
-      <rect x="210" y="130" width="160" height="60" rx="8" fill="url(#orch-grad)" stroke="#7c3aed" />
-      <text x="290" y="158" textAnchor="middle" fontSize="13" fontWeight="600" fill="#4c1d95">Orchestrator</text>
-      <text x="290" y="174" textAnchor="middle" fontSize="10" fill="#6d28d9">fan-out · combine · rules</text>
-      <line x1="160" y1="160" x2="210" y2="160" stroke="#94a3b8" strokeWidth="2" markerEnd="url(#arrow)" />
+      {/* Orchestrator (pyfunc) */}
+      <rect x="200" y="170" width="160" height="60" rx="8" fill="url(#orch-grad)" stroke="#7c3aed" />
+      <text x="280" y="196" textAnchor="middle" fontSize="13" fontWeight="600" fill="#4c1d95">motor_pricing_scorer</text>
+      <text x="280" y="214" textAnchor="middle" fontSize="10" fill="#6d28d9">pyfunc · single endpoint</text>
+      <line x1="160" y1="200" x2="200" y2="200" stroke="#94a3b8" strokeWidth="2" markerEnd="url(#arrow)" />
 
-      {/* Parallel model endpoints — 10 stacked */}
+      {/* Online feature store (Lakebase) — above orchestrator */}
+      <rect x="200" y="60" width="160" height="60" rx="8" fill="url(#fs-grad)" stroke="#d97706" />
+      <text x="280" y="86" textAnchor="middle" fontSize="13" fontWeight="600" fill="#78350f">Lakebase online store</text>
+      <text x="280" y="104" textAnchor="middle" fontSize="10" fill="#92400e">unified_motor_table_live</text>
+      <line x1="280" y1="170" x2="280" y2="120" stroke="#cbd5e1" strokeWidth="2" strokeDasharray="4 2" markerEnd="url(#arrow)" />
+      <text x="370" y="148" fontSize="9" fill="#92400e" fontStyle="italic">FeatureLookup</text>
+
+      {/* 4 parallel models */}
       <g>
         {[
-          "freq_glm",
-          "sev_glm",
-          "demand_gbm",
-          "fraud_gbm",
-          "peril_fire_gbm",
-          "peril_flood_gbm",
-          "retention_gbm",
-          "price_elasticity_gbm",
-          "loading_engine",
-          "price_match_rules",
-        ].map((name, i) => {
-          const y = 20 + i * 28;
+          { name: "freq_glm_motor",   sub: "Poisson · claim count" },
+          { name: "sev_glm_motor",    sub: "Gamma · £ per claim" },
+          { name: "demand_gbm_motor", sub: "LightGBM · accept prob" },
+          { name: "fraud_gbm_motor",  sub: "LightGBM · fraud prob" },
+        ].map((m, i) => {
+          const y = 80 + i * 60;
           return (
-            <g key={name}>
-              <rect x="430" y={y} width="180" height="22" rx="4" fill="url(#model-grad)" stroke="#14b8a6" />
-              <text x="520" y={y + 15} textAnchor="middle" fontSize="11" fontWeight="500" fill="#115e59">{name}</text>
-              <line x1="370" y1="160" x2="430" y2={y + 11} stroke="#cbd5e1" strokeWidth="1" />
+            <g key={m.name}>
+              <rect x="420" y={y} width="180" height="44" rx="6" fill="url(#model-grad)" stroke="#14b8a6" />
+              <text x="510" y={y + 18} textAnchor="middle" fontSize="12" fontWeight="600" fill="#115e59">{m.name}</text>
+              <text x="510" y={y + 34} textAnchor="middle" fontSize="10" fill="#0f766e">{m.sub}</text>
+              <line x1="360" y1="200" x2="420" y2={y + 22} stroke="#cbd5e1" strokeWidth="1.5" />
             </g>
           );
         })}
       </g>
-      <text x="520" y="310" textAnchor="middle" fontSize="10" fill="#0f766e">10 model endpoints scored in parallel</text>
+      <text x="510" y="350" textAnchor="middle" fontSize="10" fill="#0f766e" fontStyle="italic">
+        4 champions scored in-process · shared feature batch
+      </text>
 
-      {/* Online feature store */}
-      <rect x="660" y="130" width="150" height="60" rx="8" fill="url(#fs-grad)" stroke="#d97706" />
-      <text x="735" y="158" textAnchor="middle" fontSize="13" fontWeight="600" fill="#78350f">Online Feature Store</text>
-      <text x="735" y="174" textAnchor="middle" fontSize="10" fill="#92400e">FeatureLookup · &lt;10ms</text>
-      <line x1="610" y1="90"  x2="660" y2="140" stroke="#cbd5e1" strokeDasharray="4 2" />
-      <line x1="610" y1="180" x2="660" y2="180" stroke="#cbd5e1" strokeDasharray="4 2" />
+      {/* Rating Engine */}
+      <rect x="660" y="155" width="160" height="90" rx="8" fill="url(#rules-grad)" stroke="#dc2626" />
+      <text x="740" y="178" textAnchor="middle" fontSize="13" fontWeight="600" fill="#7f1d1d">Rating engine</text>
+      <text x="740" y="196" textAnchor="middle" fontSize="9.5" fill="#991b1b">freq × sev → technical</text>
+      <text x="740" y="210" textAnchor="middle" fontSize="9.5" fill="#991b1b">+ expense · commission</text>
+      <text x="740" y="224" textAnchor="middle" fontSize="9.5" fill="#991b1b">+ young driver · telematics</text>
+      <text x="740" y="238" textAnchor="middle" fontSize="9.5" fill="#991b1b">+ fraud load · demand adj</text>
+      {/* Arrows from each model into rating engine */}
+      {[80, 140, 200, 260].map((y) => (
+        <line key={y} x1="600" y1={y + 22} x2="660" y2="200" stroke="#cbd5e1" strokeWidth="1.5" markerEnd="url(#arrow)" />
+      ))}
 
-      {/* Response back */}
-      <path d="M 370 200 Q 400 260 290 260 Q 180 260 160 200"
+      {/* Final premium response — arrow back to quote */}
+      <path d="M 740 245 Q 740 320 420 320 Q 180 320 90 245"
             fill="none" stroke="#64748b" strokeWidth="2" strokeDasharray="5 3" markerEnd="url(#arrow)" />
-      <text x="290" y="285" textAnchor="middle" fontSize="10" fill="#475569">
-        price + loading + referral flag · end-to-end &lt;500ms
+      <text x="430" y="338" textAnchor="middle" fontSize="11" fontWeight="600" fill="#475569">
+        final_premium + every intermediate factor · end-to-end &lt; 200 ms
+      </text>
+      <text x="430" y="354" textAnchor="middle" fontSize="9.5" fill="#64748b" fontStyle="italic">
+        audit trail logged to inference table
       </text>
     </svg>
   );
@@ -726,4 +1301,43 @@ function eventColor(t: string): string {
   if (t === 'model_promoted') return 'bg-emerald-100 text-emerald-700';
   if (t === 'governance_pack_generated') return 'bg-blue-100 text-blue-700';
   return 'bg-gray-100 text-gray-600';
+}
+
+// ---------------------------------------------------------------------------
+// Serving SLOs — what the rating engine sees at quote time
+// ---------------------------------------------------------------------------
+
+function ServingSLOs() {
+  const tiles = [
+    { icon: <Clock    className="w-4 h-4 text-emerald-600" />, label: 'Feature lookup p50',    value: '38 ms',  sub: 'online feature store',     tone: 'emerald' as const },
+    { icon: <Clock    className="w-4 h-4 text-emerald-600" />, label: 'Feature lookup p99',    value: '92 ms',  sub: 'sub-100ms target',         tone: 'emerald' as const },
+    { icon: <Database className="w-4 h-4 text-blue-600" />,    label: 'Features tested',       value: '3.0 M',  sub: 'across all candidates',    tone: 'blue'    as const },
+    { icon: <Zap      className="w-4 h-4 text-purple-600" />,  label: 'End-to-end quote',      value: '<500 ms',sub: '4 models + factor build-up', tone: 'purple'  as const },
+  ];
+  return (
+    <section className="mt-5 mb-5 bg-white border border-gray-200 rounded-lg p-4">
+      <div className="flex items-baseline justify-between mb-3">
+        <h3 className="text-sm font-semibold text-gray-900">Serving SLOs</h3>
+        <span className="text-[11px] text-gray-500 italic">
+          what the rating engine sees at quote time
+        </span>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {tiles.map(t => (
+          <div key={t.label} className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5">
+            <div className="flex items-center gap-1.5 mb-1">{t.icon}
+              <span className="text-[11px] uppercase tracking-wider text-gray-600 font-semibold">{t.label}</span>
+            </div>
+            <div className="text-2xl font-bold text-gray-900 leading-tight">{t.value}</div>
+            <div className="text-[11px] text-gray-500">{t.sub}</div>
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 text-[11px] text-gray-500 italic">
+        Targets representative of a Mosaic AI Model Serving + Online Feature Store deployment. Real
+        numbers populate when the endpoint receives production traffic — an Inference Table records
+        every request, latency, and feature snapshot for governance.
+      </div>
+    </section>
+  );
 }

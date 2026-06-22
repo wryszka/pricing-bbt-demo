@@ -1,8 +1,12 @@
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
-databricks-sdk>=0.30.0
+databricks-sdk>=0.50.0
 pydantic>=2.0.0
 python-multipart>=0.0.9
 fpdf2>=2.7.0
 matplotlib>=3.8.0
 pypdf>=4.0.0
+# Pricing Engine — deterministic multi-version scoring (no live model load;
+# real model invocation is done via the Compare & Test job, not in-app, to
+# keep the container memory footprint manageable).
+numpy>=1.26.0

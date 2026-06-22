@@ -13,7 +13,7 @@
 
 # COMMAND ----------
 
-dbutils.widgets.text("catalog_name", "lr_serverless_aws_us_catalog")
+dbutils.widgets.text("catalog_name", "pricing_workbench")
 dbutils.widgets.text("schema_name", "pricing_upt")
 
 catalog = dbutils.widgets.get("catalog_name")
@@ -401,7 +401,7 @@ tags = {
     "business_line": "commercial_property",
     "pricing_domain": "commercial_pricing",
     "table_owner": "actuarial_pricing_team",
-    "refresh_cadence": "on_demand",
+    "refresh_cadence":    "manual",
     "demo_environment": "true",
     "contains_pii": "false",
 }

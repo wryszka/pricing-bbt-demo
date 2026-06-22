@@ -1,0 +1,32 @@
+resources:
+  jobs:
+    motor_teardown:
+      name: "Motor live serving: teardown (delete endpoint)"
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: endpoint_name
+          default: "motor_pricing_scorer"
+
+      permissions:
+        - service_principal_name: ${var.app_service_principal_id}
+          level: CAN_MANAGE_RUN
+
+      tasks:
+        - task_key: teardown
+          notebook_task:
+            notebook_path: ../src/07_serving/live_pricing/motor_teardown.py
+            base_parameters:
+              catalog_name:  "{{job.parameters.catalog_name}}"
+              schema_name:   "{{job.parameters.schema_name}}"
+              endpoint_name: "{{job.parameters.endpoint_name}}"
+          environment_key: env
+
+      environments:
+        - environment_key: env
+          spec:
+            client: "5"
+            dependencies:
+              - databricks-sdk

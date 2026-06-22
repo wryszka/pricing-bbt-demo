@@ -45,13 +45,41 @@ export default function CompareTest() {
     api.getReviewVersions(family).then(d => {
       const vs: Version[] = d.versions || [];
       setVersions(vs);
-      // Default A = current champion (not simulated), B = most recent simulated
-      const champion = vs.find(v => !v.simulated);
-      const nextCandidate = vs.find(v => v.simulated);
+      // Default selection: pick the two versions with the largest primary-metric
+      // gap among those that have a value. Maximises visible difference in the
+      // run-comparison pane — instead of comparing two near-identical runs.
+      const scored = vs.filter(v => v.primary_value != null);
       const pick: number[] = [];
-      if (champion) pick.push(champion.version);
-      if (nextCandidate && nextCandidate.version !== champion?.version) pick.push(nextCandidate.version);
+      if (scored.length >= 2) {
+        const sorted = [...scored].sort((a, b) => (b.primary_value as number) - (a.primary_value as number));
+        const best = sorted[0];
+        const worst = sorted[sorted.length - 1];
+        pick.push(best.version);
+        pick.push(worst.version);
+      } else {
+        const champion = vs.find(v => !v.simulated);
+        const nextCandidate = vs.find(v => v.simulated);
+        if (champion) pick.push(champion.version);
+        if (nextCandidate && nextCandidate.version !== champion?.version) pick.push(nextCandidate.version);
+      }
       setSelected(pick);
+
+      // Auto-hydrate the most recent cached run for this family so the demo
+      // landing state shows a populated comparison without needing a fresh job.
+      api.getCompareHistory(20).then((h: any) => {
+        const matching = (h.runs || []).find((r: any) => r.family === family && r.cache_key);
+        if (!matching) return;
+        // Sync selected versions to whatever the cached run used (so the chips
+        // light up consistent with the displayed result).
+        try {
+          const cachedVersions = String(matching.versions || '').split(',').map((s: string) => Number(s.trim())).filter(n => !isNaN(n));
+          if (cachedVersions.length >= 2) setSelected(cachedVersions);
+        } catch { /* fall back to best/worst */ }
+        setLoadingResult(true);
+        api.getCompareCache(matching.cache_key).then(setResult)
+          .catch(() => { /* silent — page still works */ })
+          .finally(() => setLoadingResult(false));
+      }).catch(() => { /* history endpoint not seeded; default UX still works */ });
     });
     api.listCompareScenarios(family).then(d => {
       setScenarios(d.scenarios || []);
@@ -61,7 +89,7 @@ export default function CompareTest() {
 
   // Poll run
   useEffect(() => {
-    if (!running || running.phase === 'SUCCESS' || running.phase === 'FAILED') return;
+    if (!running || ['SUCCESS', 'FAILED', 'CACHED'].includes(running.phase)) return;
     const t = setInterval(() => {
       api.getCompareRunStatus(running.runId).then((s: any) => {
         const phase =
@@ -99,9 +127,17 @@ export default function CompareTest() {
     if (selected.length < 2) { setToast('Select 2-5 versions to compare.'); return; }
     setResult(null);
     try {
-      const r = await api.triggerCompareRun({
+      const r: any = await api.triggerCompareRun({
         family, versions: selected, portfolio_size: portfolioSize, scenario_id: scenarioId,
       });
+      // Cached mode: server hands back the prior cache_key directly — skip
+      // the job-polling phase and hydrate the result immediately.
+      if (r.cached && r.cache_key) {
+        setRunning({ runId: r.job_run_id ?? -1, phase: 'CACHED', cacheKey: r.cache_key });
+        api.getCompareCache(r.cache_key).then(setResult).catch(() => undefined);
+        setToast('Served from cache — repeat of a prior identical run.');
+        return;
+      }
       setRunning({ runId: r.job_run_id, phase: 'RUNNING' });
       setToast(`Run ${r.job_run_id} started — this takes ~30-60s`);
     } catch (e: any) {
@@ -207,9 +243,9 @@ export default function CompareTest() {
             Results cache by (family, versions, scenario, size).
           </div>
           <button onClick={runCompare}
-                  disabled={selected.length < 2 || Boolean(running && running.phase !== 'SUCCESS' && running.phase !== 'FAILED')}
+                  disabled={selected.length < 2 || Boolean(running && !['SUCCESS', 'FAILED', 'CACHED'].includes(running.phase))}
                   className="inline-flex items-center gap-2 px-4 py-2 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 text-sm font-medium">
-            {running && running.phase !== 'SUCCESS' && running.phase !== 'FAILED' ? (
+            {running && !['SUCCESS', 'FAILED', 'CACHED'].includes(running.phase) ? (
               <><Loader2 className="w-4 h-4 animate-spin" /> Running…</>
             ) : (
               <><Play className="w-4 h-4" /> Run comparison</>
@@ -218,9 +254,10 @@ export default function CompareTest() {
         </div>
         {running && (
           <div className="mt-3 text-xs text-gray-600 flex items-center gap-2">
-            <span>Job run {running.runId}:</span>
+            <span>{running.phase === 'CACHED' ? 'Cached result' : `Job run ${running.runId}`}:</span>
             <span className={`px-1.5 py-0.5 rounded font-medium ${
               running.phase === 'SUCCESS' ? 'bg-emerald-100 text-emerald-700' :
+              running.phase === 'CACHED' ? 'bg-amber-100 text-amber-700' :
               running.phase === 'FAILED' ? 'bg-red-100 text-red-700' :
               'bg-blue-100 text-blue-700'
             }`}>{running.phase}</span>

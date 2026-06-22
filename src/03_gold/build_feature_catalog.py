@@ -18,7 +18,7 @@
 
 # COMMAND ----------
 
-dbutils.widgets.text("catalog_name", "lr_serverless_aws_us_catalog")
+dbutils.widgets.text("catalog_name", "pricing_workbench")
 dbutils.widgets.text("schema_name",  "pricing_upt")
 
 catalog = dbutils.widgets.get("catalog_name")
@@ -160,7 +160,7 @@ spark.sql(f"""
 """)
 tags = {
     "pricing_domain":   "feature_governance",
-    "refresh_cadence":  "on_demand",
+    "refresh_cadence":    "manual",
     "demo_environment": "true",
 }
 tag_sql = ", ".join(f"'{k}' = '{v}'" for k, v in tags.items())

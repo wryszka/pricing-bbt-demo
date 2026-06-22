@@ -1,0 +1,168 @@
+# Live Pricing System — four jobs that bring the demo runtime up, exercise it,
+# and tear it down. Each runs on serverless compute; no schedules — all are
+# triggered on demand by the app's /api/live-pricing/* endpoints.
+resources:
+  jobs:
+
+    live_pricing_provision:
+      name: "v1 — Live pricing: provision (Lakebase SNAPSHOT + endpoint + warm-up)"
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: online_store_name
+          default: ${var.live_online_store_name}
+        - name: endpoint_name
+          default: ${var.live_endpoint_name}
+        - name: online_store_capacity
+          default: "CU_2"
+        - name: app_service_principal_id
+          default: ${var.app_service_principal_id}
+
+      permissions:
+        - service_principal_name: ${var.app_service_principal_id}
+          level: CAN_MANAGE_RUN
+
+      tasks:
+        - task_key: provision
+          notebook_task:
+            notebook_path: ../src/07_serving/live_pricing/01_provision.py
+            base_parameters:
+              catalog_name:             "{{job.parameters.catalog_name}}"
+              schema_name:              "{{job.parameters.schema_name}}"
+              online_store_name:        "{{job.parameters.online_store_name}}"
+              endpoint_name:            "{{job.parameters.endpoint_name}}"
+              online_store_capacity:    "{{job.parameters.online_store_capacity}}"
+              app_service_principal_id: "{{job.parameters.app_service_principal_id}}"
+          environment_key: env
+
+      environments:
+        - environment_key: env
+          spec:
+            client: "5"
+            dependencies:
+              - mlflow
+              - databricks-feature-engineering
+              - databricks-sdk
+              - statsmodels
+              - scikit-learn
+              - lightgbm
+
+    live_pricing_teardown:
+      name: "v1 — Live pricing: teardown (delete endpoint + online store)"
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: online_store_name
+          default: ${var.live_online_store_name}
+        - name: endpoint_name
+          default: ${var.live_endpoint_name}
+
+      permissions:
+        - service_principal_name: ${var.app_service_principal_id}
+          level: CAN_MANAGE_RUN
+
+      tasks:
+        - task_key: teardown
+          notebook_task:
+            notebook_path: ../src/07_serving/live_pricing/02_teardown.py
+            base_parameters:
+              catalog_name:      "{{job.parameters.catalog_name}}"
+              schema_name:       "{{job.parameters.schema_name}}"
+              online_store_name: "{{job.parameters.online_store_name}}"
+              endpoint_name:     "{{job.parameters.endpoint_name}}"
+          environment_key: env
+
+      environments:
+        - environment_key: env
+          spec:
+            client: "5"
+            dependencies:
+              - databricks-sdk
+              - databricks-feature-engineering
+
+    live_pricing_load_test:
+      name: "v1 — Live pricing: load test (sustained QPS against scorer)"
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: endpoint_name
+          default: ${var.live_endpoint_name}
+        - name: target_qps
+          default: "100"
+        - name: duration_seconds
+          default: "60"
+        - name: concurrency
+          default: "50"
+        - name: run_id
+          default: ""
+
+      permissions:
+        - service_principal_name: ${var.app_service_principal_id}
+          level: CAN_MANAGE_RUN
+
+      tasks:
+        - task_key: load_test
+          notebook_task:
+            notebook_path: ../src/07_serving/live_pricing/03_load_test.py
+            base_parameters:
+              catalog_name:     "{{job.parameters.catalog_name}}"
+              schema_name:      "{{job.parameters.schema_name}}"
+              endpoint_name:    "{{job.parameters.endpoint_name}}"
+              target_qps:       "{{job.parameters.target_qps}}"
+              duration_seconds: "{{job.parameters.duration_seconds}}"
+              concurrency:      "{{job.parameters.concurrency}}"
+              run_id:           "{{job.parameters.run_id}}"
+          environment_key: env
+
+      environments:
+        - environment_key: env
+          spec:
+            client: "5"
+            dependencies:
+              - httpx
+              - nest_asyncio
+              - databricks-sdk
+
+    live_pricing_realtime_feature_refresh:
+      name: "v1 — Live pricing: file claim + refresh UPT"
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: policy_id
+          default: ""
+        - name: claim_amount
+          default: "75000"
+        - name: claim_type
+          default: "ACCIDENTAL_DAMAGE"
+        - name: online_store_name
+          default: ${var.live_online_store_name}
+
+      permissions:
+        - service_principal_name: ${var.app_service_principal_id}
+          level: CAN_MANAGE_RUN
+
+      tasks:
+        - task_key: refresh
+          notebook_task:
+            notebook_path: ../src/07_serving/live_pricing/04_realtime_feature_refresh.py
+            base_parameters:
+              catalog_name:      "{{job.parameters.catalog_name}}"
+              schema_name:       "{{job.parameters.schema_name}}"
+              policy_id:         "{{job.parameters.policy_id}}"
+              claim_amount:      "{{job.parameters.claim_amount}}"
+              claim_type:        "{{job.parameters.claim_type}}"
+              online_store_name: "{{job.parameters.online_store_name}}"
+          environment_key: env
+
+      environments:
+        - environment_key: env
+          spec:
+            client: "5"

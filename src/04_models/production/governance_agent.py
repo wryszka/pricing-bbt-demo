@@ -21,10 +21,11 @@
 
 # COMMAND ----------
 
-dbutils.widgets.text("catalog_name", "lr_serverless_aws_us_catalog")
+dbutils.widgets.text("catalog_name", "pricing_workbench")
 dbutils.widgets.text("schema_name",  "pricing_upt")
 dbutils.widgets.text("endpoint_name","pricing_governance_agent")
 dbutils.widgets.text("fm_endpoint",  "databricks-claude-sonnet-4-6")
+dbutils.widgets.text("warehouse_id", "")  # SQL warehouse the agent tools query; defaults to first running serverless warehouse
 
 # COMMAND ----------
 
@@ -37,6 +38,15 @@ catalog         = dbutils.widgets.get("catalog_name")
 schema          = dbutils.widgets.get("schema_name")
 endpoint_name   = dbutils.widgets.get("endpoint_name")
 fm_endpoint     = dbutils.widgets.get("fm_endpoint")
+warehouse_id    = dbutils.widgets.get("warehouse_id")
+
+if not warehouse_id:
+    from databricks.sdk import WorkspaceClient as _W
+    _w = _W()
+    _running = [wh for wh in _w.warehouses.list() if str(wh.state) == "WarehouseStatusState.RUNNING"]
+    _all = [wh for wh in _w.warehouses.list()]
+    warehouse_id = (_running or _all)[0].id
+    print(f"warehouse_id auto-selected: {warehouse_id}")
 
 fqn             = f"{catalog}.{schema}"
 agent_uc_name   = f"{fqn}.governance_agent"
@@ -402,7 +412,9 @@ def _run_sql(sql: str):
     from databricks.sdk import WorkspaceClient
     from databricks.sdk.service.sql import StatementState
     import os as _os
-    w = WorkspaceClient()
+    tok  = _os.environ.get("AGENT_TOKEN")
+    host = _os.environ.get("AGENT_HOST") or _os.environ.get("DATABRICKS_HOST")
+    w = WorkspaceClient(host=host, token=tok) if tok and host else WorkspaceClient()
     warehouse_id = _os.environ.get("AGENT_WAREHOUSE_ID", "ab79eced8207d29b")
     resp = w.statement_execution.execute_statement(
         statement=sql, warehouse_id=warehouse_id, wait_timeout="30s",
@@ -473,14 +485,20 @@ except ImportError:
         _UCVolumeResource = None
 
 input_example = {
-    "messages": [{"role": "user", "content": "What fraud tier does this model target?"}],
-    "custom_inputs": {"pack_id": "GP-20260423112519-fraud_gbm-v41"},
+    "messages":      json.dumps([{"role": "user", "content": "What fraud tier does this model target?"}]),
+    "custom_inputs": json.dumps({"pack_id": "GP-20260423112519-fraud_gbm-v41"}),
 }
 
 signature = ModelSignature(
     inputs=Schema([
         ColSpec("string", "messages"),
         ColSpec("string", "custom_inputs"),
+    ]),
+    outputs=Schema([
+        ColSpec("string", "messages"),
+        ColSpec("string", "model"),
+        ColSpec("string", "trace"),
+        ColSpec("string", "usage"),
     ]),
 )
 
@@ -509,6 +527,7 @@ with mlflow.start_run(run_name="governance_agent_deploy"):
         python_model=GovernanceAgent(),
         artifacts={"config": cfg_path},
         resources=resources_list,
+        signature=signature,
         input_example=input_example,
         registered_model_name=agent_uc_name,
         pip_requirements=[
@@ -536,13 +555,28 @@ latest = max(
 )
 print(f"Deploying {agent_uc_name} v{latest} → endpoint '{endpoint_name}'")
 
+env_vars = {"AGENT_WAREHOUSE_ID": warehouse_id}
+
+# agents.deploy() wipes env_vars set out-of-band. Snapshot so we can merge.
+from databricks.sdk import WorkspaceClient as _W
+_w_pre = _W()
+try:
+    _existing = (_w_pre.serving_endpoints.get(endpoint_name)
+                 .config.served_entities[0].environment_vars or {})
+    for k, v in _existing.items():
+        env_vars.setdefault(k, v)
+    print(f"Preserving existing env vars: {sorted(_existing.keys())}")
+except Exception as _e:
+    print(f"No existing endpoint to inherit env_vars from: {_e}")
+
 # Use databricks-agents if present, else fall back to serving_endpoints
 try:
     from databricks import agents
     deployment = agents.deploy(
         model_name=agent_uc_name,
         model_version=latest,
-        scale_to_zero=True,
+        scale_to_zero=True,  # keep warm for demo cadence
+        environment_vars=env_vars,
         tags={"project": "pricing_workbench", "purpose": "governance_agent"},
     )
     print(f"databricks-agents deploy kicked off: {deployment}")
@@ -556,8 +590,9 @@ except Exception as e:
     served = [ServedEntityInput(
         entity_name=agent_uc_name,
         entity_version=str(latest),
-        scale_to_zero_enabled=True,
+        scale_to_zero_enabled = True,  # keep warm for demo cadence
         workload_size="Small",
+        environment_vars=env_vars,
     )]
     cfg = EndpointCoreConfigInput(
         name=endpoint_name,
@@ -570,6 +605,35 @@ except Exception as e:
     except Exception:
         w.serving_endpoints.create(name=endpoint_name, config=cfg)
         print("Created new endpoint.")
+
+# COMMAND ----------
+
+# Re-assert env_vars after agents.deploy (which strips them on each update).
+import time as _t
+from databricks.sdk import WorkspaceClient as _W2
+from databricks.sdk.service.serving import ServedEntityInput as _SEI
+_w2 = _W2()
+for _attempt in range(60):
+    _ep = _w2.serving_endpoints.get(endpoint_name)
+    _cur_v = _ep.config.served_entities[0].entity_version if _ep.config else None
+    _upd = str(_ep.state.config_update) if _ep.state else ""
+    if _cur_v == str(latest) and "NOT_UPDATING" in _upd:
+        break
+    _t.sleep(15)
+_existing_env = (_ep.config.served_entities[0].environment_vars or {}) if _ep.config else {}
+_merged = {**env_vars, **_existing_env, "AGENT_WAREHOUSE_ID": warehouse_id}
+if set(_merged.keys()) != set(_existing_env.keys()) or any(_merged[k] != _existing_env.get(k) for k in _merged):
+    print(f"Re-asserting env_vars: {sorted(_merged.keys())}")
+    _w2.serving_endpoints.update_config(
+        name=endpoint_name,
+        served_entities=[_SEI(
+            entity_name=agent_uc_name,
+            entity_version=str(latest),
+            scale_to_zero_enabled = True,
+            workload_size="Small",
+            environment_vars=_merged,
+        )],
+    )
 
 # COMMAND ----------
 

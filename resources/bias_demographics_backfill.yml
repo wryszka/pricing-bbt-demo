@@ -1,0 +1,31 @@
+# Bias demographics backfill — generates the side `policy_demographics`
+# table with unmodelled protected attributes so the bias investigator agent
+# has something to monitor against. Idempotent; re-run whenever UPT changes.
+resources:
+  jobs:
+    bias_demographics_backfill:
+      name: "v1 — Bias demographics backfill (director_gender + postcode_demographic)"
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+
+      permissions:
+        - service_principal_name: ${var.app_service_principal_id}
+          level: CAN_MANAGE_RUN
+
+      tasks:
+        - task_key: backfill
+          notebook_task:
+            notebook_path: ../src/04_models/production/bias_demographics_backfill.py
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name:  ${var.schema_name}
+          environment_key: bias_env
+
+      environments:
+        - environment_key: bias_env
+          spec:
+            client: "5"
+            dependencies: []

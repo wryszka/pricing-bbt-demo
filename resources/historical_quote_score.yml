@@ -1,0 +1,43 @@
+# Historical quote score — one-shot batch scoring of a single feature row
+# against any release's pinned UC model versions.
+resources:
+  jobs:
+    historical_quote_score:
+      name: "v1 — Historical quote score (any release)"
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: release_id
+          default: "apr_2026"
+        - name: features_json
+          default: "{}"
+        - name: run_label
+          default: "adhoc"
+
+      permissions:
+        - service_principal_name: ${var.app_service_principal_id}
+          level: CAN_MANAGE_RUN
+
+      tasks:
+        - task_key: score
+          notebook_task:
+            notebook_path: ../src/04_models/production/historical_quote_score.py
+            base_parameters:
+              catalog_name:  ${var.catalog_name}
+              schema_name:   ${var.schema_name}
+              release_id:    "{{job.parameters.release_id}}"
+              features_json: "{{job.parameters.features_json}}"
+              run_label:     "{{job.parameters.run_label}}"
+          environment_key: env
+
+      environments:
+        - environment_key: env
+          spec:
+            client: "5"
+            dependencies:
+              - mlflow
+              - statsmodels
+              - lightgbm
+              - scikit-learn

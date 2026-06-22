@@ -10,7 +10,7 @@
 
 # COMMAND ----------
 
-dbutils.widgets.text("catalog_name", "lr_serverless_aws_us_catalog")
+dbutils.widgets.text("catalog_name", "pricing_workbench")
 dbutils.widgets.text("schema_name",  "pricing_upt")
 dbutils.widgets.text("run_name",     "champion")
 dbutils.widgets.text("simulation_date", "")  # empty = current champion
@@ -106,7 +106,18 @@ print(f"Training set: {len(training_pdf):,} rows × {len(training_pdf.columns)} 
 
 # COMMAND ----------
 
-X = pd.get_dummies(training_pdf[FEATURES], drop_first=True, dtype=float).fillna(0.0)
+def _prep_raw(df: pd.DataFrame) -> pd.DataFrame:
+    """Sanitise the raw feature frame so MLflow schema enforcement doesn't
+    reject NaN-bearing int columns at serving time."""
+    out = df[FEATURES].copy()
+    for c in out.columns:
+        if out[c].dtype == "object":
+            out[c] = out[c].astype(str).where(out[c].notna(), "(null)")
+        else:
+            out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0.0).astype(float)
+    return out
+
+X = pd.get_dummies(_prep_raw(training_pdf), drop_first=True, dtype=float).fillna(0.0)
 y = training_pdf[TARGET].fillna(0).astype(float)
 
 # Deterministic split so re-runs produce the same test set
@@ -123,15 +134,40 @@ print(f"Train: {len(X_train):,}   Test: {len(X_test):,}")
 
 # COMMAND ----------
 
-FEATURE_NAMES = list(X.columns)
+FEATURE_NAMES = list(X.columns)   # one-hot-encoded, what the fitted GLM expects
 
 class PoissonGLMWrapper(BaseEstimator, RegressorMixin):
-    def __init__(self, result, feature_names):
-        self.result, self.feature_names = result, feature_names
+    """Self-encoding wrapper: accepts a raw-features DataFrame (same columns as
+    FEATURES) and replays the exact training pipeline — _prep_raw + get_dummies
+    + reindex to the trained feature names — at predict time. This means
+    Compare & Test, batch jobs and serving can all call pyfunc.predict() on a
+    plain Modelling-Mart row set without any pre-encoding."""
+    def __init__(self, result, feature_names, raw_features):
+        self.result         = result
+        self.feature_names  = feature_names
+        self.raw_features   = raw_features
+
     def fit(self, X, y): return self
+
+    def _transform(self, X):
+        if hasattr(X, "columns"):
+            df = pd.DataFrame(index=X.index if hasattr(X, "index") else None)
+            for c in self.raw_features:
+                df[c] = X[c] if c in X.columns else 0.0
+        else:
+            df = pd.DataFrame(np.asarray(X), columns=self.raw_features)
+        # Match _prep_raw: object → string-or-"(null)"; numeric → float + NaN→0.
+        for c in df.columns:
+            if df[c].dtype == "object":
+                df[c] = df[c].astype(str).where(df[c].notna(), "(null)")
+            else:
+                df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0).astype(float)
+        Xd = pd.get_dummies(df, drop_first=True, dtype=float)
+        Xd = Xd.reindex(columns=self.feature_names, fill_value=0.0).fillna(0.0)
+        return Xd.values
+
     def predict(self, X):
-        X_vals = X[self.feature_names].values if hasattr(X, "columns") else np.asarray(X)
-        return self.result.predict(sm.add_constant(X_vals, has_constant="add"))
+        return self.result.predict(sm.add_constant(self._transform(X), has_constant="add"))
 
 tags = {
     "feature_table":  f"{fqn}.unified_pricing_table_live",
@@ -174,7 +210,16 @@ with mlflow.start_run(run_name=f"freq_glm_{run_name}", tags=tags) as run:
     rel.to_csv("/tmp/relativities.csv", index=False)
     mlflow.log_artifact("/tmp/relativities.csv")
 
-    wrapper = PoissonGLMWrapper(res, FEATURE_NAMES)
+    wrapper = PoissonGLMWrapper(res, FEATURE_NAMES, FEATURES)
+
+    # Pin an explicit signature on raw features so pyfunc.predict() accepts a
+    # plain Modelling-Mart row set at inference time. Sanitising the sample
+    # first keeps NaN-bearing int columns from being inferred as "integer"
+    # slots (which would then fail enforcement at serving).
+    from mlflow.models.signature import infer_signature
+    sample_X    = _prep_raw(training_pdf.head(5))
+    sample_pred = wrapper.predict(sample_X)
+    signature   = infer_signature(sample_X, sample_pred)
 
     fe.log_model(
         model                 = wrapper,
@@ -182,6 +227,8 @@ with mlflow.start_run(run_name=f"freq_glm_{run_name}", tags=tags) as run:
         flavor                = mlflow.sklearn,
         training_set          = training_set,
         registered_model_name = f"{fqn}.freq_glm",
+        signature             = signature,
+        input_example         = sample_X,
     )
 
     print(f"run_id={run.info.run_id}")

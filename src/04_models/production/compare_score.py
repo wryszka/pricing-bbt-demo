@@ -57,27 +57,9 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 import mlflow
+import mlflow.sklearn
+import mlflow.lightgbm
 from mlflow.tracking import MlflowClient
-
-# MLflow pyfunc's schema enforcement rejects float64 columns for "integer"
-# slots when the df contains NaN (which is how pandas represents null integers).
-# For batch comparison scoring we don't need schema enforcement — the models'
-# own predict() paths handle the types. Disable both common enforcement hooks.
-def _noop_enforce(data, *args, **kwargs):
-    return data
-try:
-    from mlflow.models import utils as _mmu
-    for _name in ("_enforce_schema", "_enforce_mlflow_datatype", "_enforce_tensor_spec", "_enforce_col_spec_type"):
-        if hasattr(_mmu, _name):
-            setattr(_mmu, _name, _noop_enforce)
-except Exception as _e:
-    print(f"  schema-enforcement monkeypatch skipped: {_e}")
-try:
-    import mlflow.pyfunc as _pyfunc
-    if hasattr(_pyfunc, "_enforce_schema"):
-        _pyfunc._enforce_schema = _noop_enforce
-except Exception as _e:
-    print(f"  pyfunc monkeypatch skipped: {_e}")
 
 mlflow.set_registry_uri("databricks-uc")
 client = MlflowClient()
@@ -137,22 +119,6 @@ def _stratified_pick(df: pd.DataFrame, cols, n):
 
 pdf_portfolio = _stratified_pick(cand, strat_cols, port_size)
 print(f"Portfolio sample: {len(pdf_portfolio):,} rows from {source_table}")
-
-# Pull the full set of categorical values from the source table so the dummy
-# encoding step produces the same column set the model was trained on, even
-# when a category is absent from the small portfolio sample.
-_CAT_COLS_TO_PIN = [c for c in ("industry_risk_tier", "construction_type", "region",
-                                  "channel", "flood_zone_rating", "postcode_sector")
-                    if c in src.columns]
-category_vocab: dict[str, list] = {}
-for c in _CAT_COLS_TO_PIN:
-    try:
-        vals = [r[c] for r in src.select(c).distinct().toPandas().to_dict(orient="records")]
-        vals = sorted([str(v) if v is not None else "(null)" for v in vals])
-        category_vocab[c] = vals
-    except Exception as e:
-        print(f"  vocab fetch {c}: {e}")
-print(f"Category vocab sizes: { {k: len(v) for k, v in category_vocab.items()} }")
 
 # COMMAND ----------
 
@@ -218,24 +184,67 @@ print(f"Scenario applied: {scenario}  (rows={len(pdf_scenario):,})")
 # COMMAND ----------
 
 def _load_version(v):
-    uri = f"models:/{uc_name}/{v}"
+    """Load the raw flavor model (sklearn wrapper or LightGBM booster) that
+    fe.log_model stores nested inside the model artifact tree. Bypassing the
+    outer FE-pyfunc wrapper avoids its Spark-UDF batch path and the nested
+    schema enforcement — which MLflow re-imports fresh on every Spark worker,
+    defeating driver-side patches. The raw wrapper already handles its own
+    sanitation via _prep_raw / _transform."""
+    import os, tempfile
+
     mv = client.get_model_version(uc_name, v)
     try:
         r = client.get_run(mv.run_id)
-        tags  = dict(r.data.tags or {})
+        tags    = dict(r.data.tags or {})
         metrics = dict(r.data.metrics or {})
+        params  = dict(r.data.params or {})
     except Exception as e:
-        tags, metrics = {}, {}
+        tags, metrics, params = {}, {}, {}
         print(f"  v{v}: run fetch failed ({e})")
-    model = mlflow.pyfunc.load_model(uri)
+
+    # Backdated "simulated_replay" versions all share the champion's model
+    # bytes; their `nudge_multiplier` param represents the story-driven
+    # shift relative to the champion. Apply it at score time so Compare &
+    # Test shows the intended drift across versions.
+    try:
+        nudge = float(params.get("nudge_multiplier")) if params.get("nudge_multiplier") else 1.0
+    except Exception:
+        nudge = 1.0
+
+    # Walk the downloaded model artifact tree looking for the DEEPEST
+    # MLmodel file — the outer one is the FE wrapper, the deepest is the
+    # raw flavor (sklearn / lightgbm) we want. Use the models:/ URI so
+    # UC-managed artifacts resolve correctly (run-scoped download does not
+    # find them).
+    from mlflow.artifacts import download_artifacts
+    tmpdir     = tempfile.mkdtemp(prefix=f"mv{v}_")
+    model_uri  = f"models:/{uc_name}/{v}"
+    model_root = download_artifacts(artifact_uri=model_uri, dst_path=tmpdir)
+    mlmodel_dirs = []
+    for root, _dirs, files in os.walk(model_root):
+        if "MLmodel" in files:
+            mlmodel_dirs.append(root)
+    if not mlmodel_dirs:
+        raise RuntimeError(f"v{v}: no MLmodel under {model_root}")
+    # Deepest (most segments) = raw flavor; pick that.
+    deepest = max(mlmodel_dirs, key=lambda p: p.count(os.sep))
+    print(f"  v{v}: loading raw flavor from {os.path.relpath(deepest, model_root) or '<root>'}")
+
+    if family.endswith("_glm"):
+        inner = mlflow.sklearn.load_model(deepest)
+    else:
+        inner = mlflow.lightgbm.load_model(deepest)
+
     return {
         "version":  int(v),
-        "uri":      uri,
+        "uri":      f"runs:/{mv.run_id}/model",
         "mv":       mv,
         "run_id":   mv.run_id,
         "tags":     tags,
         "metrics":  metrics,
-        "model":    model,
+        "params":   params,
+        "nudge":    nudge,
+        "model":    inner,
     }
 
 t0 = time.time()
@@ -251,124 +260,71 @@ print(f"Loaded {len(loaded)} versions in {time.time()-t0:.1f}s: {[l['version'] f
 
 # COMMAND ----------
 
-# freq_glm's wrapper expects already-one-hot-encoded features (drop_first=True,
-# dtype=float). Other families either handle encoding inside the wrapper
-# (sev_glm) or accept raw pandas categoricals (LightGBM). To keep the compare
-# flow uniform we pre-encode only when the family requires it.
-FREQ_GLM_FEATURES = [
-    "sum_insured", "annual_turnover", "current_premium",
-    "industry_risk_tier", "construction_type",
-    "credit_score", "ccj_count", "years_trading",
-    "flood_zone_rating", "proximity_to_fire_station_km",
-    "crime_theft_index", "subsidence_risk", "composite_location_risk",
-    "urban_score", "is_coastal", "population_density_per_km2",
-    "elevation_metres", "annual_rainfall_mm",
-    "director_stability_score", "employee_count_est",
-    "distance_to_coast_km", "neighbourhood_claim_frequency",
-]
-
-def _prep_for_family(df: pd.DataFrame, family: str, model, key_col: str,
-                     cat_vocab: dict | None = None) -> pd.DataFrame:
-    """Apply family-specific pre-encoding + keep the FE lookup key so the FE
-    pyfunc wrapper is satisfied."""
-    if family == "freq_glm":
-        cols_present = [c for c in FREQ_GLM_FEATURES if c in df.columns]
-        sub = df[cols_present].copy()
-        for c in cols_present:
-            if sub[c].dtype == "object" or str(sub[c].dtype).startswith("category"):
-                s = sub[c].astype(str).fillna("(null)")
-                if cat_vocab and c in cat_vocab:
-                    # pin the category set so get_dummies always produces the
-                    # same columns regardless of which values appear in the sample
-                    s = pd.Categorical(s, categories=cat_vocab[c])
-                sub[c] = s
-            else:
-                sub[c] = pd.to_numeric(sub[c], errors="coerce").fillna(0.0)
-        encoded = pd.get_dummies(sub, drop_first=True, dtype=float).fillna(0.0)
-        # FE wrapper requires the lookup key even though we pass features directly.
-        if key_col in df.columns:
-            encoded.insert(0, key_col, df[key_col].values)
-        return encoded
-    # sev_glm's wrapper handles the transform itself
-    if family == "sev_glm":
-        out = df.copy()
-        for c in out.columns:
-            if out[c].dtype == "object":
-                out[c] = out[c].fillna("(null)").astype(str)
-        return out
-    # LightGBM models (demand_gbm, fraud_gbm): cast object cols to category
+# All four production wrappers self-encode internally (get_dummies + reindex
+# + scaling inside their own predict). Compare & Test can therefore feed
+# plain, unencoded rows from the FE table directly to pyfunc — with one
+# coercion detail: `fe.log_model` derives the serving schema from the FE
+# table column types (INT/LONG), so NaN-bearing pandas float64 columns
+# have to be cast back to ints before pyfunc's schema enforcement runs.
+def _prep_for_family(df: pd.DataFrame, family: str) -> pd.DataFrame:
+    """Minimal prep — cast object columns to strings with a '(null)' sentinel
+    for NaN, and (for LightGBM families) convert them to pandas categoricals
+    which is what the trained boosters expect."""
     out = df.copy()
     for c in out.columns:
         if out[c].dtype == "object":
-            out[c] = out[c].astype("category")
+            out[c] = out[c].astype(str).where(out[c].notna(), "(null)")
+    if family in ("demand_gbm", "fraud_gbm"):
+        for c in out.columns:
+            if out[c].dtype == "object" or str(out[c].dtype) == "string":
+                out[c] = out[c].astype("category")
     return out
-
-def _predict_bypass_schema(pyfunc_model, df: pd.DataFrame) -> np.ndarray:
-    """MLflow pyfunc enforces the input signature at log time, which fails when
-    integer columns contain NaNs in a batch-scoring context. Two-layer bypass:
-    1) dig into the pyfunc's private `_model_impl` to find the underlying
-       sklearn / lightgbm / python_function predict method;
-    2) as a safety net, coerce NaN-bearing int columns to nullable Int64 so
-       the outer pyfunc.predict path can also succeed.
-    """
-    impl = getattr(pyfunc_model, "_model_impl", None)
-    print(f"    impl={type(impl).__name__ if impl else None}  attrs={dir(impl)[:5] if impl else '—'}")
-
-    # sklearn flavor — _SklearnModelWrapper.sklearn_model
-    for attr in ("sklearn_model", "model"):
-        if impl is not None and hasattr(impl, attr):
-            inner = getattr(impl, attr)
-            if hasattr(inner, "predict") and not isinstance(inner, dict):
-                try:
-                    print(f"    using impl.{attr} ({type(inner).__name__})")
-                    return inner.predict(df)
-                except Exception as ex:
-                    print(f"    impl.{attr} failed: {ex}")
-
-    # lightgbm flavor
-    if impl is not None and hasattr(impl, "lgb_model"):
-        print("    using impl.lgb_model")
-        return impl.lgb_model.predict(df)
-
-    # python function wrapper
-    try:
-        inner = pyfunc_model.unwrap_python_model()
-        if hasattr(inner, "predict"):
-            print(f"    using unwrap_python_model ({type(inner).__name__})")
-            return inner.predict(df)
-    except Exception as ex:
-        print(f"    unwrap failed: {ex}")
-
-    # Last resort — coerce types then call pyfunc
-    print("    falling back to pyfunc.predict with coerced dtypes")
-    schema_df = df.copy()
-    try:
-        schema = pyfunc_model.metadata.get_input_schema()
-        for spec in (schema.inputs if schema else []):
-            n = spec.name
-            if n not in schema_df.columns:
-                continue
-            ttype = str(spec.type).lower()
-            if ttype == "integer":
-                schema_df[n] = pd.to_numeric(schema_df[n], errors="coerce").fillna(0).astype("int32")
-            elif ttype == "long":
-                schema_df[n] = pd.to_numeric(schema_df[n], errors="coerce").fillna(0).astype("int64")
-            elif ttype in ("double", "float"):
-                schema_df[n] = pd.to_numeric(schema_df[n], errors="coerce").astype("float64")
-    except Exception as ex:
-        print(f"    schema coerce failed: {ex}")
-    return pyfunc_model.predict(schema_df)
 
 predictions: dict[int, np.ndarray] = {}
 score_errors: dict[int, str] = {}
 
 for l in loaded:
     v = l["version"]
+    model = l["model"]
     try:
-        prepped = _prep_for_family(pdf_scenario, family, l["model"], key_col, cat_vocab=category_vocab)
-        preds = _predict_bypass_schema(l["model"], prepped)
-        predictions[v] = np.asarray(preds, dtype=float).ravel()
-        print(f"  v{v}: scored  min={predictions[v].min():.4f}  mean={predictions[v].mean():.4f}  max={predictions[v].max():.4f}")
+        prepped = _prep_for_family(pdf_scenario, family)
+        # LightGBM boosters detect categorical columns by dtype at predict
+        # time; if the scoring DataFrame has *extra* category columns versus
+        # training it raises "categorical_feature do not match". Restrict
+        # to the booster's own feature_name() set so only training features
+        # remain, in the correct order.
+        if family in ("demand_gbm", "fraud_gbm") and hasattr(model, "feature_name"):
+            train_feats = list(model.feature_name())
+            for c in train_feats:
+                if c not in prepped.columns:
+                    prepped[c] = 0
+            prepped = prepped[train_feats]
+        preds = model.predict(prepped)
+        arr = np.asarray(preds, dtype=float).ravel()
+        # Apply the simulated-replay nudge so the shift across versions is visible.
+        # The level multiplier alone (arr * nudge) is a monotonic transform — gini is
+        # rank-based so the level multiplier alone can't move it. Add a deterministic
+        # per-version noise term scaled to |nudge - 1.0| so the RANKING shifts and
+        # the holdout gini gap matches the training-time story:
+        #   * nudge > 1.0 (better story): small noise → near-baseline gini
+        #   * nudge < 1.0 (worse story):  larger noise → degraded gini
+        # Champion (nudge=1.0) gets no perturbation — it's the live model on live data.
+        nudge = float(l.get("nudge", 1.0) or 1.0)
+        delta = abs(nudge - 1.0)
+        if delta > 1e-9:
+            arr = arr * nudge
+            # Asymmetric noise — worse stories degrade ranking more than better stories
+            noise_factor = delta if nudge < 1.0 else delta * 0.4
+            pred_std = float(np.std(arr)) if np.std(arr) > 0 else 1.0
+            rng = np.random.default_rng(int(v) * 9973 + 1)
+            noise = rng.normal(0.0, pred_std * noise_factor * 1.5, size=len(arr))
+            arr = arr + noise
+            if family in ("demand_gbm", "fraud_gbm"):
+                arr = np.clip(arr, 0.0, 1.0)
+            elif family in ("freq_glm",) and arr.min() < 0:
+                arr = np.clip(arr, 0.0, None)
+        predictions[v] = arr
+        print(f"  v{v}: scored (nudge={nudge:.3f}  noise={delta:.3f})  min={arr.min():.4f}  mean={arr.mean():.4f}  max={arr.max():.4f}")
     except Exception as e:
         score_errors[v] = f"{type(e).__name__}: {e}"
         print(f"  v{v}: SCORING FAILED — {score_errors[v]}")

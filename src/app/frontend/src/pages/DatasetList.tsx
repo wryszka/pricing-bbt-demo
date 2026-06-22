@@ -5,20 +5,27 @@ import { api } from '../lib/api';
 
 export default function DatasetList() {
   const [datasets, setDatasets] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [statsLoading, setStatsLoading] = useState(true);
 
   useEffect(() => {
-    api.getDatasets().then(setDatasets).finally(() => setLoading(false));
+    // 1. Fast meta call — returns instantly so the cards draw immediately.
+    // 2. Stats call in parallel — each card gets its row counts + approval
+    //    state when it resolves a couple of seconds later.
+    api.getDatasetsMeta().then(setDatasets).catch(() => {});
+    api.getDatasets()
+      .then(setDatasets)                      // overwrite with real stats
+      .finally(() => setStatsLoading(false));
   }, []);
-
-  if (loading) return <div className="p-8 text-center text-gray-500">Loading datasets...</div>;
 
   return (
     <div className="max-w-7xl mx-auto px-6 py-8">
-      <div className="mb-6">
-        <h2 className="text-2xl font-bold text-gray-900">Ingestion</h2>
-        <p className="text-gray-500 mt-1">Every dataset that feeds pricing — the internal book (policies, claims), vendor feeds awaiting review, and real public reference data.</p>
+      <div className="mb-6 flex items-baseline gap-3">
+        <h2 className="text-2xl font-bold text-gray-900">Data Ingestion</h2>
+        {statsLoading && datasets.length > 0 && (
+          <span className="text-xs text-gray-500">loading stats…</span>
+        )}
       </div>
+      <p className="text-gray-500 -mt-5 mb-6">Every dataset that feeds pricing — the internal book (policies, claims), vendor feeds awaiting review, and real public reference data.</p>
 
       {/* Context panels */}
       <div className="grid grid-cols-2 gap-4 mb-6">
@@ -39,6 +46,15 @@ export default function DatasetList() {
           </p>
         </div>
       </div>
+
+      {/* Skeleton shown only when even the meta hasn't arrived yet. */}
+      {datasets.length === 0 && (
+        <div className="grid gap-3 mb-6">
+          {[0, 1, 2, 3, 4].map(i => (
+            <div key={i} className="h-20 rounded-lg bg-gray-100 border border-gray-200 animate-pulse" />
+          ))}
+        </div>
+      )}
 
       {/* Group by category so the internal book sits above the vendor feeds */}
       {['internal', 'external_vendor', 'reference_data'].map((cat) => {
@@ -126,24 +142,36 @@ function DatasetCard({ ds }: { ds: any }) {
           {isInternal || isReference ? (
             <div className="text-right min-w-[7rem]">
               <div className="text-xs text-gray-500">Rows</div>
-              <div className="text-sm font-medium">{Number(ds.silver_row_count).toLocaleString()}</div>
+              <div className="text-sm font-medium">
+                {ds.silver_row_count == null
+                  ? <span className="inline-block w-16 h-3 rounded bg-gray-200 animate-pulse" />
+                  : Number(ds.silver_row_count).toLocaleString()}
+              </div>
             </div>
           ) : (
             <>
               <div className="text-right min-w-[8rem]">
                 <div className="text-xs text-gray-500">Last ingested</div>
-                <div className="text-sm font-medium">{formatIngested(ds.last_ingested)}</div>
+                <div className="text-sm font-medium">
+                  {ds.last_ingested === undefined
+                    ? <span className="inline-block w-24 h-3 rounded bg-gray-200 animate-pulse" />
+                    : formatIngested(ds.last_ingested)}
+                </div>
               </div>
               <div className="text-right min-w-[9rem]">
                 <div className="text-xs text-gray-500">Pending / Approved</div>
                 <div className="text-sm font-medium">
-                  {Number(ds.raw_row_count).toLocaleString()} / {Number(ds.silver_row_count).toLocaleString()}
+                  {ds.raw_row_count == null
+                    ? <span className="inline-block w-24 h-3 rounded bg-gray-200 animate-pulse" />
+                    : <>{Number(ds.raw_row_count).toLocaleString()} / {Number(ds.silver_row_count).toLocaleString()}</>}
                 </div>
               </div>
               <div className="text-right min-w-[5rem]">
                 <div className="text-xs text-gray-500">Rows blocked</div>
-                <div className={`text-sm font-medium ${ds.rows_dropped_by_dq > 0 ? 'text-amber-600' : 'text-green-600'}`}>
-                  {ds.rows_dropped_by_dq}
+                <div className={`text-sm font-medium ${ds.rows_dropped_by_dq && ds.rows_dropped_by_dq > 0 ? 'text-amber-600' : 'text-green-600'}`}>
+                  {ds.rows_dropped_by_dq == null
+                    ? <span className="inline-block w-8 h-3 rounded bg-gray-200 animate-pulse" />
+                    : ds.rows_dropped_by_dq}
                 </div>
               </div>
             </>

@@ -18,12 +18,14 @@
 
 # COMMAND ----------
 
-dbutils.widgets.text("catalog_name", "lr_serverless_aws_us_catalog")
+dbutils.widgets.text("catalog_name", "pricing_workbench")
 dbutils.widgets.text("schema_name",  "pricing_upt")
+dbutils.widgets.text("app_sp_id",    "452a9d33-f698-4124-b573-912c6fe6e929")
 
-catalog = dbutils.widgets.get("catalog_name")
-schema  = dbutils.widgets.get("schema_name")
-fqn     = f"{catalog}.{schema}"
+catalog   = dbutils.widgets.get("catalog_name")
+schema    = dbutils.widgets.get("schema_name")
+app_sp_id = dbutils.widgets.get("app_sp_id")
+fqn       = f"{catalog}.{schema}"
 
 # COMMAND ----------
 
@@ -521,6 +523,67 @@ for model, comment in MODELS.items():
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## 6. Grants — app service principal on UC models
+# MAGIC
+# MAGIC The Databricks App runs as a service principal, so the SP needs explicit
+# MAGIC UC grants before `/deployment/champions/{family}/set` and
+# MAGIC `/deployment/rollback` can swap `@champion` / `@previous_champion`
+# MAGIC aliases. Grants are idempotent and safe to re-run.
+# MAGIC
+# MAGIC We grant `MANAGE` (required for alias operations on UC registered
+# MAGIC models) alongside `ALL_PRIVILEGES` (covers EXECUTE + APPLY_TAG). No
+# MAGIC ownership transfer is needed.
+
+# COMMAND ----------
+
+# The 4 production champion models — the app's /deployment/set + /rollback
+# routes must be able to swap the `@champion` / `@previous_champion` aliases.
+# On UC that requires the model's owner privilege, which we transfer to the
+# app SP. Factory candidates and agent models stay owned by the user.
+APP_SP_MODELS = ["freq_glm", "sev_glm", "demand_gbm", "fraud_gbm"]
+
+# Prerequisite grants so the SP can even see / execute the models.
+for lvl, obj in (("CATALOG", catalog), ("SCHEMA", fqn)):
+    try:
+        spark.sql(f"GRANT USE {lvl} ON {lvl} {obj} TO `{app_sp_id}`")
+        print(f"  ✓ granted USE {lvl} on {obj} to app SP")
+    except Exception as e:
+        print(f"  [skip] USE {lvl} on {obj}: {str(e)[:120]}")
+
+grant_ok = 0
+grant_skipped = 0
+# UC treats registered models as `function` securable types. The right
+# privilege for alias management is MANAGE (which ALL_PRIVILEGES does NOT
+# imply on this securable). The Privilege enum in databricks-sdk doesn't
+# expose MANAGE for functions yet, so route the grant through the raw
+# workspace API. ALL_PRIVILEGES is also granted so the SP can execute /
+# tag / govern the model.
+import requests
+host  = w.config.host.rstrip("/")
+token = w.config._header_factory()
+for m in APP_SP_MODELS:
+    full_name = f"{fqn}.{m}"
+    try:
+        resp = requests.patch(
+            f"{host}/api/2.1/unity-catalog/permissions/function/{full_name}",
+            headers={**token, "Content-Type": "application/json"},
+            json={"changes": [{
+                "principal": app_sp_id,
+                "add": ["MANAGE", "ALL_PRIVILEGES"],
+            }]},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        print(f"  ✓ {full_name}: MANAGE + ALL_PRIVILEGES → app SP")
+        grant_ok += 1
+    except Exception as e:
+        msg = str(e)[:180]
+        print(f"  [skip] grant {m}: {msg}")
+        grant_skipped += 1
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Done
 
 # COMMAND ----------
@@ -531,6 +594,7 @@ Metadata applied to {fqn}.
   Volumes: {len(VOLUMES)} commented
   Tables:  {len(TABLES)} comments applied (missing tables skipped)
   Models:  {len(MODELS)} UC models commented (missing models skipped)
+  Grants:  {grant_ok}/{len(APP_SP_MODELS)} model grants applied to app SP ({grant_skipped} skipped)
 
 Catalog Explorer at {fqn} will now show descriptions on every registered object.
 """)

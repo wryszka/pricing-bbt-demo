@@ -79,7 +79,10 @@ from sklearn.metrics import (
 
 mlflow.set_registry_uri("databricks-uc")
 
-experiment_path = f"/Users/laurence.ryszka@databricks.com/pricing_upt/experiments"
+# Derive the experiment path from the running user so this works in any
+# workspace (matches the idiom in src/04_models/model_01_glm_frequency.py).
+user = dbutils.notebook.entry_point.getDbutils().notebook().getContext().userName().get()
+experiment_path = f"/Users/{user}/pricing_upt/experiments"
 mlflow.set_experiment(experiment_path)
 
 print(f"Catalog : {CATALOG}")

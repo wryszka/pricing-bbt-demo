@@ -1,0 +1,24 @@
+# Pricing Workbench — DEV env values.
+# This file is a template; deploy.sh copies it over app.yaml before
+# `databricks bundle deploy --target dev`.
+command: ["python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+env:
+  - name: CATALOG_NAME
+    value: "lr_dev_aws_us_catalog"
+  - name: SCHEMA_NAME
+    value: "pricing_upt"
+  - name: WAREHOUSE_ID
+    value: "a3b61648ea4809e3"
+  - name: GENIE_SPACE_ID
+    # Modelling Mart — Pricing Q&A (dev clone of prod 01f134e9…ad10f1)
+    value: "01f153c076781fc7848ba20fce370910"
+  - name: GENIE_QUOTE_SPACE_ID
+    # Commercial Quote Review (dev clone of prod 01f13e30…3780b8)
+    value: "01f153c07f69126b8c2db366557de02e"
+  - name: MART_DASHBOARD_ID
+    # Lakeview dashboard powering the Modelling Mart "Dashboard" tab on dev
+    # — cloned from prod (01f13f48d2571b28bb650277cceea811) with catalog refs
+    # retargeted to lr_dev_aws_us_catalog.
+    value: "01f153bd770f16cf89ed8bc93fff45ab"
+  - name: BUNDLE_NOTEBOOKS_BASE
+    value: "/Workspace/Users/laurence.ryszka@databricks.com/.bundle/pricing-upt-demo/dev/files/src/04_models"

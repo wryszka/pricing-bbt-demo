@@ -73,6 +73,21 @@ resources:
             pipeline_id: ${resources.pipelines.silver_external_data.id}
             full_refresh: true
 
+        # Step 3: Inject vendor-data variation into raw_* AFTER silver is
+        # built. Silver now represents the previously-approved snapshot;
+        # raw is mutated to look like newly-arrived vendor data. Without
+        # this step the Data Ingestion UI shows 0 impact because raw and
+        # silver are byte-identical post-ingestion.
+        - task_key: inject_data_variation
+          depends_on:
+            - task_key: build_silver
+          notebook_task:
+            notebook_path: ../src/01_ingestion/inject_data_variation.py
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name: ${var.schema_name}
+          environment_key: default
+
       environments:
         - environment_key: default
           spec:

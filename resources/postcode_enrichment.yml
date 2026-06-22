@@ -19,6 +19,9 @@ resources:
         - task_key: build_postcode_enrichment
           notebook_task:
             notebook_path: ../src/new_data_impact/00a_build_postcode_enrichment.py
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name:  ${var.schema_name}
           environment_key: default
 
       environments:

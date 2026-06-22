@@ -25,7 +25,7 @@
 
 # COMMAND ----------
 
-dbutils.widgets.text("catalog_name", "lr_serverless_aws_us_catalog")
+dbutils.widgets.text("catalog_name", "pricing_workbench")
 dbutils.widgets.text("schema_name",  "pricing_upt")
 dbutils.widgets.text("scale_factor", "1")
 
@@ -508,7 +508,7 @@ for t in ("quotes", "quote_payload_sales", "quote_payload_engine_request", "quot
         ALTER TABLE {fqn}.{t} SET TAGS (
             'business_line' = 'commercial_property',
             'pricing_domain' = 'quote_stream',
-            'refresh_cadence' = 'streaming_simulated',
+            'refresh_cadence' = 'realtime',
             'demo_environment' = 'true'
         )
     """)

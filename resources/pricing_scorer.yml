@@ -1,0 +1,42 @@
+# Unified pricing scorer — one Model Serving endpoint wrapping all 4 champions.
+# Re-run whenever champion aliases flip to bake in the new versions.
+resources:
+  jobs:
+    pricing_scorer_deploy:
+      name: "v1 — Deploy unified pricing scorer endpoint"
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: warehouse_id
+          default: ${var.warehouse_id}
+        - name: endpoint_name
+          default: "pricing_scorer"
+
+      permissions:
+        - service_principal_name: ${var.app_service_principal_id}
+          level: CAN_MANAGE_RUN
+
+      tasks:
+        - task_key: deploy
+          notebook_task:
+            notebook_path: ../src/04_models/production/pricing_scorer.py
+            base_parameters:
+              catalog_name:  ${var.catalog_name}
+              schema_name:   ${var.schema_name}
+              warehouse_id:  "{{job.parameters.warehouse_id}}"
+              endpoint_name: "{{job.parameters.endpoint_name}}"
+          environment_key: env
+
+      environments:
+        - environment_key: env
+          spec:
+            client: "5"
+            dependencies:
+              - mlflow
+              - databricks-agents
+              - databricks-sdk
+              - statsmodels
+              - scikit-learn
+              - lightgbm

@@ -9,7 +9,7 @@
 
 # COMMAND ----------
 
-dbutils.widgets.text("catalog_name", "lr_serverless_aws_us_catalog")
+dbutils.widgets.text("catalog_name", "pricing_workbench")
 dbutils.widgets.text("schema_name",  "pricing_upt")
 dbutils.widgets.text("run_name",     "champion")
 dbutils.widgets.text("simulation_date", "")
@@ -194,12 +194,19 @@ with mlflow.start_run(run_name=f"fraud_gbm_{run_name}", tags=tags) as run:
     except Exception as e:
         print(f"SHAP computation failed: {e}")
 
+    from mlflow.models.signature import infer_signature
+    sample_X    = X_train.head(5).copy()
+    sample_pred = model.predict(sample_X)
+    signature   = infer_signature(sample_X, sample_pred)
+
     fe.log_model(
         model                 = model,
         artifact_path         = "model",
         flavor                = mlflow.lightgbm,
         training_set          = training_set,
         registered_model_name = f"{fqn}.fraud_gbm",
+        signature             = signature,
+        input_example         = sample_X,
     )
     print(f"UC model: {fqn}.fraud_gbm")
 

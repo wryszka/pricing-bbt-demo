@@ -1,0 +1,40 @@
+# Pricing Chat Agent — deploys an Agent Framework endpoint that serves both
+# the factory-review chat and the pricing-explainability endpoint. Run this
+# whenever the agent code or tool set changes.
+resources:
+  jobs:
+    pricing_chat_agent_deploy:
+      name: "v1 — Deploy pricing chat agent"
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: endpoint_name
+          default: "pricing_chat_agent"
+        - name: fm_endpoint
+          default: "databricks-claude-sonnet-4-6"
+
+      permissions:
+        - service_principal_name: ${var.app_service_principal_id}
+          level: CAN_MANAGE_RUN
+
+      tasks:
+        - task_key: deploy
+          notebook_task:
+            notebook_path: ../src/04_models/production/pricing_chat_agent.py
+            base_parameters:
+              catalog_name:  ${var.catalog_name}
+              schema_name:   ${var.schema_name}
+              endpoint_name: "{{job.parameters.endpoint_name}}"
+              fm_endpoint:   "{{job.parameters.fm_endpoint}}"
+          environment_key: agent_env
+
+      environments:
+        - environment_key: agent_env
+          spec:
+            client: "5"
+            dependencies:
+              - mlflow
+              - databricks-agents
+              - databricks-sdk

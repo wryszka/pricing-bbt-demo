@@ -7,6 +7,7 @@ Actual champion-alias rollovers live on the Model Deployment tab.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import json
@@ -54,8 +55,14 @@ def _family_meta(family: str) -> dict[str, Any]:
 
 def _mlflow_client():
     # Late import — keeps mlflow out of cold-start for routes that don't need it.
+    # Set BOTH tracking_uri and registry_uri so runs resolve in the workspace
+    # and registered models resolve in Unity Catalog. Without tracking_uri,
+    # get_run() falls back to the local file store and always returns
+    # "Run not found" — which is what was leaving every version's
+    # story/metrics empty on the Review & Promote tab.
     import mlflow
     from mlflow.tracking import MlflowClient
+    mlflow.set_tracking_uri("databricks")
     mlflow.set_registry_uri("databricks-uc")
     return MlflowClient()
 
@@ -67,11 +74,12 @@ def _fetch_run(client, run_id: str) -> dict:
         logger.warning("get_run %s failed: %s", run_id, e)
         return {}
     return {
-        "tags":     dict(r.data.tags or {}),
-        "params":   dict(r.data.params or {}),
-        "metrics":  dict(r.data.metrics or {}),
-        "start_ms": r.info.start_time or 0,
-        "status":   r.info.status,
+        "tags":          dict(r.data.tags or {}),
+        "params":        dict(r.data.params or {}),
+        "metrics":       dict(r.data.metrics or {}),
+        "start_ms":      r.info.start_time or 0,
+        "status":        r.info.status,
+        "experiment_id": r.info.experiment_id,
     }
 
 
@@ -82,12 +90,8 @@ def _iso_from_ms(ms: int) -> str | None:
 
 
 def _find_pack_job_id(w) -> int | None:
-    try:
-        for j in w.jobs.list(name=PACK_JOB_NAME, limit=25):
-            return j.job_id
-    except Exception as e:
-        logger.warning("jobs.list for %s failed: %s", PACK_JOB_NAME, e)
-    return None
+    from server.config import find_job_id
+    return find_job_id(w, PACK_JOB_NAME)
 
 
 # ---------------------------------------------------------------------------
@@ -121,46 +125,84 @@ async def list_families() -> dict:
 # 2. List versions for a family
 # ---------------------------------------------------------------------------
 
+_VERSIONS_CACHE: dict[str, dict] = {}
+_VERSIONS_TTL_S = 30.0
+_VERSIONS_LIMIT = 20  # cap to the 20 most-recent versions (was: all → 60+ → 30s)
+
+
 @router.get("/families/{family}/versions")
 async def list_versions(family: str) -> dict:
+    """Return up to _VERSIONS_LIMIT most-recent versions for the family.
+    MLflow run details fetched in parallel via asyncio + thread pool. Result
+    cached for _VERSIONS_TTL_S so repeat opens are instant. The compare/test
+    UI never needs >20 versions in the picker — older ones are still in the
+    governance pack history if a regulator asks."""
+    import asyncio, time as _time
+
+    now = _time.time()
+    entry = _VERSIONS_CACHE.get(family)
+    if entry and now < entry["expires_at"]:
+        return entry["value"]
+
     meta = _family_meta(family)
     client = _mlflow_client()
     uc_name = f"{get_catalog()}.{get_schema()}.{family}"
     try:
-        versions = client.search_model_versions(f"name='{uc_name}'")
+        all_versions = client.search_model_versions(f"name='{uc_name}'")
     except Exception as e:
         raise HTTPException(500, f"Could not list versions: {e}")
 
+    # Cap to most-recent N before fetching run details — single biggest win
+    sorted_versions = sorted(all_versions, key=lambda v: int(v.version), reverse=True)[:_VERSIONS_LIMIT]
+    total_count = len(all_versions)
+
     host = get_workspace_host()
+
+    # Resolve the current `champion` alias once so per-row marking is just a compare.
+    # Falls back to None when no champion is set yet (bootstrap state).
+    try:
+        champion_version = int(client.get_model_version_by_alias(uc_name, "champion").version)
+    except Exception:
+        champion_version = None
+
+    # Fire all get_run calls in parallel — was the dominant 30s cost
+    runs = await asyncio.gather(*[
+        asyncio.to_thread(_fetch_run, client, v.run_id) for v in sorted_versions
+    ])
+
     rows = []
-    for v in versions:
-        run = _fetch_run(client, v.run_id)
+    for v, run in zip(sorted_versions, runs):
         primary = run.get("metrics", {}).get(meta["primary_metric"])
+        exp_id = run.get("experiment_id") or ""
         rows.append({
-            "version":          int(v.version),
-            "run_id":           v.run_id,
-            "uc_name":          uc_name,
-            "story":            run.get("tags", {}).get("story"),
-            "story_text":       run.get("tags", {}).get("story_text"),
-            "simulated":        run.get("tags", {}).get("simulated", "false") == "true",
-            "simulation_date":  run.get("tags", {}).get("simulation_date"),
-            "trained_by":       run.get("tags", {}).get("mlflow.user"),
-            "trained_at":       _iso_from_ms(run.get("start_ms", 0)),
-            "status":           str(v.status).split(".")[-1] if v.status else None,
-            "primary_metric":   meta["primary_metric"],
-            "primary_value":    primary,
-            "metrics":          run.get("metrics", {}),
-            "mlflow_url":       f"{host}/ml/experiments/{_experiment_for_run(client, v.run_id) or ''}/runs/{v.run_id}" if host else None,
+            "version":             int(v.version),
+            "run_id":              v.run_id,
+            "uc_name":             uc_name,
+            "story":               run.get("tags", {}).get("story"),
+            "story_text":          run.get("tags", {}).get("story_text"),
+            "simulated":           run.get("tags", {}).get("simulated", "false") == "true",
+            "simulation_date":     run.get("tags", {}).get("simulation_date"),
+            "trained_by":          run.get("tags", {}).get("mlflow.user"),
+            "trained_at":          _iso_from_ms(run.get("start_ms", 0)),
+            "status":              str(v.status).split(".")[-1] if v.status else None,
+            "primary_metric":      meta["primary_metric"],
+            "primary_value":       primary,
+            "metrics":             run.get("metrics", {}),
+            "is_current_champion": champion_version is not None and int(v.version) == champion_version,
+            "mlflow_url":          f"{host}/ml/experiments/{exp_id}/runs/{v.run_id}" if host else None,
         })
-    # Newest first
-    rows.sort(key=lambda r: r["version"], reverse=True)
-    return {
-        "family":          family,
-        "meta":            meta,
-        "uc_name":         uc_name,
-        "versions":        rows,
-        "latest_version":  rows[0]["version"] if rows else None,
+
+    payload = {
+        "family":              family,
+        "meta":                meta,
+        "uc_name":             uc_name,
+        "versions":            rows,
+        "latest_version":      rows[0]["version"] if rows else None,
+        "total_version_count": total_count,
+        "shown":               len(rows),
     }
+    _VERSIONS_CACHE[family] = {"value": payload, "expires_at": now + _VERSIONS_TTL_S}
+    return payload
 
 
 def _experiment_for_run(client, run_id: str) -> str | None:
@@ -181,24 +223,26 @@ async def version_detail(family: str, version: str) -> dict:
     client  = _mlflow_client()
     uc_name = f"{get_catalog()}.{get_schema()}.{family}"
 
-    try:
-        mv = client.get_model_version(uc_name, version)
-    except Exception as e:
-        raise HTTPException(404, f"Version {version} not found for {uc_name}: {e}")
+    # Three MLflow REST calls — fan them out via the thread pool. They're
+    # otherwise sequential and block the event loop.
+    def _pull() -> tuple:
+        try:
+            mv_local = client.get_model_version(uc_name, version)
+        except Exception as e:
+            raise HTTPException(404, f"Version {version} not found for {uc_name}: {e}")
+        run_local = _fetch_run(client, mv_local.run_id)
+        try:
+            arts = [
+                {"path": a.path, "is_dir": a.is_dir, "file_size": a.file_size}
+                for a in client.list_artifacts(mv_local.run_id)
+            ]
+        except Exception as e:
+            logger.warning("list_artifacts(%s) failed: %s", mv_local.run_id, e)
+            arts = []
+        return mv_local, run_local, arts
 
-    run = _fetch_run(client, mv.run_id)
+    mv, run, artifacts = await asyncio.to_thread(_pull)
     host = get_workspace_host()
-
-    # List artifacts for the run (shallow — 1 level) so the UI can link to the
-    # right images / CSVs.
-    try:
-        artifacts = [
-            {"path": a.path, "is_dir": a.is_dir, "file_size": a.file_size}
-            for a in client.list_artifacts(mv.run_id)
-        ]
-    except Exception as e:
-        logger.warning("list_artifacts(%s) failed: %s", mv.run_id, e)
-        artifacts = []
 
     # Classify the notable artifacts so the UI doesn't have to sniff filenames.
     def _find(tag: str) -> str | None:
@@ -255,21 +299,24 @@ async def get_artifact(family: str, version: str, path: str) -> Response:
     _family_meta(family)
     client = _mlflow_client()
     uc_name = f"{get_catalog()}.{get_schema()}.{family}"
-    try:
-        mv = client.get_model_version(uc_name, version)
-    except Exception as e:
-        raise HTTPException(404, str(e))
 
     # Only allow files at the artifact root — no traversal.
     if "/" in path or ".." in path:
         raise HTTPException(400, "path may not contain '/' or '..'")
 
-    with tempfile.TemporaryDirectory() as tmp:
+    def _fetch_artifact() -> bytes:
         try:
-            local = client.download_artifacts(mv.run_id, path, dst_path=tmp)
+            mv = client.get_model_version(uc_name, version)
         except Exception as e:
-            raise HTTPException(404, f"artifact {path} not found: {e}")
-        data = Path(local).read_bytes()
+            raise HTTPException(404, str(e))
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                local = client.download_artifacts(mv.run_id, path, dst_path=tmp)
+            except Exception as e:
+                raise HTTPException(404, f"artifact {path} not found: {e}")
+            return Path(local).read_bytes()
+
+    data = await asyncio.to_thread(_fetch_artifact)
     mime = "image/png" if path.endswith(".png") else (
            "text/csv"   if path.endswith(".csv") else "application/octet-stream")
     return Response(content=data, media_type=mime,
@@ -342,13 +389,14 @@ async def generate_pack(req: GeneratePackRequest) -> dict:
         raise HTTPException(400, f"family must be one of {sorted(FAMILY_KEYS)}")
     user = get_current_user()
     w = get_workspace_client()
-    job_id = _find_pack_job_id(w)
+    job_id = await asyncio.to_thread(_find_pack_job_id, w)
     if not job_id:
         raise HTTPException(500,
             f"Job '{PACK_JOB_NAME}' not found. Deploy the bundle with `databricks bundle deploy`.")
 
     try:
-        run = w.jobs.run_now(
+        run = await asyncio.to_thread(
+            w.jobs.run_now,
             job_id=job_id,
             job_parameters={
                 "catalog_name":  get_catalog(),
@@ -391,7 +439,7 @@ async def generate_pack(req: GeneratePackRequest) -> dict:
 async def pack_run_status(run_id: int) -> dict:
     w = get_workspace_client()
     try:
-        run = w.jobs.get_run(run_id=run_id)
+        run = await asyncio.to_thread(w.jobs.get_run, run_id=run_id)
     except Exception as e:
         raise HTTPException(500, f"Could not fetch run {run_id}: {e}")
 
@@ -405,7 +453,7 @@ async def pack_run_status(run_id: int) -> dict:
         task_runs = run.tasks or []
         for t in task_runs:
             if t.task_key == "generate" and t.run_id:
-                out = w.jobs.get_run_output(run_id=t.run_id)
+                out = await asyncio.to_thread(w.jobs.get_run_output, run_id=t.run_id)
                 if out.notebook_output and out.notebook_output.result:
                     try:
                         pack_payload = json.loads(out.notebook_output.result)
@@ -472,9 +520,11 @@ async def download_pack(pack_id: str) -> StreamingResponse:
 
     path = rows[0]["pdf_path"]
     w = get_workspace_client()
-    try:
+    def _download() -> bytes:
         resp = w.files.download(file_path=path)
-        data = resp.contents.read() if hasattr(resp.contents, "read") else resp.contents
+        return resp.contents.read() if hasattr(resp.contents, "read") else resp.contents
+    try:
+        data = await asyncio.to_thread(_download)
     except Exception as e:
         raise HTTPException(500, f"Could not download {path}: {e}")
 

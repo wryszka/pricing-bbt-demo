@@ -40,36 +40,88 @@ External data ─ enrichment ─┐
 
 ## Quick Start
 
+> **Order matters.** Deploy the bundle, run the data pipeline, *then* deploy the
+> app + grants. The post-deploy grant job needs the schema and trained models to
+> already exist (it grants the app's service principal and sets the initial
+> champions), so it must run **after** the pipeline.
+
+### 0. Prerequisites
+
+- A Databricks workspace with **serverless compute** + **Unity Catalog**
+- A **SQL warehouse** in that workspace (note its id)
+- Databricks CLI v0.230+ authenticated to the workspace as a named profile:
+  ```bash
+  databricks auth login --host https://<your-workspace-host> --profile <your-profile>
+  ```
+- Node 18+ (the app frontend is built locally by `deploy.sh`)
+
+### 1. Clone
+
 ```bash
-# 1. Clone
 git clone https://github.com/wryszka/pricing-workbench.git
 cd pricing-workbench
-
-# 2. Configure (edit databricks.yml with your workspace)
-#    Change catalog_name and workspace host
-
-# 3. Deploy
-databricks bundle deploy
-
-# 4. Run setup (creates tables + test data)
-databricks bundle run setup_demo
-
-# 5. Build the real UK postcode enrichment (~2-5 min — ONSPD + IMD download)
-databricks bundle run build_postcode_enrichment
-
-# 6. Run pipeline
-databricks bundle run ingest_external_data    # bronze → silver
-databricks bundle run build_upt                # derive_factors → UPT → feature_catalog
-databricks bundle run train_pricing_models     # GLMs + GBMs + challenger comparison
-
-# 7. Sync the notebook track to your Workspace Home folder
-./scripts/sync_notebooks.sh
-#   → /Workspace/Users/<you>/pricing-workbench/new_data_impact/
-
-# 8. Open the app (URL in Databricks Serving UI)
-#    Promote the Feature Store to the online store (Lakebase) from the
-#    "Feature Store" tab when you want to demo sub-10ms renewal scoring.
 ```
+
+### 2. Add a deploy target
+
+`databricks.yml` ships `prod`/`dev` (maintainer targets - do not deploy to them).
+Add your own target alongside them (copy the `pinchu` target as a template):
+
+```yaml
+  mytarget:
+    mode: development
+    workspace:
+      host: https://<your-workspace-host>
+      profile: <your-profile>
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+    variables:
+      catalog_name: <your_catalog>      # created by setup_demo if it does not exist
+      warehouse_id: "<your-warehouse-id>"
+      # leave app SP / Genie / dashboard blank - they are filled in later
+```
+
+Then create `src/app/app.mytarget.yaml` (copy `app.pinchu.yaml`) and set
+`CATALOG_NAME`, `WAREHOUSE_ID`, and `BUNDLE_NOTEBOOKS_BASE`
+(`/Workspace/Users/<you>/.bundle/pricing-upt-demo/mytarget/files/src/04_models`).
+Leave the Genie / dashboard ids blank - the UI hides those panels until they are set.
+
+### 3. Deploy the bundle (creates the jobs)
+
+```bash
+databricks bundle deploy --target mytarget --profile <your-profile>
+```
+
+### 4. Run the data pipeline (one command)
+
+`setup_all` chains setup → (postcode ‖ ingest) → build_upt → production_training
+in the correct order (~20 min). On a failure, use "Repair run" on the run page to
+retry from the failed task.
+
+```bash
+databricks bundle run setup_all --target mytarget --profile <your-profile>
+```
+
+### 5. Deploy the app + grant its service principal
+
+```bash
+./deploy.sh mytarget <your-profile>
+```
+
+This builds the frontend, deploys the bundle + app, then runs
+`grant_app_permissions` - which grants the app's auto-minted service principal
+the Unity Catalog / experiment access it needs and sets the initial `champion`
+alias per model family. **Without this step the app's data tabs return errors**
+(the SP starts with no grants). The job is idempotent - safe to re-run.
+
+> Pass your CLI profile as the second argument for any custom target. The
+> built-in `dev` / `prod` / `pinchu` targets have default profiles and need no
+> second argument.
+
+### 6. Open the app
+
+The app URL is printed by `deploy.sh` (and in the Databricks **Apps** UI).
+To demo sub-10ms renewal scoring, promote the Feature Store to the online store
+(Lakebase) from the **Modelling Mart** tab.
 
 ## Two tracks
 
@@ -93,12 +145,6 @@ Internal Data (policies, claims, quotes) ───────→ Unified Pricin
                                                           ↓
               GOVERNANCE: UC Lineage │ Audit Log │ Time Travel │ DQ Monitoring
 ```
-
-## Prerequisites
-
-- Databricks workspace with **serverless compute**
-- Unity Catalog enabled
-- Databricks CLI v0.200+
 
 ## Repository Structure
 

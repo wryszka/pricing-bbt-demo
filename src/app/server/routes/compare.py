@@ -13,6 +13,7 @@ All scoring happens inside the notebook (which loads models via
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -66,11 +67,19 @@ async def list_scenarios(family: str | None = None) -> dict:
 # ---------------------------------------------------------------------------
 
 def _find_job_id(w) -> int | None:
+    """Exact-match first, then suffix-match — the bundle adds a
+    `[dev <user>]` prefix to every job name, so exact lookup misses."""
     try:
         for j in w.jobs.list(name=COMPARE_JOB_NAME, limit=25):
             return j.job_id
     except Exception as e:
-        logger.warning("jobs.list for '%s' failed: %s", COMPARE_JOB_NAME, e)
+        logger.warning("jobs.list(name=%r) failed: %s", COMPARE_JOB_NAME, e)
+    try:
+        for j in w.jobs.list(limit=100):
+            if (j.settings.name or "").endswith(COMPARE_JOB_NAME):
+                return j.job_id
+    except Exception as e:
+        logger.warning("jobs.list suffix-match fallback failed: %s", e)
     return None
 
 
@@ -85,6 +94,37 @@ class RunRequest(BaseModel):
     scenario_id: str = "none"
 
 
+async def _find_cached_compare(family: str, versions: list, scenario: str,
+                               portfolio_size: int) -> dict | None:
+    """In cached mode, find the most recent compare_results row matching the
+    full request signature. Returns the cache_key + metadata so the caller
+    can return a synthetic "already done" response and skip the 2-min job."""
+    # Versions stored as comma-joined string in compare_results.
+    version_str = ",".join(str(v) for v in versions)
+    try:
+        rows = await execute_query(f"""
+            SELECT cache_key, requested_by, generated_at
+            FROM {fqn('compare_results')}
+            WHERE family = '{family}'
+              AND versions = '{version_str}'
+              AND scenario = '{scenario}'
+              AND portfolio_size = {int(portfolio_size)}
+            ORDER BY generated_at DESC
+            LIMIT 1
+        """)
+    except Exception as e:
+        logger.info("cache lookup failed (compare_results not queryable yet): %s", e)
+        return None
+    if not rows:
+        return None
+    r = rows[0]
+    return {
+        "cache_key":    r["cache_key"],
+        "requested_by": r.get("requested_by"),
+        "generated_at": str(r.get("generated_at", "")),
+    }
+
+
 @router.post("/run")
 async def trigger_run(req: RunRequest) -> dict:
     if req.family not in VALID_FAMILIES:
@@ -95,15 +135,39 @@ async def trigger_run(req: RunRequest) -> dict:
     if scenario not in {s["id"] for s in SCENARIOS}:
         raise HTTPException(400, f"unknown scenario_id '{scenario}'")
 
+    # Cache mode: if a prior identical run exists in compare_results, reuse
+    # its cache_key. Returns a synthetic "completed" response so the UI skips
+    # straight to /api/compare/cache/{key} and renders instantly.
+    from server import ai_cache
+    if ai_cache.get_mode() == "cached":
+        hit = await _find_cached_compare(req.family, req.versions, scenario, req.portfolio_size)
+        if hit:
+            return {
+                "job_id":         None,
+                "job_run_id":     None,
+                "run_page_url":   None,
+                "family":         req.family,
+                "versions":       req.versions,
+                "scenario_id":    scenario,
+                "portfolio_size": req.portfolio_size,
+                "cached":         True,
+                "cache_key":      hit["cache_key"],
+                "life_cycle":     "TERMINATED",
+                "result":         "SUCCESS",
+                "generated_at":   hit["generated_at"],
+                "requested_by":   hit["requested_by"],
+            }
+
     user = get_current_user()
     w = get_workspace_client()
-    job_id = _find_job_id(w)
+    job_id = await asyncio.to_thread(_find_job_id, w)
     if not job_id:
         raise HTTPException(500,
             f"Job '{COMPARE_JOB_NAME}' not found. Deploy the bundle with `databricks bundle deploy`.")
 
     try:
-        run = w.jobs.run_now(
+        run = await asyncio.to_thread(
+            w.jobs.run_now,
             job_id=job_id,
             job_parameters={
                 "catalog_name":   get_catalog(),
@@ -139,6 +203,7 @@ async def trigger_run(req: RunRequest) -> dict:
         "versions":     req.versions,
         "scenario_id":  scenario,
         "portfolio_size": req.portfolio_size,
+        "cached":       False,
     }
 
 
@@ -150,7 +215,7 @@ async def trigger_run(req: RunRequest) -> dict:
 async def run_status(run_id: int) -> dict:
     w = get_workspace_client()
     try:
-        run = w.jobs.get_run(run_id=run_id)
+        run = await asyncio.to_thread(w.jobs.get_run, run_id=run_id)
     except Exception as e:
         raise HTTPException(500, f"Could not fetch run {run_id}: {e}")
 
@@ -162,7 +227,7 @@ async def run_status(run_id: int) -> dict:
     try:
         for t in run.tasks or []:
             if t.task_key == "score" and t.run_id:
-                out = w.jobs.get_run_output(run_id=t.run_id)
+                out = await asyncio.to_thread(w.jobs.get_run_output, run_id=t.run_id)
                 if out.notebook_output and out.notebook_output.result:
                     try:
                         exit_payload = json.loads(out.notebook_output.result)

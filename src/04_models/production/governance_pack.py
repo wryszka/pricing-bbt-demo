@@ -43,13 +43,22 @@ user      = dbutils.widgets.get("requested_by") or "app"
 
 fqn       = f"{catalog}.{schema}"
 uc_name   = f"{fqn}.{family}"
-VALID     = {"freq_glm", "sev_glm", "demand_gbm", "fraud_gbm"}
+VALID     = {"freq_glm", "sev_glm", "demand_gbm", "fraud_gbm",
+             "freq_glm_motor", "sev_glm_motor", "demand_gbm_motor", "fraud_gbm_motor"}
 # Factory candidates register as factory_freq_glm_<variant_id>. They're also
 # valid targets — same pack format, same sidecars, but the alias flip at the
 # end is skipped (they're not promoted into production).
 _is_factory_variant = family.startswith("factory_")
 if family not in VALID and not _is_factory_variant:
     raise ValueError(f"model_family must be one of {VALID} or a factory_* variant, got '{family}'")
+
+# Motor variants share schema + algorithm with the commercial families. Use a
+# `_base` form for every BUSINESS_CONTEXT / primary_metric / CSV-filename
+# lookup, but keep `family` for UC model name + pack_id.
+if family.endswith("_motor"):
+    family_base = family[: -len("_motor")]
+else:
+    family_base = family
 
 import json, io, os, uuid, tempfile
 from datetime import datetime, timezone
@@ -242,7 +251,7 @@ if _is_factory_variant:
         "owner_team":   "Pricing Actuarial — Model Factory experiments",
     }
 else:
-    CTX = BUSINESS_CONTEXT[family]
+    CTX = BUSINESS_CONTEXT[family_base]
 
 # Regulatory references by family — shared where applicable
 REGS = [
@@ -315,25 +324,25 @@ _variant_id = family.rsplit("_", 1)[-1] if _is_factory_variant else None
 
 relativities   = _read_csv_if_present([
     f"{_variant_id}_relativities.csv" if _variant_id else "",
-    f"{family.split('_')[0]}_relativities.csv",
+    f"{family_base.split('_')[0]}_relativities.csv",
     "freq_relativities.csv", "sev_relativities.csv",
 ])
 importance     = _read_csv_if_present([
     f"{_variant_id}_importance.csv" if _variant_id else "",
-    f"{family.split('_')[0]}_importance.csv",
+    f"{family_base.split('_')[0]}_importance.csv",
     "demand_importance.csv", "fraud_importance.csv",
 ])
 shap_imp       = _read_csv_if_present([
     f"{_variant_id}_shap_importance.csv" if _variant_id else "",
-    f"{family.split('_')[0]}_shap_importance.csv",
+    f"{family_base.split('_')[0]}_shap_importance.csv",
     "demand_shap_importance.csv", "fraud_shap_importance.csv",
 ])
 shap_plot_key  = next((k for k in artifact_paths if k.endswith("shap_summary.png")), None)
 shap_plot_path = artifact_paths.get(shap_plot_key) if shap_plot_key else None
 
 # Factory candidates are always freq_glm under the hood — treat as GLM
-is_glm = family.endswith("_glm") or _is_factory_variant
-is_gbm = family.endswith("_gbm") and not _is_factory_variant
+is_glm = family_base.endswith("_glm") or _is_factory_variant
+is_gbm = family_base.endswith("_gbm") and not _is_factory_variant
 print(f"  is_glm={is_glm} is_gbm={is_gbm}  "
       f"relativities={None if relativities is None else len(relativities)}  "
       f"importance={None if importance is None else len(importance)}  "
@@ -352,7 +361,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 primary_metric = {"freq_glm": "gini", "sev_glm": "gini",
-                  "demand_gbm": "auc", "fraud_gbm": "auc"}.get(family, "gini")
+                  "demand_gbm": "auc", "fraud_gbm": "auc"}.get(family_base, "gini")
 
 stability_png = None
 if len(history) > 1:
@@ -361,11 +370,13 @@ if len(history) > 1:
     ys = [h["metrics"].get(primary_metric) for h in history]
     simulated_mask = [h["simulated"] for h in history]
     real_mask = [not s for s in simulated_mask]
-    real_xs = [x for x, m in zip(xs, real_mask) if m]
-    real_ys = [y for y, m in zip(ys, real_mask) if m and y is not None]
-    sim_xs  = [x for x, m in zip(xs, simulated_mask) if m]
-    sim_ys  = [y for y, m in zip(ys, simulated_mask) if m and y is not None]
-    ax.plot(xs, ys, linestyle="-", color="#3b82f6", alpha=0.5, linewidth=1)
+    real_pairs = [(x, y) for x, y, m in zip(xs, ys, real_mask) if m and y is not None]
+    sim_pairs  = [(x, y) for x, y, m in zip(xs, ys, simulated_mask) if m and y is not None]
+    real_xs, real_ys = (list(t) for t in zip(*real_pairs)) if real_pairs else ([], [])
+    sim_xs,  sim_ys  = (list(t) for t in zip(*sim_pairs))  if sim_pairs  else ([], [])
+    plot_pairs = [(x, y) for x, y in zip(xs, ys) if y is not None]
+    plot_xs, plot_ys = (list(t) for t in zip(*plot_pairs)) if plot_pairs else ([], [])
+    ax.plot(plot_xs, plot_ys, linestyle="-", color="#3b82f6", alpha=0.5, linewidth=1)
     if sim_xs:
         ax.scatter(sim_xs, sim_ys, s=30, color="#9ca3af", label="simulated replay", zorder=3)
     if real_xs:
@@ -483,14 +494,17 @@ class GovernancePack(FPDF):
     def para(self, text: str, size: int = 10, color=(40, 40, 40)):
         self.set_font("Helvetica", "", size)
         self.set_text_color(*color)
-        self.multi_cell(0, 5, text)
+        # wrapmode="CHAR" so unbreakable tokens (UUIDs, long URLs embedded in
+        # error messages) don't trip 'Not enough horizontal space to render
+        # a single character' under fpdf2's default word-wrap mode.
+        self.multi_cell(0, 5, text, wrapmode="CHAR")
         self.ln(1)
 
     def callout(self, text: str, color=AMBER, bg=EMBER):
         self.set_fill_color(*bg)
         self.set_font("Helvetica", "I", 9)
         self.set_text_color(*color)
-        self.multi_cell(0, 4.5, text, fill=True, border=0)
+        self.multi_cell(0, 4.5, text, fill=True, border=0, wrapmode="CHAR")
         self.ln(1)
 
     def kv_block(self, items: list[tuple[str, str]]):
@@ -766,7 +780,7 @@ interp = {
     "sev_glm":    f"A Gini of {run_metrics.get('gini', 0):.3f} on severity means the model successfully separates high-cost from low-cost claimants. Mean absolute error of £{run_metrics.get('mae_gbp', 0):,.0f} sets expected residual error per prediction.",
     "demand_gbm": f"AUC of {run_metrics.get('auc', 0):.3f} means the model correctly ranks conversion probability in {int(run_metrics.get('auc', 0)*100)}% of random pairs. Log-loss of {run_metrics.get('logloss', 0):.3f} reflects calibrated probabilities.",
     "fraud_gbm":  f"AUC of {run_metrics.get('auc', 0):.3f} indicates strong separation of fraudulent vs. genuine cases. Precision {run_metrics.get('precision', 0):.2f} — of cases flagged, {int(run_metrics.get('precision', 0)*100)}% warrant SIU review. Recall {run_metrics.get('recall', 0):.2f} — of true fraud, {int(run_metrics.get('recall', 0)*100)}% are caught.",
-}.get(family, "—")
+}.get(family_base, "—")
 pdf.para(interp)
 
 # -------- 6. Feature behaviour --------
@@ -921,50 +935,71 @@ try:
 except Exception as e:
     pdf.para(f"(audit query failed: {e})", size=8, color=GRAY)
 
-# Dedicated agent-activity subsection: pull every governance_pack_chat event
-# and expand the tool trace so the pack shows exactly what the AI did.
+# Dedicated agent-activity subsection: every agent interaction that touched
+# this model — governance-pack chat (Q&A on the model card), factory-chat
+# (actuary reviewing the factory run that produced this variant), and
+# explainability-agent calls. All pulled from audit_log with the tool trace
+# expanded so the pack shows exactly what each AI looked at before answering.
 pdf.h2("AI assistant activity — every tool call logged")
 pdf.para(
-    "Every question asked of the governance agent is logged, together with the "
-    "specific tool calls the agent made and a summary of each tool's result. "
-    "This gives the committee and any regulator a verifiable record of what "
-    "the AI looked at before it answered — no hidden lookups, no unrecorded "
-    "claims.", size=9)
+    "Every question asked of an agent in the pricing workbench is logged with "
+    "its tool trace (which data the agent queried, summarised result) and the "
+    "model version it ran on. The record below is chronological across three "
+    "activity streams — governance-pack chat, factory-review chat, and the "
+    "explainability agent — filtered to this model family. This gives the "
+    "committee and any regulator a verifiable audit trail of what the AI "
+    "looked at before it answered — no hidden lookups, no unrecorded claims.",
+    size=9)
 try:
+    # Factory runs for this family use run_ids of the form
+    # `REAL-FACTORY-<ts>-<family>` or `FACTORY-<ts>-<family>`. Match by suffix.
     agent_events = spark.sql(f"""
-        SELECT timestamp, user_id, details
+        SELECT timestamp, user_id, event_type, entity_id, details
         FROM {fqn}.audit_log
-        WHERE event_type = 'governance_pack_chat'
-          AND entity_id = '{family}'
+        WHERE (
+            (event_type = 'governance_pack_chat' AND entity_id = '{family}')
+         OR (event_type = 'factory_chat'         AND entity_id LIKE '%-{family}')
+         OR (event_type = 'agent_recommendation' AND entity_id = 'explainability_agent')
+        )
         ORDER BY timestamp DESC
-        LIMIT 20
+        LIMIT 30
     """).toPandas()
     if len(agent_events) == 0:
         pdf.para("No agent interactions recorded for this model family yet.", size=9, color=GRAY)
     else:
+        # Friendlier labels for each event type in the PDF
+        stream_label = {
+            "governance_pack_chat": "governance-pack chat",
+            "factory_chat":         "factory review chat",
+            "agent_recommendation": "explainability agent",
+        }
         for _, row in agent_events.iterrows():
             try:
                 det = json.loads(row["details"]) if isinstance(row["details"], str) else (row["details"] or {})
             except Exception:
                 det = {}
-            ts = str(row["timestamp"])[:19]
-            who = (row["user_id"] or "-").split("@")[0]
-            question = (det.get("question") or "")[:220]
-            tool_trace = det.get("tool_trace") or []
+            ts     = str(row["timestamp"])[:19]
+            who    = (row["user_id"] or "-").split("@")[0]
+            stream = stream_label.get(row["event_type"], row["event_type"])
+            scope  = row["entity_id"]
+            question = (det.get("question") or "")[:240]
+            # Trace key varies across event types — fall through both spellings.
+            tool_trace = det.get("trace") or det.get("tool_trace") or []
             model = det.get("model") or det.get("endpoint") or "-"
             usage = det.get("usage") or {}
             tokens = usage.get("total_tokens") or ""
+
             line_w = 180
             pdf.set_x(15)
             pdf.set_font("Helvetica", "B", 9)
             pdf.set_text_color(*NAVY)
-            pdf.multi_cell(line_w, 5, f"{ts}  ·  {who}")
+            pdf.multi_cell(line_w, 5, f"{ts}  ·  {stream}  ·  {who}  ·  scope={scope}")
             pdf.set_x(15)
             pdf.set_font("Helvetica", "", 8)
             pdf.set_text_color(40, 40, 40)
             pdf.multi_cell(line_w, 4, f"Q: {question}")
             if tool_trace:
-                for step in tool_trace[:6]:
+                for step in tool_trace[:8]:
                     tool = str(step.get("tool", "?"))[:40]
                     args = step.get("args") or step.get("arguments") or {}
                     summary = str(step.get("result_summary") or "")[:120]
@@ -979,11 +1014,136 @@ try:
             pdf.set_x(15)
             pdf.set_font("Helvetica", "I", 7)
             pdf.set_text_color(*GRAY)
-            cited = det.get('cited_sections') or []
-            pdf.multi_cell(line_w, 3.5, f"   model: {model}  tokens: {tokens}  cited: {','.join(str(c) for c in cited) or '-'}")
+            cited = det.get("cited_sections") or det.get("cited") or []
+            pdf.multi_cell(
+                line_w, 3.5,
+                f"   model: {model}  tokens: {tokens}  cited: {','.join(str(c) for c in cited) or '-'}"
+            )
             pdf.ln(1.5)
 except Exception as e:
     pdf.para(f"(agent activity query failed: {e})", size=8, color=GRAY)
+
+# -------- 11b. Bias scan — live gap + agent review --------
+
+pdf.h2("Bias scan — protected attributes we do not model")
+pdf.para(
+    "This model does not ingest director gender or postcode demographic profile. "
+    "We still monitor production predictions against those unmodelled attributes "
+    "so a proxy disparity (risk factor that happens to correlate with a protected "
+    "attribute) is caught and documented — before a regulator asks.",
+    size=9)
+
+# Pull per-cohort metric for this family's predictions.
+_METRIC_PER_FAMILY = {
+    "freq_glm":   "freq_pred",
+    "sev_glm":    "sev_pred",
+    "demand_gbm": "demand_pred",
+    "fraud_gbm":  "fraud_pred",
+}
+_bias_metric_col = _METRIC_PER_FAMILY.get(family, "freq_pred")
+
+for attr_label, attr_col in (("Director gender", "director_gender"),
+                              ("Postcode demographic", "postcode_demographic")):
+    try:
+        bias_df = spark.sql(f"""
+            SELECT d.{attr_col}                                   AS cohort,
+                   count(*)                                        AS n,
+                   round(avg(i.{_bias_metric_col}), 6)             AS metric,
+                   round(avg(i.technical_premium), 2)              AS avg_premium
+            FROM {fqn}.policy_demographics d
+            JOIN {fqn}.inference_logs      i USING (policy_id)
+            GROUP BY d.{attr_col}
+            ORDER BY d.{attr_col}
+        """).toPandas()
+    except Exception as e:
+        pdf.para(f"({attr_label}: query failed — {e})", size=8, color=GRAY)
+        continue
+    if bias_df.empty:
+        continue
+    prems = [float(v) for v in bias_df["avg_premium"].tolist() if v is not None]
+    gap   = (max(prems) / min(prems) - 1) * 100 if prems and min(prems) > 0 else 0.0
+    pdf.ln(1)
+    pdf.set_x(15)
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.set_text_color(*NAVY)
+    pdf.multi_cell(180, 5, f"{attr_label} — top-vs-bottom cohort gap: {gap:.1f}%")
+    pdf.set_font("Helvetica", "", 9)
+    pdf.df_table(
+        bias_df.rename(columns={
+            "cohort":       attr_label,
+            "n":            "Policies",
+            "metric":       f"{_bias_metric_col}",
+            "avg_premium":  "Avg premium",
+        }),
+        max_rows=6, widths=[60, 25, 40, 35],
+    )
+
+# Pack-baked agent review: call the bias_investigator persona for a
+# structured narrative (DETECTION / DIAGNOSIS / JUSTIFICATION / EVIDENCE /
+# MITIGATION / CONCLUSION) and render it verbatim. Fails soft — if the
+# endpoint isn't available the table above still stands on its own.
+pdf.ln(2)
+pdf.set_x(15)
+pdf.set_font("Helvetica", "B", 10)
+pdf.set_text_color(*NAVY)
+pdf.multi_cell(180, 5, "Agent review — pack-baked investigation")
+pdf.set_font("Helvetica", "", 9)
+pdf.set_text_color(40, 40, 40)
+try:
+    from databricks.sdk import WorkspaceClient as _WC
+    import requests as _rq
+    _w = _WC()
+    _host  = _w.config.host.rstrip("/")
+    _token = _w.config._header_factory()
+    _q = (f"Review {family} version {version} for director_gender bias in "
+          f"pack-baked mode. Report DETECTION, DIAGNOSIS, JUSTIFICATION, "
+          f"EVIDENCE, MITIGATION, CONCLUSION in 5-8 sentences per section.")
+    _resp = _rq.post(
+        f"{_host}/serving-endpoints/pricing_chat_agent/invocations",
+        headers={**_token, "Content-Type": "application/json"},
+        json={"dataframe_records": [{
+            "messages": [{"role": "user", "content": _q}],
+            "custom_inputs": {
+                "persona":             "bias_investigator",
+                "mode":                "pack_baked",
+                "family":              family,
+                "version":             str(version),
+                "protected_attribute": "director_gender",
+            },
+        }]},
+        timeout=300,
+    )
+    _resp.raise_for_status()
+    _data  = _resp.json()
+    _preds = _data.get("predictions") or _data
+    if isinstance(_preds, list):
+        _preds = _preds[0] if _preds else {}
+    _msgs  = (_preds or {}).get("messages") or []
+    _answer = (_msgs[0].get("content") if _msgs else "") or ""
+    _trace  = (_preds or {}).get("trace") or []
+    _usage  = (_preds or {}).get("usage") or {}
+    if _answer:
+        # Render the narrative verbatim (already well-structured by the agent)
+        for line in _answer.split("\n")[:80]:
+            pdf.set_x(15)
+            line = line.strip()
+            if not line:
+                pdf.ln(2); continue
+            # Bold when the line looks like a section heading
+            bold = line[:3] in ("## ", "**") or line.isupper()
+            pdf.set_font("Helvetica", "B" if bold else "", 9)
+            pdf.multi_cell(180, 4.5, line[:500], wrapmode="CHAR")
+        pdf.ln(1)
+        pdf.set_x(15)
+        pdf.set_font("Helvetica", "I", 7)
+        pdf.set_text_color(*GRAY)
+        pdf.multi_cell(180, 3.5,
+            f"agent={len(_trace)} tool calls · model=databricks-claude-sonnet-4-6 · "
+            f"tokens={_usage.get('total_tokens', '?')}", wrapmode="CHAR")
+    else:
+        pdf.para("(agent returned no narrative — table above stands alone)", size=8, color=GRAY)
+except Exception as _e:
+    pdf.para(f"(pack-baked agent review skipped: {_e})", size=8, color=GRAY)
 
 # -------- 12. Sign-off --------
 
