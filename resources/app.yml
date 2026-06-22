@@ -1,4 +1,9 @@
 # Databricks App — Pricing Workbench
+#
+# Env vars live in src/app/app.yaml because the Apps DABs schema does not yet
+# accept an `env` block here. For per-target catalog/warehouse swap, override
+# the app.yaml before deploy or run `databricks apps update --json '...'`
+# afterwards.
 
 resources:
   apps:
@@ -6,12 +11,10 @@ resources:
       name: "pricing-workbench"
       description: "End-to-end commercial pricing workbench — data ingestion HITL, feature store, model factory, quote review, governance"
       source_code_path: ../src/app
-      # Note: Databricks Apps don't auto-stop. Run `databricks apps stop pricing-workbench`
-      # when not demoing. Start with `databricks apps start pricing-workbench`.
 
       resources:
         - name: sql-warehouse
           description: SQL warehouse for data queries
           sql_warehouse:
-            id: ab79eced8207d29b
+            id: ${var.warehouse_id}
             permission: CAN_USE

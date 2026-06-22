@@ -11,6 +11,8 @@ resources:
           default: ${var.schema_name}
         - name: volume_name
           default: ${var.volume_name}
+        - name: scale_factor
+          default: ${var.scale_factor}
 
       tasks:
         - task_key: setup
@@ -18,8 +20,9 @@ resources:
             notebook_path: ../src/00_setup/setup.py
             base_parameters:
               catalog_name: ${var.catalog_name}
-              schema_name: ${var.schema_name}
-              volume_name: ${var.volume_name}
+              schema_name:  ${var.schema_name}
+              volume_name:  ${var.volume_name}
+              scale_factor: "{{job.parameters.scale_factor}}"
           environment_key: default
 
         # Commercial quote stream — 3 raw JSON tables + silver + saved_payloads volume
@@ -30,7 +33,8 @@ resources:
             notebook_path: ../src/00_setup/setup_quote_stream.py
             base_parameters:
               catalog_name: ${var.catalog_name}
-              schema_name: ${var.schema_name}
+              schema_name:  ${var.schema_name}
+              scale_factor: "{{job.parameters.scale_factor}}"
           environment_key: default
 
         # Apply descriptions to every table / column / volume / model so the

@@ -99,7 +99,7 @@ Governance layer: Unity Catalog lineage + audit_log + Delta Time Travel
 
 6. **Train models:**
    ```bash
-   databricks bundle run train_pricing_models
+   databricks bundle run production_training
    databricks bundle run train_supplementary_models
    ```
 

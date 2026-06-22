@@ -1,0 +1,39 @@
+# Post-deploy — create Genie spaces and write their ids to app_config.
+#
+# Run AFTER the data pipeline (spaces reference built tables) and the grant job.
+# `deploy.sh` runs it automatically. Idempotent + fault-tolerant: failures leave
+# the panels hidden but never break the app.
+#
+#   databricks bundle run create_genie_spaces
+
+resources:
+  jobs:
+    create_genie_spaces:
+      name: "Post-deploy — create Genie spaces + wire app_config"
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: warehouse_id
+          default: ${var.warehouse_id}
+        - name: app_name
+          default: ${var.app_name}
+
+      tasks:
+        - task_key: create_genie_spaces
+          notebook_task:
+            notebook_path: ../src/00_setup/create_genie_spaces.py
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name:  ${var.schema_name}
+              warehouse_id: ${var.warehouse_id}
+              app_name:     ${var.app_name}
+          environment_key: default
+
+      environments:
+        - environment_key: default
+          spec:
+            client: "5"
+            dependencies:
+              - databricks-sdk

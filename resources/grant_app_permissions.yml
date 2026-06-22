@@ -1,0 +1,45 @@
+# Post-deploy bootstrap — grant the App service principal + set initial champions.
+#
+# Run ONCE after the app has been deployed (the app SP is auto-minted on app
+# creation, so this cannot live in a bundle `grants` block — the principal does
+# not exist at `bundle deploy` time). Idempotent — safe to re-run.
+#
+#   databricks apps deploy pricing-workbench --source-code-path ...
+#   databricks bundle run grant_app_permissions
+#
+# Fixes on a fresh deploy: approve/reject 500s (missing UC grants), "0 versions"
+# on the Promote tab (missing EXECUTE on models), blank metric columns (no
+# experiment read), and an empty Deployment tab (no champion alias set).
+
+resources:
+  jobs:
+    grant_app_permissions:
+      name: "Post-deploy — grant App SP + set initial champions"
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: volume_name
+          default: ${var.volume_name}
+        - name: app_name
+          default: ${var.app_name}
+
+      tasks:
+        - task_key: grant_app_permissions
+          notebook_task:
+            notebook_path: ../src/00_setup/grant_app_permissions.py
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name:  ${var.schema_name}
+              volume_name:  ${var.volume_name}
+              app_name:     ${var.app_name}
+          environment_key: default
+
+      environments:
+        - environment_key: default
+          spec:
+            client: "5"
+            dependencies:
+              - databricks-sdk
+              - mlflow

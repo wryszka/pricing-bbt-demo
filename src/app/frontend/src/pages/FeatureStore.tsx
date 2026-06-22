@@ -21,9 +21,8 @@ type Feature = {
   pii: boolean | string;
 };
 
-// Lakeview dashboard that powers the Dashboard tab. Created via
-// /api/2.0/lakeview/dashboards — see git log for the build script.
-const DASHBOARD_ID = '01f13edd547b1d528507be6f200b7ebc';
+// Lakeview dashboard id comes from /api/config (env var MART_DASHBOARD_ID
+// in app.{dev,prod}.yaml) so the build is portable across workspaces.
 
 const GROUP_COLORS: Record<string, string> = {
   rating_factor: 'bg-blue-100 text-blue-700 border-blue-200',
@@ -51,22 +50,25 @@ export default function FeatureStore() {
   const [lifecycleTone, setLifecycleTone] = useState<'ok' | 'err'>('ok');
 
   useEffect(() => {
-    Promise.all([
-      api.getFeatureStoreStatus(),
-      api.getConfig(),
-      api.getFeatureCatalog().catch(() => ({ features: [], counts_by_group: {}, total: 0 })),
-      api.getFeatureSources().catch(() => null),
-      api.getMartProfile().catch(() => null),
-    ]).then(([d, c, cat, src, prof]) => {
-      setData(d); setConfig(c); setCatalog(cat); setSources(src); setProfile(prof);
-    }).finally(() => setLoading(false));
+    // Fire every query in parallel and populate each state as it resolves so
+    // the page renders its shell immediately and individual cards fill in
+    // without blocking the rest.
+    setLoading(true);
+    const inflight = [
+      api.getFeatureStoreStatus().then(setData).catch(() => setData({})),
+      api.getConfig().then(setConfig).catch(() => setConfig({})),
+      api.getFeatureCatalog().then(setCatalog).catch(() => setCatalog({ features: [], counts_by_group: {}, total: 0 })),
+      api.getFeatureSources().then(setSources).catch(() => setSources(null)),
+      api.getMartProfile().then(setProfile).catch(() => setProfile(null)),
+    ];
+    Promise.all(inflight).finally(() => setLoading(false));
   }, []);
 
-  if (loading) return <div className="p-8 text-center text-gray-500">Loading feature store…</div>;
-  if (!data)   return <div className="p-8 text-center text-red-500">Failed to load feature store status</div>;
+  // Never block the page — render the shell while each section loads.
+  if (!data && !loading) return <div className="p-8 text-center text-red-500">Failed to load feature store status</div>;
 
-  const upt = data.upt || {};
-  const os = data.online_store || {};
+  const upt  = (data?.upt) || {};
+  const os   = (data?.online_store) || {};
   const tags = upt.tags || {};
   const storeActive = asBool(os.state === 'AVAILABLE' || os.state === 'ACTIVE');
 
@@ -115,7 +117,20 @@ export default function FeatureStore() {
           <code className="text-xs bg-gray-100 px-1 rounded">policy_id</code> is the <em>grain</em>
           (one row per policy), not the identity.
         </p>
+        <div className="mt-2 inline-flex items-center gap-2 text-xs px-2.5 py-1 rounded-md bg-blue-50 border border-blue-200 text-blue-900">
+          <span className="text-[10px] uppercase tracking-wider font-bold px-1.5 py-0.5 rounded bg-blue-200 text-blue-900">
+            Showing
+          </span>
+          SME Commercial — Property and Motor each have a parallel mart with the same medallion pattern
+          (per-line-of-business by design, not one mega-table).
+        </div>
       </div>
+
+      {loading && (
+        <div className="mb-4 flex items-center gap-2 text-xs text-gray-500">
+          <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading live mart status…
+        </div>
+      )}
 
       {/* Tab bar — Overview (app-rendered) | Dashboard (Databricks embedded) | Details */}
       <div className="flex gap-1 border-b border-gray-200 mb-6">
@@ -165,7 +180,7 @@ export default function FeatureStore() {
       )}
 
       {/* Dashboard — embedded Databricks Lakeview dashboard */}
-      {tab === 'dashboard' && <DashboardTab dashboardId={DASHBOARD_ID} host={config?.workspace_host} />}
+      {tab === 'dashboard' && <DashboardTab dashboardId={config?.mart_dashboard_id} host={config?.workspace_host} />}
 
       {/* Details — lineage, catalog, offline/online state, tags. No Genie here. */}
       {tab === 'details' && (
@@ -188,8 +203,14 @@ export default function FeatureStore() {
 function DashboardTab({ dashboardId, host }: { dashboardId?: string; host?: string }) {
   if (!dashboardId) {
     return (
-      <div className="bg-amber-50 border border-amber-200 rounded-lg p-5 text-sm text-amber-800">
-        Dashboard not configured. Set <code>DASHBOARD_ID</code> in <code>FeatureStore.tsx</code>.
+      <div className="bg-amber-50 border border-amber-200 rounded-lg p-5 text-sm text-amber-800 space-y-2">
+        <div className="font-semibold">Modelling Mart dashboard not configured for this workspace.</div>
+        <div>
+          Each workspace has its own Lakeview dashboard id. Set
+          {' '}<code className="bg-white px-1 rounded border">MART_DASHBOARD_ID</code> in
+          {' '}<code className="bg-white px-1 rounded border">src/app/app.&lt;target&gt;.yaml</code>
+          {' '}and redeploy.
+        </div>
       </div>
     );
   }
@@ -268,7 +289,7 @@ function OverviewTab({ profile }: { profile: any }) {
 
         <Card title="Feature health — highest missingness"
               icon={<AlertOctagon className="w-4 h-4 text-amber-600" />}
-              help="The 10 factors with the most nulls on the current mart. High missingness is an early warning that a factor may not be usable for modelling — either drop it, impute, or investigate upstream.">
+              help="The 10 factors with the most nulls on the current mart. Excludes claim-derived columns (NULL by design when a policy has no 5-year claim history). High missingness is an early warning that a factor may not be usable for modelling — either drop it, impute, or investigate upstream.">
           {top.length === 0 ? (
             <div className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded p-3">
               <CheckCircle2 className="w-4 h-4 inline mr-1" />

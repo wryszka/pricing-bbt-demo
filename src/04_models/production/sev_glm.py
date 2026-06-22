@@ -8,7 +8,7 @@
 
 # COMMAND ----------
 
-dbutils.widgets.text("catalog_name", "lr_serverless_aws_us_catalog")
+dbutils.widgets.text("catalog_name", "pricing_workbench")
 dbutils.widgets.text("schema_name",  "pricing_upt")
 dbutils.widgets.text("run_name",     "champion")
 dbutils.widgets.text("simulation_date", "")
@@ -211,12 +211,27 @@ with mlflow.start_run(run_name=f"sev_glm_{run_name}", tags=tags) as run:
     mlflow.log_artifact("/tmp/sev_relativities.csv")
 
     wrapper = GammaGLMWrapper(res, FEATURE_NAMES, FEATURES, LOG_COLS, SCALER)
+
+    # Pin explicit signature on raw features — wrapper replays the log / one-hot
+    # / scaler pipeline internally, so pyfunc can be called on unencoded rows.
+    from mlflow.models.signature import infer_signature
+    sample_X    = training_pdf[FEATURES].head(5).copy()
+    for c in sample_X.columns:
+        if sample_X[c].dtype == "object":
+            sample_X[c] = sample_X[c].fillna("(null)").astype(str)
+        else:
+            sample_X[c] = pd.to_numeric(sample_X[c], errors="coerce").fillna(0.0).astype(float)
+    sample_pred = wrapper.predict(sample_X)
+    signature   = infer_signature(sample_X, sample_pred)
+
     fe.log_model(
         model                 = wrapper,
         artifact_path         = "model",
         flavor                = mlflow.sklearn,
         training_set          = training_set,
         registered_model_name = f"{fqn}.sev_glm",
+        signature             = signature,
+        input_example         = sample_X,
     )
     print(f"UC model: {fqn}.sev_glm")
 

@@ -163,7 +163,7 @@ the end-to-end flow.
 - Explain synthetic vs real columns
 
 ### Section 3: Model Training (10 min)
-- Run `train_pricing_models` — walk through the 4 notebooks
+- Run `production_training` — walk through the 4 notebooks
 - Show GLM relativities (audience loves this)
 - Show GBM feature importance
 - Show the model comparison: GLM only vs GLM + uplift

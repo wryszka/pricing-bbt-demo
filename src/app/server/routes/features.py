@@ -1,5 +1,6 @@
 """Feature Store status, catalog, and online-store lifecycle routes."""
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, HTTPException
@@ -16,87 +17,52 @@ UPT_TABLE_KEY = "unified_pricing_table_live"
 
 @router.get("/status")
 async def feature_store_status():
-    """Get the status of the online feature store and UPT."""
+    """Get the status of the online feature store and UPT.
+    All SQL + SDK lookups run concurrently via asyncio.gather."""
+    import asyncio
 
     upt_table = fqn("unified_pricing_table_live")
     host = get_workspace_host()
+    cat, sch, tbl_name = upt_table.split(".", 2)
 
-    # UPT stats
-    try:
-        upt_stats = await execute_query(f"""
-            SELECT count(*) as row_count,
-                   count(DISTINCT policy_id) as unique_policies
-            FROM {upt_table}
-        """)
-        upt_row_count = int(upt_stats[0]["row_count"]) if upt_stats else 0
-        upt_policies = int(upt_stats[0]["unique_policies"]) if upt_stats else 0
-    except Exception:
-        upt_row_count = 0
-        upt_policies = 0
+    sql_upt_stats  = f"SELECT count(*) AS row_count, count(DISTINCT policy_id) AS unique_policies FROM {upt_table}"
+    sql_history    = f"DESCRIBE HISTORY {upt_table} LIMIT 1"
+    sql_col_count  = (f"SELECT count(*) AS cnt FROM information_schema.columns "
+                      f"WHERE table_catalog = '{cat}' AND table_schema = '{sch}' AND table_name = '{tbl_name}'")
+    sql_latency    = f"SELECT metric, value FROM {fqn('online_store_latency')}"
+    sql_tags       = (f"SELECT tag_name, tag_value FROM {cat}.information_schema.table_tags "
+                      f"WHERE schema_name = '{sch}' AND table_name = '{tbl_name}'")
 
-    # Delta version
-    try:
-        history = await execute_query(f"DESCRIBE HISTORY {upt_table} LIMIT 1")
-        delta_version = history[0]["version"] if history else "?"
-        last_modified = history[0]["timestamp"] if history else "?"
-    except Exception:
-        delta_version = "?"
-        last_modified = "?"
+    async def _online_store():
+        try:
+            w = get_workspace_client()
+            store = await asyncio.to_thread(w.feature_store.get_online_store, "pricing-upt-online-store")
+            return {
+                "name":     store.name,
+                "state":    str(store.state).split(".")[-1] if store.state else "UNKNOWN",
+                "capacity": store.capacity,
+                "created":  store.creation_time,
+            }
+        except Exception as e:
+            return {"name": "pricing-upt-online-store", "state": "NOT_CREATED",
+                    "message": str(e)[:100]}
 
-    # Column count
-    try:
-        cols = await execute_query(f"""
-            SELECT count(*) as cnt FROM information_schema.columns
-            WHERE table_catalog = '{upt_table.split('.')[0]}'
-              AND table_schema = '{upt_table.split('.')[1]}'
-              AND table_name = '{upt_table.split('.')[2]}'
-        """)
-        col_count = int(cols[0]["cnt"]) if cols else 0
-    except Exception:
-        col_count = 0
+    async def _safe(q):
+        try: return await execute_query(q)
+        except Exception: return None
 
-    # Online store status
-    online_store = None
-    try:
-        w = get_workspace_client()
-        store = w.feature_store.get_online_store("pricing-upt-online-store")
-        online_store = {
-            "name": store.name,
-            "state": str(store.state).split(".")[-1] if store.state else "UNKNOWN",
-            "capacity": store.capacity,
-            "created": store.creation_time,
-        }
-    except Exception as e:
-        online_store = {
-            "name": "pricing-upt-online-store",
-            "state": "NOT_CREATED",
-            "message": str(e)[:100],
-        }
+    upt_stats, history, cols, lat_results, tag_results, online_store = await asyncio.gather(
+        _safe(sql_upt_stats), _safe(sql_history), _safe(sql_col_count),
+        _safe(sql_latency), _safe(sql_tags), _online_store(),
+    )
 
-    # Latency results (from test notebook)
-    latency = {}
-    try:
-        lat_results = await execute_query(
-            f"SELECT metric, value FROM {fqn('online_store_latency')}"
-        )
-        for r in lat_results:
-            latency[r["metric"]] = float(r["value"])
-    except Exception:
-        pass
-
-    # Tags
-    tags = {}
-    try:
-        tag_results = await execute_query(f"""
-            SELECT tag_name, tag_value
-            FROM {upt_table.split('.')[0]}.information_schema.table_tags
-            WHERE schema_name = '{upt_table.split('.')[1]}'
-              AND table_name = '{upt_table.split('.')[2]}'
-        """)
-        for r in tag_results:
-            tags[r["tag_name"]] = r["tag_value"]
-    except Exception:
-        pass
+    upt_row_count = int(upt_stats[0]["row_count"])         if upt_stats else 0
+    upt_policies  = int(upt_stats[0]["unique_policies"])   if upt_stats else 0
+    delta_version = history[0]["version"]                   if history else "?"
+    last_modified = history[0]["timestamp"]                 if history else "?"
+    col_count     = int(cols[0]["cnt"])                     if cols else 0
+    latency       = {r["metric"]: float(r["value"]) for r in (lat_results or [])}
+    tags          = {r["tag_name"]: r["tag_value"] for r in (tag_results or [])}
 
     return {
         "upt": {
@@ -161,8 +127,10 @@ async def feature_sources():
          "features_feed": ["urban_score", "neighbourhood_claim_frequency", "deprivation_composite", "is_coastal"]},
     ]
 
-    # Enrich each with a row count + approval state + last modified
-    for s in sources:
+    # Enrich each source with row count + approval state in parallel.
+    import asyncio
+
+    async def _enrich(s: dict):
         tbl = s["table"]
         try:
             rows = await execute_query(f"SELECT count(*) AS n FROM {fqn(tbl)}")
@@ -170,7 +138,6 @@ async def feature_sources():
         except Exception:
             s["row_count"] = None
 
-        # Approval state only meaningful for ingested sources
         if s["kind"] == "ingested":
             try:
                 apr = await execute_query(f"""
@@ -183,8 +150,10 @@ async def feature_sources():
             except Exception:
                 s["approval"] = None
         else:
-            # Not gated by an approval workflow — these are always available
             s["approval"] = {"decision": "system_of_record"} if s["kind"] == "internal" else {"decision": "reference"}
+        return s
+
+    await asyncio.gather(*[_enrich(s) for s in sources])
 
     return {
         "sources":      sources,
@@ -199,17 +168,20 @@ async def rebuild_feature_table():
     """Trigger the build_upt job — runs derive_factors + build_upt + build_feature_catalog.
     This is the 'approved sources → feature table' flow made live."""
     from server.audit import log_audit_event
-    try:
+
+    def _find_and_run() -> tuple:
         w = get_workspace_client()
-        # Find the build_upt job by name
-        jobs = list(w.jobs.list(name="[dev laurence_ryszka] Build Unified Pricing Table (Gold)"))
-        if not jobs:
-            # Fall back: match by short name prefix
-            jobs = [j for j in w.jobs.list() if j.settings and "Build Unified Pricing Table" in (j.settings.name or "")]
+        # Match by base name — DAB development mode prefixes job names with
+        # "[dev <deployer>]", so we cannot hardcode the full name.
+        jobs = [j for j in w.jobs.list() if j.settings and "Build Unified Pricing Table" in (j.settings.name or "")]
         if not jobs:
             raise HTTPException(404, "build_upt job not found in this workspace")
         job = jobs[0]
         run = w.jobs.run_now(job_id=job.job_id)
+        return job, run
+
+    try:
+        job, run = await asyncio.to_thread(_find_and_run)
         host = get_workspace_host()
         run_url = f"{host}/jobs/{job.job_id}/runs/{run.run_id}"
         await log_audit_event(
@@ -373,125 +345,125 @@ UPT_CONTRIBUTING_FEEDS = [
 
 @router.get("/mart-profile")
 async def mart_profile():
-    """Dashboard payload for the Overview tab on the Modelling Mart page."""
+    """Dashboard payload for the Overview tab on the Modelling Mart page.
+    All independent SQL queries run concurrently via asyncio.gather."""
+    import asyncio
+
     upt_table = fqn("unified_pricing_table_live")
     catalog_name, schema_name = get_catalog(), get_schema()
 
-    # ----- headline tiles (single round-trip) -----
-    try:
-        headline = await execute_query(f"""
-            SELECT
-                COUNT(*)                               AS total_rows,
-                COUNT(DISTINCT policy_id)              AS unique_policies,
-                MIN(TRY_CAST(inception_date AS DATE))  AS policy_date_min,
-                MAX(TRY_CAST(renewal_date   AS DATE))  AS policy_date_max
-            FROM {upt_table}
-        """)
-        head = headline[0] if headline else {}
-    except Exception as e:
-        logger.exception("mart-profile headline failed")
-        head = {"error": str(e)[:200]}
+    async def _safe(sql):
+        try: return await execute_query(sql)
+        except Exception as e:
+            logger.warning("mart-profile q failed: %s", str(e)[:120]); return None
 
-    # Column count from information_schema
-    try:
-        col_stat = await execute_query(f"""
-            SELECT COUNT(*) AS n
-            FROM system.information_schema.columns
-            WHERE table_catalog = '{catalog_name}'
-              AND table_schema  = '{schema_name}'
-              AND table_name    = 'unified_pricing_table_live'
-              AND column_name NOT LIKE '\\_%'
-        """)
-        head["column_count"] = int(col_stat[0]["n"]) if col_stat else 0
-    except Exception:
-        head["column_count"] = 0
+    sql_headline = f"""
+        SELECT COUNT(*)                              AS total_rows,
+               COUNT(DISTINCT policy_id)             AS unique_policies,
+               MIN(TRY_CAST(inception_date AS DATE)) AS policy_date_min,
+               MAX(TRY_CAST(renewal_date   AS DATE)) AS policy_date_max
+        FROM {upt_table}
+    """
+    sql_col_count = f"""
+        SELECT COUNT(*) AS n FROM system.information_schema.columns
+        WHERE table_catalog = '{catalog_name}' AND table_schema = '{schema_name}'
+          AND table_name = 'unified_pricing_table_live'
+          AND column_name NOT LIKE '\\_%'
+    """
+    sql_hist = f"""
+        SELECT version, timestamp, userName, operation
+        FROM (DESCRIBE HISTORY {upt_table})
+        ORDER BY version DESC LIMIT 5
+    """
+    sql_groups = f"""
+        SELECT feature_group, COUNT(*) AS n
+        FROM {fqn('feature_catalog')}
+        GROUP BY feature_group ORDER BY n DESC
+    """
+    sql_col_names = f"""
+        SELECT column_name FROM system.information_schema.columns
+        WHERE table_catalog = '{catalog_name}' AND table_schema = '{schema_name}'
+          AND table_name = 'unified_pricing_table_live'
+          AND column_name NOT LIKE '\\_%' AND column_name NOT IN ('policy_id')
+        ORDER BY ordinal_position
+    """
+    sql_by_region = f"""
+        SELECT COALESCE(region, 'Unknown') AS region, COUNT(*) AS n
+        FROM {upt_table} GROUP BY region ORDER BY n DESC
+    """
+    sql_by_tier = f"""
+        SELECT COALESCE(industry_risk_tier, 'Unknown') AS tier, COUNT(*) AS n
+        FROM {upt_table} GROUP BY industry_risk_tier ORDER BY n DESC
+    """
 
-    # Last refresh timestamp + version from Delta history
-    try:
-        hist = await execute_query(f"""
-            SELECT version, timestamp, userName, operation
-            FROM (DESCRIBE HISTORY {upt_table})
-            ORDER BY version DESC
-            LIMIT 5
-        """)
-        head["last_refresh"]         = hist[0]["timestamp"]          if hist else None
-        head["last_refresh_version"] = hist[0]["version"]            if hist else None
-        head["last_refresh_user"]    = hist[0].get("userName")       if hist else None
-    except Exception:
-        hist = []
+    # Six independent queries fire in parallel.
+    (headline, col_stat, hist, groups, col_rows, by_region, by_tier) = await asyncio.gather(
+        _safe(sql_headline), _safe(sql_col_count), _safe(sql_hist),
+        _safe(sql_groups), _safe(sql_col_names),
+        _safe(sql_by_region), _safe(sql_by_tier),
+    )
 
+    head = (headline[0] if headline else {}) or {}
+    head["column_count"]         = int(col_stat[0]["n"]) if col_stat else 0
+    head["last_refresh"]         = hist[0]["timestamp"]          if hist else None
+    head["last_refresh_version"] = hist[0]["version"]            if hist else None
+    head["last_refresh_user"]    = hist[0].get("userName")       if hist else None
     head["upstream_feeds_count"] = len(UPT_CONTRIBUTING_FEEDS)
 
-    # ----- factor-group composition -----
-    try:
-        groups = await execute_query(f"""
-            SELECT feature_group, COUNT(*) AS n
-            FROM {fqn('feature_catalog')}
-            GROUP BY feature_group
-            ORDER BY n DESC
-        """)
-    except Exception:
-        groups = []
+    groups    = groups    or []
+    by_region = by_region or []
+    by_tier   = by_tier   or []
 
-    # ----- top-10 features by missingness -----
-    # Build a dynamic SELECT that counts nulls for each column; exclude
-    # metadata/audit cols and pure identifier cols.
+    # Missingness — chain after col_rows. Exclude claim-tied columns: they're
+    # NULL by design for the ~32k policies with no 5-year claim history. We
+    # detect them by null-count equality to the canonical claim_count_5y
+    # baseline — catches cols the feature_catalog doesn't tag (storm_incurred,
+    # last_claim_date, etc.). Without this, the top-10 chart is dominated by
+    # one tied bucket and hides the real variety in vendor / enrichment data.
+    feat_missing = []
     try:
-        col_rows = await execute_query(f"""
-            SELECT column_name
-            FROM system.information_schema.columns
-            WHERE table_catalog = '{catalog_name}'
-              AND table_schema  = '{schema_name}'
-              AND table_name    = 'unified_pricing_table_live'
-              AND column_name NOT LIKE '\\_%'
-              AND column_name NOT IN ('policy_id')
-            ORDER BY ordinal_position
-        """)
-        cols = [r["column_name"] for r in col_rows][:90]
+        cols = [r["column_name"] for r in (col_rows or [])
+                if r["column_name"] not in {"policy_id", "_ingested_at"}][:90]
         if cols:
             select_parts = ", ".join(
-                [f"SUM(CASE WHEN `{c}` IS NULL THEN 1 ELSE 0 END) AS `{c}`" for c in cols]
+                f"SUM(CASE WHEN `{c}` IS NULL THEN 1 ELSE 0 END) AS `{c}`" for c in cols
             )
-            null_row = await execute_query(f"""
-                SELECT {select_parts}, COUNT(*) AS __total
-                FROM {upt_table}
-            """)
+            null_row = await execute_query(
+                f"SELECT {select_parts}, COUNT(*) AS __total FROM {upt_table}"
+            )
             row = null_row[0] if null_row else {}
             total = int(row.get("__total") or 0) or 1
-            feat_missing = sorted([
-                {
-                    "feature_name": c,
-                    "null_count":   int(row.get(c) or 0),
-                    "null_rate":    round((int(row.get(c) or 0) / total), 4),
-                }
-                for c in cols if (int(row.get(c) or 0) > 0)
-            ], key=lambda x: x["null_rate"], reverse=True)[:10]
-        else:
+
+            # Anchor the "no claim history" baseline — every claim-tied column
+            # shares this exact null count. Filter them out.
+            claim_baseline = int(row.get("claim_count_5y") or 0)
+
+            # Dedupe by null_count: cols sharing the exact same null count
+            # come from a single upstream coverage gap (e.g., five market-data
+            # cols all missing on the same ~25k policies because the vendor
+            # only licenses half the book). Showing one representative per
+            # bucket gives a clean diagnostic gradient instead of plateaus.
+            seen_buckets: set[int] = set()
             feat_missing = []
+            ranked = sorted(
+                ((c, int(row.get(c) or 0)) for c in cols
+                 if int(row.get(c) or 0) > 0
+                 and int(row.get(c) or 0) != claim_baseline),
+                key=lambda x: x[1], reverse=True,
+            )
+            for c, n in ranked:
+                if n in seen_buckets:
+                    continue
+                seen_buckets.add(n)
+                feat_missing.append({
+                    "feature_name": c,
+                    "null_count":   n,
+                    "null_rate":    round(n / total, 4),
+                })
+                if len(feat_missing) >= 10:
+                    break
     except Exception as e:
         logger.warning("mart-profile missingness failed: %s", e)
-        feat_missing = []
-
-    # ----- coverage by region + by industry_risk_tier -----
-    try:
-        by_region = await execute_query(f"""
-            SELECT COALESCE(region, 'Unknown') AS region, COUNT(*) AS n
-            FROM {upt_table}
-            GROUP BY region
-            ORDER BY n DESC
-        """)
-    except Exception:
-        by_region = []
-
-    try:
-        by_tier = await execute_query(f"""
-            SELECT COALESCE(industry_risk_tier, 'Unknown') AS tier, COUNT(*) AS n
-            FROM {upt_table}
-            GROUP BY industry_risk_tier
-            ORDER BY n DESC
-        """)
-    except Exception:
-        by_tier = []
 
     # ----- claims sanity: totals, frequency, severity, loss ratio per tier -----
     # IMPORTANT: use the AGGREGATE (premium-weighted) loss ratio, not the mean

@@ -36,9 +36,12 @@ dbutils.library.restartPython()
 
 # COMMAND ----------
 
-CATALOG = "lr_serverless_aws_us_catalog"
-SCHEMA = "pricing_upt"
-VOLUME = "raw_data"
+dbutils.widgets.text("catalog_name", "pricing_workbench")
+dbutils.widgets.text("schema_name", "pricing_upt")
+dbutils.widgets.text("volume_name", "raw_data")
+CATALOG = dbutils.widgets.get("catalog_name")
+SCHEMA  = dbutils.widgets.get("schema_name")
+VOLUME  = dbutils.widgets.get("volume_name")
 
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA}")
 spark.sql(f"CREATE VOLUME IF NOT EXISTS {CATALOG}.{SCHEMA}.{VOLUME}")

@@ -13,8 +13,20 @@ export const api = {
   // App config
   getConfig: () => fetchJson<any>('/config'),
 
+  // Admin
+  resetDemo: () => fetchJson<any>('/admin/reset-demo', { method: 'POST', body: JSON.stringify({}) }),
+
+  // Model Supervisor — single chat surface fronting all sub-agents
+  getSupervisorAgents: () => fetchJson<any>('/supervisor/agents'),
+  askSupervisor: (body: { question: string; sub_agent?: string; pack_id?: string; run_id?: string; family?: string }) =>
+    fetchJson<any>('/supervisor/ask', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
   // Dataset routes
-  getDatasets: () => fetchJson<any[]>('/datasets'),
+  getDatasets:       () => fetchJson<any[]>('/datasets'),
+  getDatasetsMeta:   () => fetchJson<any[]>('/datasets/meta'),
   getDatasetDiff: (id: string) => fetchJson<any>(`/datasets/${id}/diff`),
   getDatasetImpact: (id: string) => fetchJson<any>(`/datasets/${id}/impact`),
   getDatasetQuality: (id: string) => fetchJson<any>(`/datasets/${id}/quality`),
@@ -161,7 +173,7 @@ export const api = {
 
   // Deployment
   getRegisteredModels: () => fetchJson<any[]>('/deployment/models'),
-  getChampions: () => fetchJson<any>('/deployment/champions'),
+  getChampions: () => fetchJson<any>('/deployment/champions?require_pack=false'),
   getChampionHistory: (family: string, limit = 10) =>
     fetchJson<any>(`/deployment/champions/${family}/history?limit=${limit}`),
   rollbackChampion: (family: string, note: string) =>
@@ -182,6 +194,58 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ pack_id: packId, question, policy_id: policyId }),
     }),
+  askGovernanceAgent: (question: string) =>
+    fetchJson<any>('/governance/ask', {
+      method: 'POST',
+      body: JSON.stringify({ question }),
+    }),
+  getBiasMonitor: (protectedAttribute: string = 'director_gender', family?: string) =>
+    fetchJson<any>(`/governance/bias-monitor?protected_attribute=${encodeURIComponent(protectedAttribute)}${family ? `&family=${family}` : ''}`),
+  biasInvestigate: (question: string, protectedAttribute: string = 'director_gender', family?: string) =>
+    fetchJson<any>('/governance/bias-investigate', {
+      method: 'POST',
+      body: JSON.stringify({ question, protected_attribute: protectedAttribute, family }),
+    }),
+  getPremiumAdequacy: (cohortDimension: string = 'industry_risk_tier') =>
+    fetchJson<any>(`/governance/premium-adequacy?cohort_dimension=${encodeURIComponent(cohortDimension)}`),
+  getGovernanceDataSummary: () => fetchJson<any>('/governance/data-summary'),
+  adequacyInvestigate: (question: string, cohortDimension: string = 'industry_risk_tier') =>
+    fetchJson<any>('/governance/adequacy-investigate', {
+      method: 'POST',
+      body: JSON.stringify({ question, cohort_dimension: cohortDimension }),
+    }),
+  biasReviewCandidate: (family: string, version: string, protectedAttribute: string = 'director_gender', question?: string) =>
+    fetchJson<any>('/governance/bias-review-candidate', {
+      method: 'POST',
+      body: JSON.stringify({ family, version, protected_attribute: protectedAttribute, question }),
+    }),
+
+  // Pricing Engine
+  getPricingStatus:        () => fetchJson<any>('/pricing/status'),
+  getRatingConfig:         () => fetchJson<any>('/pricing/rating-config/current'),
+  getRatingConfigHistory:  () => fetchJson<any>('/pricing/rating-config/history'),
+  getPricingModelVersions: () => fetchJson<any>('/pricing/model-versions'),
+  listReleases:            () => fetchJson<any>('/pricing/releases'),
+  getCurrentRelease:       () => fetchJson<any>('/pricing/releases/current'),
+  getRelease:              (id: string) => fetchJson<any>(`/pricing/releases/${id}`),
+  compareReleases:         (releaseId: string, portfolioSize = 2000) =>
+    fetchJson<any>('/pricing/compare-release', {
+      method: 'POST',
+      body: JSON.stringify({ release_id: releaseId, portfolio_size: portfolioSize }),
+    }),
+  scoreOnRelease:          (releaseId: string, features: any, label?: string) =>
+    fetchJson<any>(`/pricing/releases/${releaseId}/score-quote`, {
+      method: 'POST',
+      body: JSON.stringify({ features, label }),
+    }),
+  getHistoricalScoreStatus: (runId: number | string) =>
+    fetchJson<any>(`/pricing/historical-score/${runId}`),
+  runQuote:                (body: any) =>
+    fetchJson<any>('/pricing/quote/run', { method: 'POST', body: JSON.stringify(body) }),
+  simulateMta:             (body: any) =>
+    fetchJson<any>('/pricing/mta/simulate', { method: 'POST', body: JSON.stringify(body) }),
+  getPolicyContext:        (policyId: string) =>
+    fetchJson<any>(`/pricing/policy-context/${encodeURIComponent(policyId)}`),
 
   // Quote Stream
   getQuoteStreamRecent: (limit: number = 50) =>
@@ -202,4 +266,29 @@ export const api = {
   getQuoteStreamOutliers: () => fetchJson<any[]>('/quote-stream/analytics/outliers'),
   getQuoteStreamFunnel: () => fetchJson<any[]>('/quote-stream/analytics/funnel'),
   getQuoteStreamDistribution: () => fetchJson<any[]>('/quote-stream/analytics/distribution'),
+
+  // Live Pricing System
+  livePricingStatus: () => fetchJson<any>('/live-pricing/status'),
+  livePricingStart:  () => fetchJson<any>('/live-pricing/start',  { method: 'POST', body: JSON.stringify({}) }),
+  livePricingStop:   () => fetchJson<any>('/live-pricing/stop',   { method: 'POST', body: JSON.stringify({}) }),
+  livePricingQuote: (policyId: string) =>
+    fetchJson<any>('/live-pricing/quote', { method: 'POST', body: JSON.stringify({ policy_id: policyId }) }),
+  livePricingClaim: (body: { policy_id: string; claim_amount: number; claim_type?: string }) =>
+    fetchJson<any>('/live-pricing/claim', { method: 'POST', body: JSON.stringify(body) }),
+  livePricingTelematicsEvent: (body: { policy_id: string; speeding_event?: boolean; curfew_breach?: boolean; behaviour_score_delta?: number; harsh_braking_delta?: number }) =>
+    fetchJson<any>('/live-pricing/telematics-event', { method: 'POST', body: JSON.stringify(body) }),
+  livePricingClaimStatus: (runId: number | string) =>
+    fetchJson<any>(`/live-pricing/claim/${runId}`),
+  livePricingLoadTestStart: (body: { target_qps?: number; duration_seconds?: number; concurrency?: number }) =>
+    fetchJson<any>('/live-pricing/load-test/start', { method: 'POST', body: JSON.stringify(body) }),
+  livePricingLoadTestStop: (runId: number | string) =>
+    fetchJson<any>(`/live-pricing/load-test/stop?run_id=${encodeURIComponent(String(runId))}`,
+      { method: 'POST', body: JSON.stringify({}) }),
+  livePricingLoadTestMetrics: (params: { since?: string; run_id?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (params.since)  q.set('since',  params.since);
+    if (params.run_id) q.set('run_id', params.run_id);
+    const qs = q.toString();
+    return fetchJson<any>(`/live-pricing/load-test/metrics${qs ? `?${qs}` : ''}`);
+  },
 };

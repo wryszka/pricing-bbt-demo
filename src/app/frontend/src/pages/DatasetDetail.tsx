@@ -572,8 +572,28 @@ function ImpactTab({ datasetId }: { datasetId: string }) {
             )}
           </div>
         )}
-        {explainResult && !explainResult.success && (
-          <p className="text-red-500 text-sm">Agent error: {explainResult.error || 'Unknown'}</p>
+        {/* Agent ran successfully but the LLM response wasn't structured JSON —
+            still render it as plain prose so the panel doesn't go blank. */}
+        {explainResult?.success && !explainResult.explanation && explainResult.transparency?.raw_response && (
+          <div className="bg-white border border-purple-200 rounded-lg p-4 space-y-2">
+            <p className="text-sm text-gray-700 whitespace-pre-line">
+              {explainResult.transparency.raw_response}
+            </p>
+            <p className="text-[11px] text-gray-500 italic">
+              Agent returned a free-text answer rather than the structured response template.
+              Shown as-is.
+            </p>
+          </div>
+        )}
+        {explainResult && explainResult.success === false && (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">
+            Agent error: {explainResult.transparency?.error || explainResult.error || 'Unknown — check the audit log for details.'}
+          </div>
+        )}
+        {explainResult && explainResult.success && !explainResult.explanation && !explainResult.transparency?.raw_response && (
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
+            Agent returned an empty response. Try again, or check that <code>pricing_chat_agent</code> is warm.
+          </div>
         )}
       </div>
     </div>
@@ -687,6 +707,7 @@ function ApprovalTab({ datasetId }: { datasetId: string }) {
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<any>(null);
+  const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<any[]>([]);
 
   useEffect(() => {
@@ -695,10 +716,13 @@ function ApprovalTab({ datasetId }: { datasetId: string }) {
 
   const handleDecision = async (decision: string) => {
     setSubmitting(true);
+    setError(null);
     try {
       const res = await api.approveDataset(datasetId, decision, notes);
       setResult(res);
       setNotes('');
+    } catch (e: any) {
+      setError(e?.message || 'Approval request failed');
     } finally {
       setSubmitting(false);
     }
@@ -712,6 +736,12 @@ function ApprovalTab({ datasetId }: { datasetId: string }) {
             {result.message}
           </p>
           <p className="text-sm text-gray-600 mt-1">Reviewer: {result.reviewer}</p>
+        </div>
+      )}
+      {error && (
+        <div className="rounded-lg p-4 border bg-red-50 border-red-200">
+          <p className="font-semibold text-red-800">Approval request failed</p>
+          <p className="text-sm text-red-700 mt-1 font-mono break-all">{error}</p>
         </div>
       )}
 

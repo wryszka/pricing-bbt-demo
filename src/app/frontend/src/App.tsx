@@ -1,29 +1,20 @@
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
-import { Database, FlaskConical, Shield, Code, Rocket, Home as HomeIcon, Table2, Package, Sparkles } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Database, Code, Home as HomeIcon, Table2, Zap, Archive } from 'lucide-react';
 import Home from './pages/Home';
 import DatasetList from './pages/DatasetList';
 import DatasetDetail from './pages/DatasetDetail';
 import FeatureStore from './pages/FeatureStore';
 import ModelDevelopment from './pages/ModelDevelopment';
-import ModelFactory from './pages/ModelFactory';
-import ModelDeployment from './pages/ModelDeployment';
-import Governance from './pages/Governance';
-import QuoteReview from './pages/QuoteReview';
-import Addons from './pages/Addons';
-import NewDataImpact from './pages/NewDataImpact';
-import RatingEngineIntegration from './pages/RatingEngineIntegration';
-import RegulatoryAI from './pages/RegulatoryAI';
 
+// AXA edition: scoped to data prep + modelling mart + model development.
+// Live serving, pricing engine, model factory, governance, pricing AI and
+// add-ons are intentionally excluded from this build.
 const NAV_ITEMS = [
   { to: '/',              label: 'Home',              icon: HomeIcon,     match: (p: string) => p === '/' },
-  { to: '/datasets',      label: 'Ingestion',         icon: Database,     match: (p: string) => p.startsWith('/dataset') },
+  { to: '/datasets',      label: 'Data Ingestion',         icon: Database,     match: (p: string) => p.startsWith('/dataset') },
   { to: '/pricing-table', label: 'Modelling Mart',    icon: Table2,       match: (p: string) => p.startsWith('/pricing-table') },
   { to: '/development',   label: 'Model Development', icon: Code,         match: (p: string) => p.startsWith('/development') },
-  { to: '/deployment',    label: 'Model Deployment',  icon: Rocket,       match: (p: string) => p.startsWith('/deployment') },
-  { to: '/governance',    label: 'Model Governance',  icon: Shield,       match: (p: string) => p.startsWith('/governance') },
-  { to: '/regulatory-ai', label: 'Regulatory AI',     icon: Sparkles,     match: (p: string) => p.startsWith('/regulatory-ai') },
-  { to: '/models',        label: 'Model Factory',     icon: FlaskConical, match: (p: string) => p.startsWith('/models') },
-  { to: '/add-ons',       label: 'Add-ons',           icon: Package,      match: (p: string) => p.startsWith('/add-ons') || p.startsWith('/quote-review') },
 ];
 
 function Sidebar() {
@@ -56,11 +47,68 @@ function Sidebar() {
         ))}
       </nav>
 
+      <AiModeBadge />
+
       {/* Footer */}
       <div className="px-4 py-3 border-t border-white/10 text-[10px] text-gray-500">
         Demo accelerator — not a Databricks product
       </div>
     </aside>
+  );
+}
+
+function AiModeBadge() {
+  const [mode, setMode] = useState<'live' | 'cached' | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [entries, setEntries] = useState<number>(0);
+
+  useEffect(() => {
+    fetch('/api/admin/ai-mode')
+      .then((r) => r.json())
+      .then((d) => { setMode(d.mode); setEntries(d.entries ?? 0); })
+      .catch(() => setMode('live'));
+  }, []);
+
+  async function flip() {
+    if (busy || !mode) return;
+    setBusy(true);
+    const next = mode === 'live' ? 'cached' : 'live';
+    try {
+      const r = await fetch('/api/admin/ai-mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ mode: next }),
+      });
+      const d = await r.json();
+      setMode(d.mode);
+      setEntries(d.entries ?? 0);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const isCached = mode === 'cached';
+  const Icon = isCached ? Archive : Zap;
+  const colour = isCached ? 'bg-amber-500/15 text-amber-300 hover:bg-amber-500/25 border-amber-400/30'
+                          : 'bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 border-emerald-400/30';
+  return (
+    <div className="px-3 py-2 border-t border-white/10">
+      <button
+        type="button"
+        onClick={flip}
+        disabled={!mode || busy}
+        title={isCached
+          ? `Serving cached AI responses (${entries} stored). Click to switch to live.`
+          : 'Calling real serving endpoints. Click to switch to cached / consistent / fast.'}
+        className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md border text-[11px] font-medium transition-colors disabled:opacity-50 ${colour}`}
+      >
+        <Icon className="w-3.5 h-3.5 shrink-0" />
+        <span className="flex-1 text-left">AI: {mode ?? '…'}</span>
+        {isCached && entries > 0 && (
+          <span className="text-[10px] opacity-70">{entries}</span>
+        )}
+      </button>
+    </div>
   );
 }
 
@@ -76,16 +124,6 @@ export default function App() {
             <Route path="/dataset/:datasetId" element={<DatasetDetail />} />
             <Route path="/pricing-table" element={<FeatureStore />} />
             <Route path="/development" element={<ModelDevelopment />} />
-            <Route path="/models" element={<ModelFactory />} />
-            <Route path="/deployment" element={<ModelDeployment />} />
-            <Route path="/governance" element={<Governance />} />
-            <Route path="/regulatory-ai" element={<RegulatoryAI />} />
-            <Route path="/add-ons" element={<Addons />} />
-            <Route path="/add-ons/quote-review" element={<QuoteReview />} />
-            <Route path="/add-ons/new-data-impact" element={<NewDataImpact />} />
-            <Route path="/add-ons/rating-engine" element={<RatingEngineIntegration />} />
-            {/* Legacy redirect */}
-            <Route path="/quote-review" element={<QuoteReview />} />
           </Routes>
         </main>
       </div>

@@ -6,6 +6,7 @@ iframe. Uses the REST API directly (via the SDK's authenticated HTTP client) so
 we are resilient to SDK version drift on the `genie` Python service.
 """
 
+import asyncio
 import logging
 from typing import Any, Optional
 
@@ -28,7 +29,7 @@ def _host() -> str:
     return get_workspace_client().config.host.rstrip("/")
 
 
-def _api(method: str, path: str, *, json_body: dict | None = None) -> dict:
+def _api_sync(method: str, path: str, *, json_body: dict | None = None) -> dict:
     url = f"{_host()}{path}"
     headers = {**_auth_headers(), "Content-Type": "application/json"}
     if method == "GET":
@@ -45,6 +46,12 @@ def _api(method: str, path: str, *, json_body: dict | None = None) -> dict:
         return r.json()
     except Exception:
         return {}
+
+
+async def _api(method: str, path: str, *, json_body: dict | None = None) -> dict:
+    """Async wrapper around the Genie REST call so polling routes don't block
+    the event loop on the 60s sync HTTP timeout."""
+    return await asyncio.to_thread(_api_sync, method, path, json_body=json_body)
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +117,7 @@ async def start_conversation(space_id: str, req: StartRequest):
     id and the initial message (still IN_PROGRESS — the client polls the
     get-message endpoint until COMPLETED)."""
     try:
-        body = _api("POST", f"/api/2.0/genie/spaces/{space_id}/start-conversation",
+        body = await _api("POST", f"/api/2.0/genie/spaces/{space_id}/start-conversation",
                     json_body={"content": req.content})
         # REST returns: conversation_id, conversation, message, message_id
         msg = body.get("message") or {}
@@ -134,7 +141,7 @@ class MessageRequest(BaseModel):
 @router.post("/{space_id}/conversations/{conversation_id}/message")
 async def create_message(space_id: str, conversation_id: str, req: MessageRequest):
     try:
-        body = _api("POST",
+        body = await _api("POST",
                     f"/api/2.0/genie/spaces/{space_id}/conversations/{conversation_id}/messages",
                     json_body={"content": req.content})
         return {"message": _flatten_message(body)}
@@ -149,7 +156,7 @@ async def create_message(space_id: str, conversation_id: str, req: MessageReques
 async def get_message(space_id: str, conversation_id: str, message_id: str):
     """Poll for a message's current state."""
     try:
-        body = _api("GET",
+        body = await _api("GET",
                     f"/api/2.0/genie/spaces/{space_id}/conversations/{conversation_id}/messages/{message_id}")
         return _flatten_message(body)
     except HTTPException:
@@ -164,13 +171,13 @@ async def query_result(space_id: str, conversation_id: str, message_id: str):
     """Return the SQL + executed result for a message's SQL attachment.
     If the reply is text-only, returns {"has_result": false}."""
     try:
-        msg = _api("GET",
+        msg = await _api("GET",
                    f"/api/2.0/genie/spaces/{space_id}/conversations/{conversation_id}/messages/{message_id}")
         attachment_id = _attachment_id_with_query(msg)
         if not attachment_id:
             return {"has_result": False}
 
-        body = _api("GET",
+        body = await _api("GET",
                     f"/api/2.0/genie/spaces/{space_id}/conversations/{conversation_id}"
                     f"/messages/{message_id}/attachments/{attachment_id}/query-result")
 

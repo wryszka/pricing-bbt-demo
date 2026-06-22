@@ -1,57 +1,26 @@
 import { useEffect, useState } from 'react';
 import {
   Code, ExternalLink, FlaskConical, ChevronDown, Library, Clock,
-  FlaskRound, ShieldCheck, GitCompare,
 } from 'lucide-react';
 import { api } from '../lib/api';
-import ReviewPromote from './ReviewPromote';
-import CompareTest from './CompareTest';
 
 const GITHUB_REPO_URL = 'https://github.com/wryszka/pricing-workbench';
 
-type Tab = 'train' | 'compare' | 'review';
-
+// AXA edition: only the Train tab. Compare & Test and Promote depend on the
+// scoring / governance-pack flows that are excluded from this build.
 export default function ModelDevelopment() {
-  const [tab, setTab] = useState<Tab>('train');
-
   return (
     <div className="max-w-7xl mx-auto px-6 py-8">
       {/* Header */}
       <div className="mb-4">
         <h2 className="text-2xl font-bold text-gray-900">Model Development</h2>
         <p className="text-gray-500 mt-1">
-          Where actuaries and data scientists build and review pricing models.
+          Where actuaries and data scientists build pricing models on the Modelling Mart.
         </p>
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-1 border-b border-gray-200 mb-6">
-        <TabButton active={tab === 'train'}   onClick={() => setTab('train')}
-                   icon={<FlaskRound className="w-4 h-4" />} label="Train" />
-        <TabButton active={tab === 'compare'} onClick={() => setTab('compare')}
-                   icon={<GitCompare className="w-4 h-4" />} label="Compare & Test" />
-        <TabButton active={tab === 'review'}  onClick={() => setTab('review')}
-                   icon={<ShieldCheck className="w-4 h-4" />} label="Promote" />
-      </div>
-
-      {tab === 'train'   && <TrainTab />}
-      {tab === 'compare' && <CompareTest />}
-      {tab === 'review'  && <ReviewPromote />}
+      <TrainTab />
     </div>
-  );
-}
-
-function TabButton({ active, onClick, icon, label }:
-  { active: boolean; onClick: () => void; icon: React.ReactNode; label: string }) {
-  return (
-    <button onClick={onClick}
-            className={`px-4 py-2 text-sm font-medium rounded-t-lg inline-flex items-center gap-2 -mb-px border-b-2 transition ${
-              active
-                ? 'border-blue-600 text-blue-700 bg-white'
-                : 'border-transparent text-gray-500 hover:text-gray-800 hover:bg-gray-50'
-            }`}>
-      {icon} {label}
-    </button>
   );
 }
 
