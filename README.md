@@ -91,15 +91,14 @@ Leave the Genie / dashboard ids blank - the UI hides those panels until they are
 databricks bundle deploy --target mytarget --profile <your-profile>
 ```
 
-### 4. Run the data pipeline (in order)
+### 4. Run the data pipeline (one command)
+
+`setup_all` chains setup → (postcode ‖ ingest) → build_upt → production_training
+in the correct order (~20 min). On a failure, use "Repair run" on the run page to
+retry from the failed task.
 
 ```bash
-T=mytarget; P=<your-profile>
-databricks bundle run setup_demo                 --target $T --profile $P   # schema + tables + test data
-databricks bundle run build_postcode_enrichment  --target $T --profile $P   # ~2-5 min - ONSPD + IMD download
-databricks bundle run ingest_external_data        --target $T --profile $P   # bronze → silver
-databricks bundle run build_upt                   --target $T --profile $P   # derive_factors → UPT → feature_catalog
-databricks bundle run production_training         --target $T --profile $P   # GLMs + GBMs + challenger comparison
+databricks bundle run setup_all --target mytarget --profile <your-profile>
 ```
 
 ### 5. Deploy the app + grant its service principal
