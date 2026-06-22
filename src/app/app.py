@@ -6,7 +6,10 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from server.routes import datasets, agent, features, deployment, governance, quote_stream, genie, development, review, compare, factory, factory_real, pricing, admin, supervisor, live_pricing
+# AXA edition: data prep + modelling mart + model development only.
+# Serving, deployment, governance, pricing-engine, factory, pricing-AI and
+# quote-review routes are excluded from this build.
+from server.routes import datasets, agent, features, genie, development, admin
 import os
 from server.config import get_workspace_host
 
@@ -25,8 +28,7 @@ async def lifespan(application: FastAPI):
     logger.info("Starting Pricing Workbench")
     try:
         await datasets.ensure_approvals_table()
-        await factory.ensure_factory_tables()
-        logger.info("Approvals and factory tables ready")
+        logger.info("Approvals table ready")
     except Exception:
         logger.exception("Failed to ensure tables — will retry on first request")
     yield
@@ -42,19 +44,9 @@ app = FastAPI(
 app.include_router(datasets.router)
 app.include_router(agent.router)
 app.include_router(features.router)
-app.include_router(deployment.router)
-app.include_router(governance.router)
-app.include_router(quote_stream.router)
 app.include_router(genie.router)
 app.include_router(development.router)
-app.include_router(review.router)
-app.include_router(compare.router)
-app.include_router(factory.router)
-app.include_router(factory_real.router)
-app.include_router(pricing.router)
 app.include_router(admin.router)
-app.include_router(supervisor.router)
-app.include_router(live_pricing.router)
 
 
 @app.get("/api/health")

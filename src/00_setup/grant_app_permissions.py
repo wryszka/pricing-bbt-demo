@@ -207,16 +207,9 @@ for family in PRODUCTION_FAMILIES:
 
 # COMMAND ----------
 
+# AXA edition: the app only triggers the Modelling Mart rebuild. Serving /
+# governance / factory / live-pricing jobs are not part of this build.
 APP_TRIGGERED_JOBS = [
-    "Generate governance pack",
-    "Inference log backfill",
-    "Compare & test models",
-    "Historical quote score",
-    "Factory training (real)",
-    "Demo reset",
-    "Live pricing: load test",
-    "Motor live serving: provision",
-    "Motor live serving: teardown",
     "Build Unified Pricing Table",
 ]
 
