@@ -1,0 +1,20 @@
+# Pricing Workbench - AXA edition app config.
+# deploy.sh copies this over app.yaml before `databricks bundle deploy --target axa`.
+# For the real AXA deploy, set CATALOG_NAME / WAREHOUSE_ID / BUNDLE_NOTEBOOKS_BASE
+# to the AXA workspace values. Genie ids are filled by the create_genie_spaces job.
+command: ["python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+env:
+  - name: CATALOG_NAME
+    value: "pinchudemo_catalog"
+  - name: SCHEMA_NAME
+    value: "pricing_upt"
+  - name: WAREHOUSE_ID
+    value: "f2f3ec2de0fcaea0"
+  - name: GENIE_SPACE_ID
+    value: ""
+  - name: GENIE_QUOTE_SPACE_ID
+    value: ""
+  - name: MART_DASHBOARD_ID
+    value: ""
+  - name: BUNDLE_NOTEBOOKS_BASE
+    value: "/Workspace/Users/pinchu.ye@databricks.com/.bundle/pricing-upt-demo/axa/files/src/04_models"
