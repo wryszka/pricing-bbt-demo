@@ -1,0 +1,46 @@
+# One-command data pipeline: chains the setup -> mart -> training jobs in order.
+# Replaces running setup_demo / build_postcode_enrichment / ingest_external_data /
+# build_upt / production_training by hand. Order is enforced by the DAG; a failed
+# task stops the chain and DAB "repair run" retries from it.
+#
+#   databricks bundle run setup_all
+#
+# Run AFTER `bundle deploy` and BEFORE `deploy.sh` (the app SP grants and Genie
+# creation need the schema + models this builds).
+
+resources:
+  jobs:
+    setup_all:
+      name: "Setup all — data prep -> mart -> training"
+      tasks:
+        - task_key: setup
+          run_job_task:
+            job_id: ${resources.jobs.setup_demo.id}
+
+        # Postcode enrichment and ingestion both only need the schema, so they
+        # run in parallel after setup.
+        - task_key: postcode_enrichment
+          depends_on:
+            - task_key: setup
+          run_job_task:
+            job_id: ${resources.jobs.build_postcode_enrichment.id}
+
+        - task_key: ingest_external_data
+          depends_on:
+            - task_key: setup
+          run_job_task:
+            job_id: ${resources.jobs.ingest_external_data.id}
+
+        # The mart joins the enrichment + silver tables, so it waits for both.
+        - task_key: build_upt
+          depends_on:
+            - task_key: postcode_enrichment
+            - task_key: ingest_external_data
+          run_job_task:
+            job_id: ${resources.jobs.build_upt.id}
+
+        - task_key: production_training
+          depends_on:
+            - task_key: build_upt
+          run_job_task:
+            job_id: ${resources.jobs.production_training.id}

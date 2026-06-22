@@ -66,59 +66,41 @@ Create `src/app/app.axa.yaml` (copy `src/app/app.pinchu.yaml`) and set:
 databricks bundle deploy --target axa --profile axa
 ```
 
-## 4. Run the data pipeline, in this order
+## 4. Run the data pipeline (one command)
 
-The order matters: the mart depends on ingestion, models depend on the mart, and
-the post-deploy grant job (step 6) needs the schema and models to already exist.
-
-```bash
-T=axa; P=axa
-databricks bundle run setup_demo                --target $T --profile $P   # schema + tables + synthetic data
-databricks bundle run build_postcode_enrichment --target $T --profile $P   # ~2-5 min, downloads UK public data
-databricks bundle run ingest_external_data       --target $T --profile $P   # bronze -> silver
-databricks bundle run build_upt                  --target $T --profile $P   # derive factors -> mart -> factor catalog
-databricks bundle run production_training         --target $T --profile $P   # GLMs + GBMs registered to Unity Catalog
-```
-
-## 5. Deploy the app
+`setup_all` chains setup -> enrichment + ingestion -> mart -> training in the
+correct order (~20 min). If a step fails, use "Repair run" on the run page to
+retry from that task.
 
 ```bash
-databricks apps deploy pricing-workbench \
-  --source-code-path /Workspace/Users/<deployer>/.bundle/pricing-upt-demo/axa/files/src/app \
-  --profile axa
+databricks bundle run setup_all --target axa --profile axa
 ```
 
-(If the app reports it is not running, start it first: `databricks apps start pricing-workbench --profile axa`, then re-run the deploy. The frontend is built and the bundle redeployed for you if you use `./deploy.sh axa axa` instead of steps 3 and 5 - it does the npm build, bundle deploy, app start, app deploy, and the post-deploy jobs in one go.)
-
-## 6. Run the post-deploy bootstrap (grants + Genie)
-
-The app runs as its own auto-minted service principal that starts with no Unity
-Catalog access, so this step is required - without it the data tabs error.
-
-```bash
-databricks bundle run grant_app_permissions --target axa --profile axa   # grants the app SP UC access
-databricks bundle run create_genie_spaces   --target axa --profile axa   # optional: creates the mart Genie space
-```
-
-Both are idempotent and safe to re-run. `create_genie_spaces` is optional - skip
-it if Genie is not available in the AXA workspace; the panel simply stays hidden.
-
-## 7. Open the app
-
-The app URL is shown in the Databricks **Apps** UI (and printed by `deploy.sh`).
-You should see four tabs: **Home, Data Ingestion, Modelling Mart, Model
-Development**.
-
-## Shortcut
-
-Steps 3, 5 and 6 are wrapped by the deploy helper:
+## 5. Deploy the app + grant its service principal
 
 ```bash
 ./deploy.sh axa axa
 ```
 
-Run the data pipeline (step 4) once before the first `deploy.sh`, since the
-post-deploy grant job needs the schema and models to exist.
+This builds the frontend, deploys the app, starts it, then runs
+`grant_app_permissions` (grants the auto-minted app SP its Unity Catalog,
+experiment, job-run and Genie access - **without this the data tabs error**) and
+`create_genie_spaces` (creates the Modelling Mart Genie space; skipped quietly if
+Genie is unavailable). Both are idempotent.
+
+## 6. Open the app
+
+The app URL is printed by `deploy.sh` (and shown in the Databricks **Apps** UI).
+You should see four tabs: **Home, Data Ingestion, Modelling Mart, Model
+Development**.
+
+## Flow summary
+
+```
+databricks bundle deploy --target axa --profile axa   # 3. create jobs
+databricks bundle run setup_all --target axa --profile axa   # 4. build data (~20 min)
+./deploy.sh axa axa                                    # 5. app + grants + Genie
+```
 
 ## Notes for the AXA environment
 
