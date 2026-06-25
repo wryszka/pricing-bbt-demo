@@ -18,4 +18,4 @@ env:
     # Lakeview dashboard powering the Modelling Mart "Dashboard" tab on prod.
     value: "01f15d9ef1bb19d19e9e9ba9fa44d50a"
   - name: BUNDLE_NOTEBOOKS_BASE
-    value: "/Workspace/Users/laurence.ryszka@databricks.com/.bundle/pricing-upt-demo/prod/files/src/04_models"
+    value: "/Workspace/Shared/.bundle/pricing-upt-demo/prod/files/src/04_models"
