@@ -33,7 +33,13 @@ echo "==> [$TARGET] building frontend"
 echo "==> [$TARGET] deploying bundle"
 databricks bundle deploy --target "$TARGET" --profile "$PROFILE"
 
-APP_PATH="/Workspace/Users/laurence.ryszka@databricks.com/.bundle/pricing-upt-demo/${TARGET}/files/src/app"
+# Per-target bundle root: prod deploys under /Workspace/Shared (org-shared,
+# any SA can redeploy — see databricks.yml root_path); dev under user home.
+if [ "$TARGET" = "prod" ]; then
+  APP_PATH="/Workspace/Shared/.bundle/pricing-upt-demo/prod/files/src/app"
+else
+  APP_PATH="/Workspace/Users/laurence.ryszka@databricks.com/.bundle/pricing-upt-demo/${TARGET}/files/src/app"
+fi
 echo "==> [$TARGET] deploying app source from $APP_PATH"
 databricks apps deploy pricing-workbench \
     --source-code-path "$APP_PATH" --profile "$PROFILE"
