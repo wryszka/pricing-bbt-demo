@@ -21,7 +21,7 @@ import {
  * governance side-panel anchored in Databricks features.
  */
 
-type Pattern = 'build' | 'batch' | 'live';
+type Pattern = 'build' | 'batch' | 'live' | 'standards';
 
 export default function RatingEngineIntegration() {
   const [pattern, setPattern] = useState<Pattern>('build');
@@ -58,11 +58,15 @@ export default function RatingEngineIntegration() {
         <PatternTab active={pattern === 'live'} onClick={() => setPattern('live')}
                     icon={<Zap className="w-3.5 h-3.5" />}
                     label="3 · Live" sub="quote-time enrichment" />
+        <PatternTab active={pattern === 'standards'} onClick={() => setPattern('standards')}
+                    icon={<FileCheck2 className="w-3.5 h-3.5" />}
+                    label="Standards" sub="Radar integration standards" />
       </div>
 
       {pattern === 'build' && <BuildPattern />}
       {pattern === 'batch' && <BatchPattern />}
       {pattern === 'live'  && <LivePattern />}
+      {pattern === 'standards' && <StandardsTab />}
     </div>
   );
 }
@@ -711,6 +715,146 @@ function PatternFrame({ title, subtitle, svg, steps, governance }: {
           </ul>
         </section>
       </div>
+    </div>
+  );
+}
+
+// ===========================================================================
+// STANDARDS — Radar integration standards (connector, sizing, live-path SLOs)
+// ===========================================================================
+
+function StandardsTab() {
+  return (
+    <div className="space-y-6">
+      <div>
+        <h3 className="text-lg font-bold text-gray-900">Radar integration standards</h3>
+        <p className="text-sm text-gray-600 mt-1 max-w-3xl">
+          The engineering standards behind the three patterns: how the connector is set up,
+          how batch topologies are sized, and what the live quote path must guarantee.
+          Every standard maps to a Databricks-governed control — nothing here changes
+          the actuary's Radar experience.
+        </p>
+      </div>
+
+      {/* The connector */}
+      <section className="bg-white rounded-lg border border-gray-200 p-5">
+        <h4 className="text-sm font-bold text-gray-900 mb-3 flex items-center gap-2">
+          <Cpu className="w-4 h-4 text-emerald-600" /> The connector — WTW-supported, not bespoke
+        </h4>
+        <div className="grid md:grid-cols-2 gap-3">
+          {[
+            { t: 'Native in Radar v5+', b: 'The Databricks connector is built into Radar version 5 and above, fully maintained and supported by WTW as part of the Radar product — not a Databricks add-on or a custom bridge. Setup documentation is on the WTW client portal; any Radar 5+ customer already has access.' },
+            { t: 'One bidirectional ODBC DSN', b: 'Radar reads the modelling dataset from, and writes factor tables / model objects back to, a governed Databricks SQL warehouse over a single DSN. No file shuffling, no extract maze.' },
+            { t: 'Scoped service principal', b: 'The DSN authenticates as a service principal with grants only on the modelling mart and the result schema. Unity Catalog enforces row filters and column/PII masks at query time — Radar never sees more than it is granted.' },
+            { t: 'Private networking', b: 'The warehouse is reached over PrivateLink — no public endpoint; Radar connects from inside the customer VPC. Credentials rotate via UC Secrets.' },
+          ].map((x) => (
+            <div key={x.t} className="rounded-md border border-gray-200 bg-gray-50 p-3">
+              <div className="text-sm font-semibold text-gray-900">{x.t}</div>
+              <div className="text-xs text-gray-600 leading-relaxed mt-1">{x.b}</div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* Choosing an entry point */}
+      <section className="bg-white rounded-lg border border-gray-200 p-5">
+        <h4 className="text-sm font-bold text-gray-900 mb-3 flex items-center gap-2">
+          <Layers className="w-4 h-4 text-emerald-600" /> Choosing an entry point
+        </h4>
+        <p className="text-xs text-gray-600 mb-3 max-w-3xl">
+          The three patterns are standalone — an estate rarely needs all three on day one.
+          Each closes a specific gap in a typical Radar setup, and all are governed end-to-end
+          in Unity Catalog:
+        </p>
+        <div className="grid md:grid-cols-3 gap-3">
+          {[
+            { t: '1 · Build', gap: 'Modelling data lives in spreadsheets and extracts; evidencing how a rate was built is "trust us."', std: 'Governed lineage + weeks-to-hours data prep, zero change to the Radar experience. Lowest-friction entry point.' },
+            { t: '2 · Batch what-if', gap: 'Radar runs one scenario at a time; a full-book what-if takes days with nowhere governed to compare results.', std: 'Partition the book, fan out across parallel Radar licences, gather into one governed comparison surface. Ten scenarios overnight, not over a fortnight.' },
+            { t: '3 · Enrich live', gap: 'Live quotes see only the rating tables — no external enrichment, no ML signals, no replayable record of why a price was set.', std: 'Highest-value pattern: live enrichment + ML scores in the quote path with a full audit trail. Natural endgame after 1–2 build trust.' },
+          ].map((x) => (
+            <div key={x.t} className="rounded-md border border-emerald-200 bg-emerald-50/50 p-3">
+              <div className="text-sm font-semibold text-emerald-900">{x.t}</div>
+              <div className="text-[11px] text-gray-600 mt-1"><span className="font-semibold">Gap it closes:</span> {x.gap}</div>
+              <div className="text-[11px] text-emerald-900 mt-1.5"><span className="font-semibold">Standard:</span> {x.std}</div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* Batch sizing regimes */}
+      <section className="bg-white rounded-lg border border-gray-200 p-5">
+        <h4 className="text-sm font-bold text-gray-900 mb-3 flex items-center gap-2">
+          <GitBranch className="w-4 h-4 text-emerald-600" /> Batch what-if — topology sizing standard
+        </h4>
+        <p className="text-xs text-gray-600 mb-3 max-w-3xl">
+          There is no single right topology — it depends on volume, licence count, and Radar's
+          writeback configuration. Size against these three regimes; anything beyond a small POC
+          gets an architecture review.
+        </p>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs uppercase tracking-wider text-gray-500 border-b border-gray-200">
+                <th className="py-2 pr-4">Regime</th>
+                <th className="py-2 pr-4">When</th>
+                <th className="py-2">Trade-off</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              <tr>
+                <td className="py-2.5 pr-4 font-semibold text-gray-900 whitespace-nowrap">ODBC in &amp; out</td>
+                <td className="py-2.5 pr-4 text-gray-700 whitespace-nowrap">~10k rows/partition · few scenarios</td>
+                <td className="py-2.5 text-gray-600">Simplest ops; writeback contention slows it above ~50k rows.</td>
+              </tr>
+              <tr className="bg-emerald-50/50">
+                <td className="py-2.5 pr-4 font-semibold text-emerald-900 whitespace-nowrap">Hybrid — ODBC in, files out <span className="text-[10px] font-bold uppercase text-emerald-700 ml-1">default</span></td>
+                <td className="py-2.5 pr-4 text-gray-700 whitespace-nowrap">~100k rows/partition · 4–10 licences</td>
+                <td className="py-2.5 text-gray-600">Fast governed reads + linear-scaling file writes with exactly-once ingestion (Autoloader). The sweet spot.</td>
+              </tr>
+              <tr>
+                <td className="py-2.5 pr-4 font-semibold text-gray-900 whitespace-nowrap">Files in &amp; out</td>
+                <td className="py-2.5 pr-4 text-gray-700 whitespace-nowrap">~1M rows/partition · 10+ licences</td>
+                <td className="py-2.5 text-gray-600">Max parallelism, no warehouse load; two file legs, read governance via Volume ACLs.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p className="text-[11px] text-gray-500 mt-3">
+          Results land keyed <code className="bg-gray-100 px-1 rounded">scenario_id × partition_id</code> in Delta;
+          dashboards + Genie compare premium delta, loss-ratio impact and fairness; the chosen
+          scenario gets a governance pack.
+        </p>
+      </section>
+
+      {/* Live path standards */}
+      <section className="bg-white rounded-lg border border-gray-200 p-5">
+        <h4 className="text-sm font-bold text-gray-900 mb-3 flex items-center gap-2">
+          <Activity className="w-4 h-4 text-emerald-600" /> Live quote path — what the integration must guarantee
+        </h4>
+        <div className="grid md:grid-cols-2 gap-3">
+          {[
+            { t: 'Latency budgets', b: 'Workbench-fronts-Radar (3a): enrichment + 4-model scoring in <50 ms p50 before the bundle is POSTed to Radar. Radar-calls-Workbench (3b): features + scores returned in <100 ms so the mid-rating callout never threatens the aggregator SLA.' },
+            { t: 'Payload recording', b: 'Every request → enrichment → response is written to a Delta inference_logs table. Replay any historical quote at any historical model version — the durable "why was I charged this?" record fair-value regulation demands.' },
+            { t: 'Pack-id binding', b: 'Each response carries the model version used, stamped on the row and echoed into Radar\'s audit log. An auditor traces a broker\'s rate card back to the governed model in two clicks.' },
+            { t: 'Live monitoring of the rate', b: 'The same inference table feeds continuous drift, bias and premium-adequacy monitors on real production traffic — not offline samples.' },
+          ].map((x) => (
+            <div key={x.t} className="rounded-md border border-gray-200 bg-gray-50 p-3">
+              <div className="text-sm font-semibold text-gray-900">{x.t}</div>
+              <div className="text-xs text-gray-600 leading-relaxed mt-1">{x.b}</div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* Positioning line */}
+      <section className="rounded-lg border border-emerald-300 bg-emerald-600 p-5 text-white">
+        <div className="text-[10px] uppercase tracking-wider font-bold text-emerald-100 mb-1">The standard in one line</div>
+        <p className="text-sm font-medium leading-relaxed">
+          Integrate Radar: bring it to where the data is, help it scale, wrap it in audit and
+          governance, and complement it with modelling in Databricks — all over WTW's own
+          supported v5+ connector, with zero change to the actuary's workflow.
+        </p>
+      </section>
     </div>
   );
 }
