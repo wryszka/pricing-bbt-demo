@@ -125,6 +125,7 @@ Internal Data (policies, claims, quotes) ───────→ Unified Pricin
 
 ## Documentation
 
+- **[Demo Runbook (Google Doc)](https://docs.google.com/document/d/1VHVMrbwo1D2Gfl2NKnKJzosBlS-hltcFZ9guvBejUkM/edit)** — The canonical presenter guide: pre-demo checklist, 12-step demo flow, Q&A cheat sheet (internal)
 - **[Talk Track](docs/talk_track.md)** — Executive and technical demo scripts
 - **[Data Dictionary](docs/data_dictionary.md)** — Complete table and column reference
 - **[About This Demo](docs/about_demo.md)** — Deployment guide, features, disclaimer
