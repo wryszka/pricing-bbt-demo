@@ -537,7 +537,7 @@ async def mart_profile():
             "refreshes": [
                 {"version": h.get("version"),  "timestamp": h.get("timestamp"),
                  "user": h.get("userName"),    "operation": h.get("operation")}
-                for h in hist
+                for h in (hist or [])
             ],
         },
         "upstream_feeds": UPT_CONTRIBUTING_FEEDS,

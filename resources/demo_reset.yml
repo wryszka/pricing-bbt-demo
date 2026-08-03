@@ -9,6 +9,10 @@ resources:
           default: ${var.catalog_name}
         - name: schema_name
           default: ${var.schema_name}
+        - name: app_service_principal_id
+          default: ${var.app_service_principal_id}
+        - name: warehouse_id
+          default: ${var.warehouse_id}
       permissions:
         - service_principal_name: ${var.app_service_principal_id}
           level: CAN_MANAGE_RUN
@@ -19,6 +23,8 @@ resources:
             base_parameters:
               catalog_name: ${var.catalog_name}
               schema_name:  ${var.schema_name}
+              app_service_principal_id: ${var.app_service_principal_id}
+              warehouse_id: ${var.warehouse_id}
           environment_key: env
       environments:
         - environment_key: env

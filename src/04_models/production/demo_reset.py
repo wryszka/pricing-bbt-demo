@@ -22,9 +22,16 @@
 
 dbutils.widgets.text("catalog_name", "lr_serverless_aws_us_catalog")
 dbutils.widgets.text("schema_name",  "pricing_upt")
+# App service principal + warehouse — passed by the bundle so the reset can
+# self-heal the CAN_USE grant that external ACL rewrites keep wiping (the
+# recurring "app shows 500 on SQL-backed pages" failure). Blank = skip.
+dbutils.widgets.text("app_service_principal_id", "")
+dbutils.widgets.text("warehouse_id", "")
 
 catalog = dbutils.widgets.get("catalog_name")
 schema  = dbutils.widgets.get("schema_name")
+app_sp  = dbutils.widgets.get("app_service_principal_id").strip()
+wh_id   = dbutils.widgets.get("warehouse_id").strip()
 fqn     = f"{catalog}.{schema}"
 
 import json
@@ -46,6 +53,29 @@ CHAMPION_VERSIONS = {
 
 from databricks.sdk import WorkspaceClient
 w = WorkspaceClient()
+
+# --- Self-heal: ensure the app SP can use the SQL warehouse -----------------
+# External ACL rewrites in this workspace periodically strip the app SP's
+# CAN_USE grant on the warehouse, which 500s every SQL-backed page. Re-assert
+# it here (idempotent, additive PATCH — leaves other grantees untouched).
+if app_sp and wh_id:
+    try:
+        from databricks.sdk.service.sql import (
+            WarehouseAccessControlRequest, WarehousePermissionLevel,
+        )
+        w.warehouses.update_permissions(
+            warehouse_id=wh_id,
+            access_control_list=[WarehouseAccessControlRequest(
+                service_principal_name=app_sp,
+                permission_level=WarehousePermissionLevel.CAN_USE,
+            )],
+        )
+        print(f"✓ warehouse grant re-asserted: {app_sp} → CAN_USE on {wh_id}")
+    except Exception as e:
+        print(f"⚠ warehouse grant re-assert failed (non-fatal): {str(e)[:160]}")
+else:
+    print("ℹ warehouse grant self-heal skipped (app_service_principal_id / warehouse_id not set)")
+
 alias_results = {}
 for fam, ver in CHAMPION_VERSIONS.items():
     full = f"{fqn}.{fam}"
