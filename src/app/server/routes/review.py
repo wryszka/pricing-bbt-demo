@@ -90,11 +90,22 @@ def _iso_from_ms(ms: int) -> str | None:
 
 
 def _find_pack_job_id(w) -> int | None:
+    # Exact match first, then suffix match — the dev bundle target prefixes
+    # job names with "[dev <whoami>] ", so an exact lookup on the bare name
+    # misses on dev and the promote button 500s with "Job not found".
     try:
         for j in w.jobs.list(name=PACK_JOB_NAME, limit=25):
             return j.job_id
     except Exception as e:
-        logger.warning("jobs.list for %s failed: %s", PACK_JOB_NAME, e)
+        logger.warning("jobs.list(name=%s) failed: %s", PACK_JOB_NAME, e)
+    try:
+        for j in w.jobs.list():
+            settings = getattr(j, "settings", None)
+            jname = getattr(settings, "name", None) if settings else None
+            if jname and jname.endswith(PACK_JOB_NAME):
+                return j.job_id
+    except Exception as e:
+        logger.warning("jobs.list() iter for %s failed: %s", PACK_JOB_NAME, e)
     return None
 
 
