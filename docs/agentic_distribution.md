@@ -95,6 +95,21 @@ warehouse blip must never break a live demo.
 3. Have the MCP URL ready to paste (`<app-url>/api/mcp`) if connecting an
    external client live.
 
+## If the engine misbehaves
+
+`scripts/restore_motor_scorer.py` rolls either serving endpoint back to a
+known-good model version without re-running the training notebook:
+
+```bash
+python3 scripts/restore_motor_scorer.py --show               # current state
+python3 scripts/restore_motor_scorer.py --restore --dry-run   # payloads only
+python3 scripts/restore_motor_scorer.py --restore             # roll back
+```
+
+It only ever PUTs a new config — never delete+recreate — so the route-optimized
+endpoint keeps its data-plane host and ACL. The app self-heals its cached client
+after a version roll (see `reset_workspace_client`).
+
 ## Suggested run of play
 
 1. **Open the tool manifest** — this is all an outside agent gets. No insurance
@@ -111,12 +126,15 @@ warehouse blip must never break a live demo.
 
 - **Motor only.** The live scorer and online store are motor. Home and medical
   would be mock, so they are not included.
-- **Premium level.** The engine returns roughly £4,300–6,400 for typical risks,
-  while the book's own `current_premium` averages £523 — a pre-existing
-  calibration gap in the demo models (a comparable real book row prices at
-  £4,899), not something this add-on introduced. It affects the existing
-  `/quote` page identically. Fine for showing mechanics and latency; do not
-  present the absolute premium as a market-realistic rate.
+- **Premium level.** Fixed 2026-08-04 (rating engine `motor_v1.3`): the
+  frequency GLM is trained on `claim_count_5y`, a five-year count, and the
+  scorer had been treating it as annual — so every quote was ~5x too high. The
+  scorer now divides by `freq_exposure_years` before multiplying by per-claim
+  severity. The test risk moved £4,679.80 → £892.13 against a book average of
+  £523.40. A residual gap remains and is severity-model calibration, not a
+  defect; premiums are in a plausible band but are still not a market-realistic
+  rate card. `annual_freq` is returned alongside `freq_pred` so the breakdown
+  reconciles by hand.
 - **No bind.** The journey quotes and explains; it does not issue a policy.
 - `explain_price` output is salvaged from a truncated agent response (the
   endpoint's token cap cuts the JSON envelope). Prose is recovered rather than
