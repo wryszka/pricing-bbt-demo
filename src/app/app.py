@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from server.routes import datasets, agent, features, deployment, governance, quote_stream, genie, development, review, compare, factory, factory_real, pricing, admin, supervisor, live_pricing
+from server.routes import datasets, agent, features, deployment, governance, quote_stream, genie, development, review, compare, factory, factory_real, pricing, admin, supervisor, live_pricing, mcp, broker, distribution
 import os
 from server.config import get_workspace_host
 
@@ -55,6 +55,9 @@ app.include_router(pricing.router)
 app.include_router(admin.router)
 app.include_router(supervisor.router)
 app.include_router(live_pricing.router)
+app.include_router(mcp.router)
+app.include_router(broker.router)
+app.include_router(distribution.router)
 
 
 @app.get("/api/health")

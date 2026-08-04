@@ -301,4 +301,12 @@ export const api = {
     const qs = q.toString();
     return fetchJson<any>(`/live-pricing/load-test/metrics${qs ? `?${qs}` : ''}`);
   },
+
+  // Agentic distribution — broker/direct chat, MCP surface, channel telemetry
+  brokerChat: (body: { message: string; history?: any[]; answers?: Record<string, any>; session_id?: string | null; breakdown?: any }) =>
+    fetchJson<any>('/broker/chat', { method: 'POST', body: JSON.stringify(body) }),
+  brokerTools: () => fetchJson<any>('/broker/tools'),
+  mcpManifest: () => fetchJson<any>('/mcp/manifest'),
+  distributionTelemetry: (hours = 24) =>
+    fetchJson<any>(`/distribution/telemetry?hours=${encodeURIComponent(hours)}`),
 };

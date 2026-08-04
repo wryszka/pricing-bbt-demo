@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { Receipt, BookOpen, ArrowRight, Package, Radar } from 'lucide-react';
+import { Receipt, BookOpen, ArrowRight, Package, Radar, Network } from 'lucide-react';
 
 /**
  * Add-ons landing page — the home for useful tools that sit alongside the
@@ -47,13 +47,22 @@ export default function Addons() {
           audience="pricing actuaries · rating-engine administrators"
           tags={['Radar / Earnix', 'Feature enrichment', 'Reference architecture']}
         />
+        <AddonCard
+          to="/add-ons/agentic-distribution"
+          icon={Network}
+          accent="violet"
+          title="Agentic Distribution"
+          description="Being present and priceable when the customer arrives through an AI agent instead of a website. The pricing engine published as services — discover requirements, get a real price, ask why — over a conversational journey and over MCP for outside agents."
+          audience="distribution · digital · pricing leadership"
+          tags={['MCP server', 'Claude-driven journey', 'Real engine prices', 'Channel telemetry']}
+        />
       </div>
     </div>
   );
 }
 
 function AddonCard({ to, icon: Icon, accent, title, description, audience, tags }: {
-  to: string; icon: any; accent: 'red' | 'indigo' | 'blue' | 'emerald';
+  to: string; icon: any; accent: 'red' | 'indigo' | 'blue' | 'emerald' | 'violet';
   title: string; description: string; audience: string; tags: string[];
 }) {
   const colors = {
@@ -61,6 +70,7 @@ function AddonCard({ to, icon: Icon, accent, title, description, audience, tags 
     indigo:  { bg: 'bg-indigo-50',  border: 'border-indigo-200',  icon: 'text-indigo-600',  badge: 'bg-indigo-100 text-indigo-700' },
     blue:    { bg: 'bg-blue-50',    border: 'border-blue-200',    icon: 'text-blue-600',    badge: 'bg-blue-100 text-blue-700' },
     emerald: { bg: 'bg-emerald-50', border: 'border-emerald-200', icon: 'text-emerald-600', badge: 'bg-emerald-100 text-emerald-700' },
+    violet:  { bg: 'bg-violet-50',  border: 'border-violet-200',  icon: 'text-violet-600',  badge: 'bg-violet-100 text-violet-700' },
   }[accent];
 
   return (
