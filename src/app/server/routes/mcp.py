@@ -193,7 +193,7 @@ async def _tool_price_motor_risk(args: dict, session_id: str, agent_id: str) -> 
         tool="price_motor_risk", ok=bool(priced.get("ok")),
         latency_ms=priced.get("latency_ms"),
         annual_premium=priced.get("annual_premium"),
-        fields_supplied=len(provenance["customer"]),
+        fields_supplied=len(provenance["customer_supplied"]),
         detail=priced.get("error"))
 
     await log_audit_event(
@@ -203,8 +203,8 @@ async def _tool_price_motor_risk(args: dict, session_id: str, agent_id: str) -> 
         details={"surface": "mcp", "agent_id": agent_id,
                  "annual_premium": priced.get("annual_premium"),
                  "engine": priced.get("engine"),
-                 "customer_supplied": provenance["customer"],
-                 "book_mean_fallback": provenance["book_mean"]},
+                 "customer_supplied": provenance["customer_supplied"],
+                 "book_mean_fallback": provenance["book_mean_fallback"]},
     )
 
     if not priced.get("ok"):
@@ -222,11 +222,7 @@ async def _tool_price_motor_risk(args: dict, session_id: str, agent_id: str) -> 
             "latency_ms": priced["latency_ms"],
             "note": "Premium computed by the carrier's deployed pricing models.",
         },
-        "input_provenance": {
-            "customer_supplied": provenance["customer"],
-            "journey_default": provenance["default"],
-            "book_mean_fallback": provenance["book_mean"],
-        },
+        "input_provenance": provenance,
         "cover_options": COVER_OPTIONS,
     }
 

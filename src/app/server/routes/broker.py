@@ -216,6 +216,8 @@ async def _run_tool(name: str, args: dict[str, Any], state: dict[str, Any],
         state["quote"] = priced if priced.get("ok") else None
         if priced.get("ok"):
             state["breakdown"] = priced["breakdown"]
+            # Keys are already the wire contract the UI reads — see
+            # build_feature_vector. Pass straight through, no remapping.
             state["provenance"] = provenance
         state["tool_log"].append({
             "tool": name, "ok": bool(priced.get("ok")),
@@ -228,7 +230,7 @@ async def _run_tool(name: str, args: dict[str, Any], state: dict[str, Any],
                             ok=bool(priced.get("ok")),
                             latency_ms=priced.get("latency_ms"),
                             annual_premium=priced.get("annual_premium"),
-                            fields_supplied=len(provenance["customer"]),
+                            fields_supplied=len(provenance["customer_supplied"]),
                             detail=priced.get("error"))
         if not priced.get("ok"):
             return {"ok": False, "error": priced.get("error"),

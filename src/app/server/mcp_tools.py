@@ -178,31 +178,38 @@ def build_feature_vector(answers: dict[str, Any]) -> tuple[dict[str, Any], dict[
     """Turn customer answers into the full 28-feature vector the engine wants.
 
     Returns (features, provenance) where provenance splits every field into
-    'customer' (they told us), 'default' (journey default for a non-required
-    question) and 'book_mean' (unknowable for a new customer). The caller
-    surfaces this so nobody has to wonder where a number came from.
+    'customer_supplied' (they told us), 'journey_default' (journey default for a
+    non-required question, or derived) and 'book_mean_fallback' (unknowable for a
+    new customer). The caller surfaces this so nobody has to wonder where a
+    number came from.
+
+    These key names are the wire contract — both the MCP response and the chat
+    response pass this dict straight through, and BrokerChat.tsx reads these
+    names. Renaming a key here silently blanks the "where the inputs came from"
+    panel, so keep them in step with the UI.
     """
     features: dict[str, Any] = {}
-    provenance: dict[str, list[str]] = {"customer": [], "default": [], "book_mean": []}
+    provenance: dict[str, list[str]] = {
+        "customer_supplied": [], "journey_default": [], "book_mean_fallback": []}
 
     for q in QUOTE_QUESTIONS:
         f = q["field"]
         v = answers.get(f)
         if v is not None and str(v) != "":
             features[f] = v
-            provenance["customer"].append(f)
+            provenance["customer_supplied"].append(f)
         else:
             features[f] = q.get("default")
-            provenance["default"].append(f)
+            provenance["journey_default"].append(f)
 
     for f, v in derived_features(answers).items():
         features[f] = v
-        provenance["default"].append(f)
+        provenance["journey_default"].append(f)
 
     for f, v in BOOK_MEANS.items():
         if f not in features or features[f] is None:
             features[f] = v
-            provenance["book_mean"].append(f)
+            provenance["book_mean_fallback"].append(f)
 
     # Coerce to the dtypes the served model's signature enforces. An agent may
     # hand us strings, and MLflow schema enforcement rejects a float where the
