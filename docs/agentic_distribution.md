@@ -126,13 +126,16 @@ after a version roll (see `reset_workspace_client`).
 
 - **Motor only.** The live scorer and online store are motor. Home and medical
   would be mock, so they are not included.
-- **Premium level.** Fixed 2026-08-04 (rating engine `motor_v1.3`): the
-  frequency GLM is trained on `claim_count_5y`, a five-year count, and the
-  scorer had been treating it as annual — so every quote was ~5x too high. The
-  scorer now divides by `freq_exposure_years` before multiplying by per-claim
-  severity. The test risk moved £4,679.80 → £892.13 against a book average of
-  £523.40. A residual gap remains and is severity-model calibration, not a
-  defect; premiums are in a plausible band but are still not a market-realistic
+- **Premium level.** Fixed and live on dev 2026-08-04 as scorer **v6** /
+  direct **v3** (rating engine `motor_v1.3`); verify with
+  `scripts/restore_motor_scorer.py --probe`. The frequency GLM is trained on
+  `claim_count_5y`, a five-year count, and the scorer had been treating it as
+  annual — so every quote was ~5x too high. It now divides by
+  `freq_exposure_years` before multiplying by per-claim severity. The reference
+  risk moved **£4,679.80 → £935.96** (£78.00/month) against a book average of
+  £523.40, and the existing `/quote` page came down with it (~£1,006). A
+  residual gap remains — that is severity-model calibration, not a defect;
+  premiums are now in a plausible band but are still not a market-realistic
   rate card. `annual_freq` is returned alongside `freq_pred` so the breakdown
   reconciles by hand.
 - **No bind.** The journey quotes and explains; it does not issue a policy.
