@@ -63,7 +63,12 @@ print("Motor champions:", CHAMPIONS)
 
 # Motor rating engine config — baked into the artifact.
 RATING_CFG = {
-    "version":                       "motor_v1.2",
+    "version":                       "motor_v1.3",
+    # freq_glm_motor is trained on `claim_count_5y` (a 5-year count). A premium
+    # covers one year, so the scorer divides the GLM output by this before
+    # multiplying by per-claim severity. If the frequency model is ever
+    # retrained on a 1-year count, set this to 1.0.
+    "freq_exposure_years":           5.0,
     "expense_loading_pct":           18.0,
     "commission_bp":                 1500,    # 15.0 %
     "young_driver_threshold":        25,
@@ -252,7 +257,14 @@ class MotorPricingScorer(PythonModel):
          demand_adj, final)."""
         import numpy as np
         cfg = self.rating_cfg
-        technical = freq * sev
+        # The frequency GLM is trained on `claim_count_5y` — a FIVE-YEAR claim
+        # count — but a premium covers ONE year, so it must be annualised
+        # before it meets a per-claim severity. Without this the technical
+        # premium is ~5x too high (book avg premium £523 vs ~£4.3k quoted).
+        # `freq_exposure_years` keeps the divisor explicit and configurable:
+        # retrain the GLM on a 1-year count and set it to 1.0.
+        annual_freq = freq / float(cfg.get("freq_exposure_years", 1.0) or 1.0)
+        technical = annual_freq * sev
         loaded    = technical * (1.0 + cfg["expense_loading_pct"] / 100.0) \
                               * (1.0 + cfg["commission_bp"] / 10_000.0)
         # Young driver loading
@@ -295,10 +307,16 @@ class MotorPricingScorer(PythonModel):
         technical, loaded, young_load, telematics_load, fraud_load, demand_adj, final = \
             self._apply_rules(model_input, freq, sev, demand, fraud)
 
+        # Surface the annualised frequency alongside the raw 5-year GLM output
+        # so a reader can reconcile technical = annual_freq * sev by hand.
+        _exposure = float(self.rating_cfg.get("freq_exposure_years", 1.0) or 1.0)
+        annual_freq = freq / _exposure
+
         n = len(model_input)
         return pd.DataFrame({
             "final_premium":           np.round(final, 2),
-            "freq_pred":               freq,
+            "freq_pred":               freq,          # raw GLM: claims per 5 years
+            "annual_freq":             annual_freq,   # freq / freq_exposure_years
             "sev_pred":                sev,
             "demand_pred":             demand,
             "fraud_pred":              fraud,
