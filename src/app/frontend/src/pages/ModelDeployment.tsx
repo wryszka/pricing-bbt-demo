@@ -3,6 +3,7 @@ import {
   Rocket, ExternalLink, Loader2, Undo2, ChevronDown, ChevronRight,
   FileCheck2, ShieldCheck, Server, AlertCircle, Zap, Clock, Database,
   Power, Play, Square, Activity, FileText, AlertTriangle,
+  Receipt, Radio, Gauge, Network,
 } from 'lucide-react';
 import { api } from '../lib/api';
 
@@ -678,10 +679,16 @@ function LivePricing() {
           <p className="text-xs text-gray-500 mb-3">
             Standalone customer-facing UIs for the live pricing story. Best opened in their own tabs.
           </p>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-            <DemoLink href="/quote"       title="Quote portal"   desc="Consumer quote, pre-filled for John" />
-            <DemoLink href="/blackbox"    title="Black-box panel" desc="Fire a telematics event" />
-            <DemoLink href="/quotetester" title="Live quote tester" desc="Streaming QPS + latency" />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <DemoLink href="/quote"       icon={Receipt} accent="blue"
+                      title="Quote portal"   desc="Consumer quote, pre-filled for John" />
+            <DemoLink href="/blackbox"    icon={Radio} accent="amber"
+                      title="Black-box panel" desc="Fire a telematics event" />
+            <DemoLink href="/quotetester" icon={Gauge} accent="violet"
+                      title="Live quote tester" desc="Streaming QPS + latency" />
+            <DemoLink href="/quote-chat"  icon={Network} accent="fuchsia"
+                      title="Agentic MCP sales"
+                      desc="Buy by conversation — Claude calls the engine over MCP" />
           </div>
         </div>
       )}
@@ -696,10 +703,26 @@ function LivePricing() {
       )}
 
       {status?.state !== 'on' && (
-        <div className="bg-gray-50 border border-gray-200 rounded-lg p-5 mb-5 text-sm text-gray-600">
-          Activate the system to access the customer-facing demo pages, demo flow, single-quote latency probe, and load-test chart.
-          The first activation provisions a Lakebase online store at CU_2 and warm-starts the scorer endpoint —
-          typically 5–10 minutes end-to-end. Subsequent activations on the same workspace reuse what's there.
+        <div className="bg-gray-50 border border-gray-200 rounded-lg p-5 mb-5 text-sm text-gray-600 space-y-3">
+          <p>
+            Activate the system to access the live-pricing demo pages, demo flow, single-quote latency probe, and load-test chart.
+            The first activation provisions a Lakebase online store at CU_2 and warm-starts the scorer endpoint —
+            typically 5–10 minutes end-to-end. Subsequent activations on the same workspace reuse what's there.
+          </p>
+          {/* The agentic journey prices a BRAND-NEW risk through
+              motor_pricing_scorer_direct, which is independent of the Lakebase
+              online store and the route-optimized endpoint — so it works with
+              the live system off, and stays available here. */}
+          <div className="pt-1">
+            <div className="text-[11px] uppercase tracking-wide text-gray-500 font-semibold mb-2">
+              Available without activating
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <DemoLink href="/quote-chat" icon={Network} accent="fuchsia"
+                        title="Agentic MCP sales"
+                        desc="Prices a new risk via motor_pricing_scorer_direct — no online store needed" />
+            </div>
+          </div>
         </div>
       )}
 
@@ -727,12 +750,28 @@ function LivePricing() {
   );
 }
 
-function DemoLink({ href, title, desc }: { href: string; title: string; desc: string }) {
+// Each demo page carries its own accent so the four are tellable apart at a
+// glance mid-demo. Full class strings (no interpolation) so Tailwind's scanner
+// keeps them.
+const DEMO_ACCENTS = {
+  blue:    { border: 'hover:border-blue-300',    bg: 'hover:bg-blue-50',    icon: 'text-blue-600',    title: 'group-hover:text-blue-700' },
+  amber:   { border: 'hover:border-amber-300',   bg: 'hover:bg-amber-50',   icon: 'text-amber-600',   title: 'group-hover:text-amber-700' },
+  violet:  { border: 'hover:border-violet-300',  bg: 'hover:bg-violet-50',  icon: 'text-violet-600',  title: 'group-hover:text-violet-700' },
+  fuchsia: { border: 'hover:border-fuchsia-300', bg: 'hover:bg-fuchsia-50', icon: 'text-fuchsia-600', title: 'group-hover:text-fuchsia-700' },
+} as const;
+
+function DemoLink({ href, title, desc, icon: Icon, accent = 'violet' }: {
+  href: string; title: string; desc: string;
+  icon?: React.ComponentType<{ className?: string }>;
+  accent?: keyof typeof DEMO_ACCENTS;
+}) {
+  const c = DEMO_ACCENTS[accent];
   return (
     <a href={href} target="_blank" rel="noopener noreferrer"
-       className="group flex items-start gap-2 px-3 py-2.5 rounded-lg border border-gray-200 hover:border-violet-300 hover:bg-violet-50 transition-colors">
+       className={`group flex items-start gap-2.5 px-3 py-2.5 rounded-lg border border-gray-200 transition-colors ${c.border} ${c.bg}`}>
+      {Icon && <Icon className={`w-4 h-4 mt-0.5 shrink-0 ${c.icon}`} />}
       <div className="flex-1 min-w-0">
-        <div className="text-sm font-medium text-gray-800 group-hover:text-violet-700 flex items-center gap-1">
+        <div className={`text-sm font-medium text-gray-800 flex items-center gap-1 ${c.title}`}>
           {title} <ExternalLink className="w-3 h-3 opacity-50" />
         </div>
         <div className="text-[11px] text-gray-500">{desc}</div>
