@@ -11,6 +11,8 @@ import ModelDeployment from './pages/ModelDeployment';
 import Governance from './pages/Governance';
 import QuoteReview from './pages/QuoteReview';
 import Addons from './pages/Addons';
+import AgenticDistribution from './pages/AgenticDistribution';
+import BrokerChat from './pages/BrokerChat';
 import NewDataImpact from './pages/NewDataImpact';
 import RatingEngineIntegration from './pages/RatingEngineIntegration';
 import Supervisor from './pages/Supervisor';
@@ -153,13 +155,14 @@ function StandaloneRoutes() {
   return (
     <Routes>
       <Route path="/quote" element={<QuoteSystem />} />
+      <Route path="/quote-chat" element={<BrokerChat />} />
       <Route path="/blackbox" element={<BlackBox />} />
       <Route path="/quotetester" element={<QuoteTester />} />
     </Routes>
   );
 }
 
-const STANDALONE = ['/quote', '/blackbox', '/quotetester'];
+const STANDALONE = ['/quote', '/quote-chat', '/blackbox', '/quotetester'];
 
 export default function App() {
   const path = window.location.pathname;
@@ -192,6 +195,7 @@ export default function App() {
             <Route path="/add-ons/quote-review" element={<QuoteReview />} />
             <Route path="/add-ons/new-data-impact" element={<NewDataImpact />} />
             <Route path="/add-ons/rating-engine" element={<RatingEngineIntegration />} />
+            <Route path="/add-ons/agentic-distribution" element={<AgenticDistribution />} />
             {/* Legacy redirect */}
             <Route path="/quote-review" element={<QuoteReview />} />
           </Routes>
