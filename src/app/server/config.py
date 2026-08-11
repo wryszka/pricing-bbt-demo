@@ -45,7 +45,22 @@ def get_schema() -> str:
 
 
 def get_warehouse_id() -> str:
-    return os.getenv("WAREHOUSE_ID", "ab79eced8207d29b")
+    return os.getenv("WAREHOUSE_ID", "")
+
+
+def get_bundle_files_base() -> str:
+    """Root of the deployed bundle's source tree, i.e. the `.../files/src`
+    directory. Set as an env var per target (app.<target>.yaml) so the app can
+    build workspace links to notebooks without hardcoding a deployer's home
+    path. Falls back to the org-shared production convention (username-free) so
+    a mis-configured deploy still points somewhere plausible rather than at a
+    specific person's home directory."""
+    base = os.getenv("BUNDLE_FILES_BASE", "").rstrip("/")
+    if base:
+        return base
+    bundle = os.getenv("BUNDLE_NAME", "pricing-workbench")
+    target = os.getenv("BUNDLE_TARGET", "prod")
+    return f"/Workspace/Shared/.bundle/{bundle}/{target}/files/src"
 
 
 def fqn(table: str) -> str:

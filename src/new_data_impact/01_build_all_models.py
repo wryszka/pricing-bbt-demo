@@ -79,7 +79,10 @@ from sklearn.metrics import (
 
 mlflow.set_registry_uri("databricks-uc")
 
-experiment_path = f"/Users/laurence.ryszka@databricks.com/pricing_upt/experiments"
+# Log to the deploying user's home so the experiment lands wherever this runs,
+# not under a baked-in email that won't exist on another workspace.
+_user = spark.sql("SELECT current_user()").collect()[0][0]
+experiment_path = f"/Users/{_user}/{SCHEMA}/experiments"
 mlflow.set_experiment(experiment_path)
 
 print(f"Catalog : {CATALOG}")

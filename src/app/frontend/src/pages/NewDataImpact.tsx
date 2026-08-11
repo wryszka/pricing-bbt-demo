@@ -6,8 +6,11 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api';
 
-const BUNDLE_BASE =
-  '/Workspace/Users/laurence.ryszka@databricks.com/.bundle/pricing-upt-demo/dev/files/src/new_data_impact';
+// Deployed workspace path for the new_data_impact notebooks — comes from
+// /api/config (BUNDLE_FILES_BASE per target), so no deployer home path is baked
+// in. Fallback is the org-shared production convention (username-free).
+const BUNDLE_BASE_FALLBACK =
+  '/Workspace/Shared/.bundle/pricing-workbench/prod/files/src/new_data_impact';
 
 const GITHUB_BASE =
   'https://github.com/wryszka/pricing-workbench/tree/main/src/new_data_impact';
@@ -72,12 +75,16 @@ const NOTEBOOKS = [
 
 export default function NewDataImpact() {
   const [host, setHost] = useState<string>('');
+  const [impactBase, setImpactBase] = useState<string>(BUNDLE_BASE_FALLBACK);
   useEffect(() => {
-    api.getConfig().then((c: any) => setHost(c.workspace_host || '')).catch(() => {});
+    api.getConfig().then((c: any) => {
+      setHost(c.workspace_host || '');
+      if (c.new_data_impact_base) setImpactBase(c.new_data_impact_base);
+    }).catch(() => {});
   }, []);
 
   const workspaceUrl = (file: string) =>
-    host ? `${host}/#workspace${BUNDLE_BASE.slice('/Workspace'.length)}/${file}` : '#';
+    host ? `${host}/#workspace${impactBase.slice('/Workspace'.length)}/${file}` : '#';
 
   return (
     <div className="max-w-7xl mx-auto px-6 py-8">

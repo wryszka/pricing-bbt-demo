@@ -67,11 +67,16 @@ async def health():
 
 @app.get("/api/config")
 async def config():
+    from server.config import get_bundle_files_base
     host = get_workspace_host()
     genie_id = os.getenv("GENIE_SPACE_ID", "")
     genie_quote_id = os.getenv("GENIE_QUOTE_SPACE_ID", "")
     mart_dashboard_id = os.getenv("MART_DASHBOARD_ID", "")
+    files_base = get_bundle_files_base()
     return {
+        "bundle_files_base":     files_base,
+        "notebooks_base":        f"{files_base}/04_models",
+        "new_data_impact_base":  f"{files_base}/new_data_impact",
         "workspace_host": host,
         "genie_space_id": genie_id,
         "genie_url": f"{host}/genie/rooms/{genie_id}" if genie_id else None,

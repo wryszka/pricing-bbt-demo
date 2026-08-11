@@ -37,12 +37,11 @@ fqn     = f"{catalog}.{schema}"
 import json
 from datetime import datetime
 
-CHAMPION_VERSIONS = {
-    "freq_glm":   "53",
-    "sev_glm":    "48",
-    "demand_gbm": "51",
-    "fraud_gbm":  "53",
-}
+# Families whose champion alias we (re)assert on reset. We resolve the version
+# at runtime rather than hardcoding it — hardcoded version numbers don't exist
+# on a fresh deploy, so the aliases would silently fail and the demo would show
+# stale/missing champions.
+FAMILIES = ["freq_glm", "sev_glm", "demand_gbm", "fraud_gbm"]
 
 # COMMAND ----------
 
@@ -76,12 +75,32 @@ if app_sp and wh_id:
 else:
     print("ℹ warehouse grant self-heal skipped (app_service_principal_id / warehouse_id not set)")
 
-alias_results = {}
-for fam, ver in CHAMPION_VERSIONS.items():
-    full = f"{fqn}.{fam}"
+def _latest_version(full_name: str) -> int | None:
+    """Highest registered version for a UC model, or None if unregistered."""
     try:
-        w.registered_models.set_alias(full_name=full, alias="champion", version_num=int(ver))
-        alias_results[fam] = f"champion → v{ver}"
+        vers = [int(v.version) for v in w.model_versions.list(full_name=full_name)]
+        return max(vers) if vers else None
+    except Exception:
+        return None
+
+alias_results = {}
+for fam in FAMILIES:
+    full = f"{fqn}.{fam}"
+    # Keep the existing champion if one is set; otherwise pin the latest version.
+    try:
+        existing = w.registered_models.get_alias(full_name=full, alias="champion")
+        ver = int(existing.version_num)
+        alias_results[fam] = f"champion already set → v{ver} (unchanged)"
+        continue
+    except Exception:
+        pass
+    ver = _latest_version(full)
+    if ver is None:
+        alias_results[fam] = "SKIPPED: model not registered on this workspace"
+        continue
+    try:
+        w.registered_models.set_alias(full_name=full, alias="champion", version_num=ver)
+        alias_results[fam] = f"champion → v{ver} (latest)"
     except Exception as e:
         alias_results[fam] = f"FAILED: {str(e)[:120]}"
 print("Champion aliases:")
@@ -308,10 +327,14 @@ seed_rows = [
      'auc',  0.7012, 'fraud_gbm_v41_20260423_171945.pdf','2026-03-17 15:59:30'),
 ]
 vol_prefix = f"/Volumes/{catalog}/{schema}/governance_packs"
+try:
+    seed_author = w.current_user.me().user_name or "actuarial_pricing_team"
+except Exception:
+    seed_author = "actuarial_pricing_team"
 values_sql = ",\n".join(
     f"('{pid}', '{fam}', '{ver}', '{fqn}.{fam}', NULL, "
     f"'{story}', false, '{metric}', {val}, "
-    f"'{vol_prefix}/{pdf}', 180000, 'laurence.ryszka', "
+    f"'{vol_prefix}/{pdf}', 180000, '{seed_author}', "
     f"TIMESTAMP'{ts}')"
     for pid, fam, ver, story, metric, val, pdf, ts in seed_rows
 )

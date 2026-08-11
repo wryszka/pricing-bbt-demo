@@ -171,9 +171,10 @@ async def rebuild_feature_table():
 
     def _find_and_run() -> tuple:
         w = get_workspace_client()
-        jobs = list(w.jobs.list(name="[dev laurence_ryszka] Build Unified Pricing Table (Gold)"))
-        if not jobs:
-            jobs = [j for j in w.jobs.list() if j.settings and "Build Unified Pricing Table" in (j.settings.name or "")]
+        # Match by suffix — the dev bundle target prefixes job names with
+        # "[dev <whoami>] ", so an exact lookup on the bare name misses. This
+        # works regardless of who deployed or which target.
+        jobs = [j for j in w.jobs.list() if j.settings and "Build Unified Pricing Table" in (j.settings.name or "")]
         if not jobs:
             raise HTTPException(404, "build_upt job not found in this workspace")
         job = jobs[0]
