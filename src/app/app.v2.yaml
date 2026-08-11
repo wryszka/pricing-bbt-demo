@@ -1,0 +1,27 @@
+# Pricing Workbench — v2 env values (fresh FEVM: fevm-lr-pricing-v2-aws-us).
+# This file is a template; deploy.sh copies it over app.yaml before
+# `databricks bundle deploy --target v2`.
+command: ["python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+env:
+  - name: CATALOG_NAME
+    value: "lr_pricing_v2_aws_us_catalog"
+  - name: SCHEMA_NAME
+    value: "pricing_workbench"
+  - name: WAREHOUSE_ID
+    value: "f738fde9a1197aeb"
+  # Genie spaces + dashboard are created after the data exists — leave blank so
+  # the app hides those tabs until the ids are filled in and the app redeployed.
+  - name: GENIE_SPACE_ID
+    value: ""
+  - name: GENIE_QUOTE_SPACE_ID
+    value: ""
+  - name: MART_DASHBOARD_ID
+    value: ""
+  # Root of the deployed source tree — drives workspace links to notebooks
+  # without baking in a deployer's home path (production mode → /Workspace/Shared).
+  - name: BUNDLE_FILES_BASE
+    value: "/Workspace/Shared/.bundle/pricing-workbench/v2/files/src"
+  - name: BUNDLE_NAME
+    value: "pricing-workbench"
+  - name: BUNDLE_TARGET
+    value: "v2"

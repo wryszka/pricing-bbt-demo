@@ -1,13 +1,13 @@
 bundle:
-  name: pricing-upt-demo
+  name: pricing-workbench
 
 variables:
   catalog_name:
     description: Unity Catalog name for all demo tables
-    default: lr_serverless_aws_us_catalog
+    default: lr_pricing_v2_aws_us_catalog
   schema_name:
-    description: Schema name for all demo tables
-    default: pricing_upt
+    description: Schema name for all demo tables (everything lives in one schema)
+    default: pricing_workbench
   volume_name:
     description: Volume for landing external data files
     default: external_landing
@@ -16,51 +16,64 @@ variables:
     default: "Bricksurance SE"
   warehouse_id:
     description: SQL warehouse used by the app for data queries
-    default: "ab79eced8207d29b"
+    default: ""
   app_service_principal_id:
-    description: Databricks App's service principal (used for CAN_MANAGE_RUN on app-triggered jobs)
-    default: "452a9d33-f698-4124-b573-912c6fe6e929"
+    description: |
+      The Databricks App's service principal (appId). Granted CAN_MANAGE_RUN on
+      app-triggered jobs and CAN_USE on the warehouse. Empty on a first deploy —
+      see README two-phase bootstrap: create the app, capture its SP, set this
+      var, then redeploy so the grants attach.
+    default: ""
   genie_space_id:
-    description: AI/BI Genie space over the Modelling Mart
-    default: "01f134e996251f40bf521eac22ad10f1"
+    description: AI/BI Genie space over the Modelling Mart (empty hides the tab)
+    default: ""
   genie_quote_space_id:
-    description: AI/BI Genie space over the quote stream
-    default: "01f13e30dcd418ae88295599f23780b8"
+    description: AI/BI Genie space over the quote stream (empty hides the tab)
+    default: ""
+  mart_dashboard_id:
+    description: Lakeview dashboard powering the Modelling Mart tab (empty hides it)
+    default: ""
+  deploy_profile:
+    description: |
+      core = commercial rating engine + models + governance + agents + MCP/
+      agentic buyer (scale-to-zero, no live feature table). full = also arms the
+      optional live-serving tier (Lakebase online store + route-optimized scorer
+      + QPS tester). NOTE: the live-serving jobs are always defined in the bundle
+      but dormant — they cost nothing until run. This flag drives which tasks the
+      "Full Build" orchestrator runs, not which resources exist.
+    default: "core"
   live_online_store_name:
-    description: Lakebase online store backing the Live Pricing System (provisioned and torn down on demand)
-    default: "pricing-upt-online-store-live"
+    description: Lakebase online store backing the optional Live Pricing System
+    default: "pw-pricing-online-store"
   live_endpoint_name:
-    description: Model Serving endpoint name for the unified pricing scorer (live + production share one endpoint)
-    default: "pricing_scorer"
+    description: Model Serving endpoint for the commercial rating engine
+    default: "pw_pricing_scorer"
   scale_factor:
     description: |
       Multiplier on the synthetic dataset size (1 = 50k policies, 20 = 1M).
-      Prod targets the full 1M policies. Dev defaults to 10 (500k) — the
-      largest size that comfortably fits the CU_2 Lakebase tier the live
-      pricing system provisions for the demo. Bump if running on CU_4+.
-    default: "20"
+      Core needs only a modest dataset; the 1M size existed for the QPS speed
+      demo in the live-serving tier.
+    default: "1"
 
-# Default target points at PROD only as a hard guard — explicitly pass
-# `--target dev` for any work-in-progress deploy. Prod is the live demo
-# environment; touch it only on cut releases.
+# v2 is the default target on this branch — a bare `bundle deploy` goes to the
+# fresh v2 workspace, never to the legacy dev/prod estates. Pass --target
+# explicitly to reach those.
 targets:
-  prod:
+  v2:
     mode: production
     default: true
     workspace:
-      host: https://fevm-lr-serverless-aws-us.cloud.databricks.com
-      profile: DEFAULT
-      # Prod assets live under /Workspace/Shared so the whole org can reach them from one path.
+      host: https://fevm-lr-pricing-v2-aws-us.cloud.databricks.com
+      profile: PRICING_V2
       root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
     variables:
-      catalog_name:        lr_serverless_aws_us_catalog
-      warehouse_id:        "ab79eced8207d29b"
-      # App SP minted on the 2026-06-01 clean redeploy (old 452a9d33 SP died
-      # with the previous app). Genie ids re-wired after recreation below.
-      app_service_principal_id: "3da451a3-ebd3-46be-a5fa-13132401d01a"
-      genie_space_id:        "01f15d9ed6a61ca18f578f91ad1c76b7"
-      genie_quote_space_id:  "01f15d9ed72c1a44aa4e4fe208de54c2"
+      catalog_name:  lr_pricing_v2_aws_us_catalog
+      schema_name:   pricing_workbench
+      warehouse_id:  "f738fde9a1197aeb"
+      scale_factor:  "1"
+      deploy_profile: "core"
 
+  # --- legacy estates (not deployed from the v2 branch; kept for reference) ---
   dev:
     mode: development
     workspace:
@@ -68,20 +81,30 @@ targets:
       profile: DEV
     variables:
       catalog_name:        lr_dev_aws_us_catalog
+      schema_name:         pricing_upt
       warehouse_id:        "a3b61648ea4809e3"
-      # App SP captured on first dev app creation (2026-05-07).
       app_service_principal_id: "63890164-4191-4196-9682-5248098a59c5"
-      # Genie spaces don't exist in dev yet — leave blank so the UI hides them.
-      genie_space_id:       ""
-      genie_quote_space_id: ""
-      # Commercial dataset stays small in dev (50k policies) — the live-serving
-      # demo runs on the motor dataset (1M policies in unified_motor_table_live),
-      # which is generated by a separate setup_motor job.
-      scale_factor:         "1"
+      scale_factor:        "1"
+
+  prod:
+    mode: production
+    workspace:
+      host: https://fevm-lr-serverless-aws-us.cloud.databricks.com
+      profile: DEFAULT
+      root_path: /Workspace/Shared/.bundle/pricing-upt-demo/prod
+    variables:
+      catalog_name:        lr_serverless_aws_us_catalog
+      schema_name:         pricing_upt
+      warehouse_id:        "ab79eced8207d29b"
+      app_service_principal_id: "3da451a3-ebd3-46be-a5fa-13132401d01a"
+      genie_space_id:        "01f15d9ed6a61ca18f578f91ad1c76b7"
+      genie_quote_space_id:  "01f15d9ed72c1a44aa4e4fe208de54c2"
+      scale_factor:          "20"
 
 sync:
   exclude:
     - src/app/.venv/
+    - src/app/.venv-local/
     - src/app/frontend/node_modules/
     - docs/
     - "*.bak"
