@@ -60,7 +60,7 @@ resources:
         - name: app_service_principal_id
           default: ${var.app_service_principal_id}
         - name: endpoint_names
-          default: "pricing_scorer,pricing_chat_agent,pricing_governance_agent"
+          default: "pricing_scorer,pricing_chat_agent,pricing_governance_agent,motor_pricing_scorer_direct"
       tasks:
         - task_key: grant
           notebook_task:

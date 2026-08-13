@@ -9,6 +9,10 @@ resources:
           default: ${var.schema_name}
         - name: endpoint_name
           default: "motor_pricing_scorer"
+        - name: deploy_mode
+          # "full" also deploys the route-optimized online endpoint (live tier);
+          # "direct_only" deploys just the scale-to-zero direct endpoint (Core).
+          default: "full"
 
       permissions:
         - service_principal_name: ${var.app_service_principal_id}
@@ -22,6 +26,7 @@ resources:
               catalog_name:  "{{job.parameters.catalog_name}}"
               schema_name:   "{{job.parameters.schema_name}}"
               endpoint_name: "{{job.parameters.endpoint_name}}"
+              deploy_mode:   "{{job.parameters.deploy_mode}}"
           environment_key: env
 
       environments:
