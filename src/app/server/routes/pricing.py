@@ -471,8 +471,10 @@ async def get_rating_config_history() -> dict:
 # Model versions (UI picker)
 # ---------------------------------------------------------------------------
 
+import threading as _threading
 _ALIAS_CACHE: dict[tuple[str, str], tuple[float, str | None]] = {}
 _ALIAS_TTL_S = 30.0
+_ALIAS_LOCK = _threading.Lock()  # the cache is read/written from the thread pool
 
 
 def _resolve_alias_to_version(family: str, alias: str) -> str | None:
@@ -482,7 +484,8 @@ def _resolve_alias_to_version(family: str, alias: str) -> str | None:
     import time
     key = (family, alias)
     now = time.time()
-    cached = _ALIAS_CACHE.get(key)
+    with _ALIAS_LOCK:
+        cached = _ALIAS_CACHE.get(key)
     if cached and now < cached[0]:
         return cached[1]
     from server.config import get_workspace_client, get_catalog, get_schema
@@ -496,14 +499,16 @@ def _resolve_alias_to_version(family: str, alias: str) -> str | None:
     except Exception as e:
         logger.info("alias %s for %s missing: %s", alias, family, e)
         version = None
-    _ALIAS_CACHE[key] = (now + _ALIAS_TTL_S, version)
+    with _ALIAS_LOCK:
+        _ALIAS_CACHE[key] = (now + _ALIAS_TTL_S, version)
     return version
 
 
 def _bust_alias_cache() -> None:
     """Called by deployment.py after promote/rollback so the next /status reads
     the fresh alias instead of the cached version."""
-    _ALIAS_CACHE.clear()
+    with _ALIAS_LOCK:
+        _ALIAS_CACHE.clear()
 
 
 @router.get("/status")
