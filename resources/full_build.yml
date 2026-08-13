@@ -96,12 +96,36 @@ resources:
           run_job_task:
             job_id: ${resources.jobs.pricing_chat_agent_deploy.id}
 
+        # --- motor / agentic-buyer core (scaled-down; no online store) ---
+        # Independent of the commercial chain, so it runs in parallel from the
+        # start. The MCP buyer prices through motor_pricing_scorer_direct.
+        - task_key: motor_setup
+          run_job_task:
+            job_id: ${resources.jobs.setup_motor.id}
+            job_parameters:
+              num_policies: "50000"
+        - task_key: motor_upt
+          depends_on: [{ task_key: motor_setup }]
+          run_job_task:
+            job_id: ${resources.jobs.build_motor_upt.id}
+        - task_key: motor_train
+          depends_on: [{ task_key: motor_upt }]
+          run_job_task:
+            job_id: ${resources.jobs.train_motor_models.id}
+        - task_key: motor_scorer
+          depends_on: [{ task_key: motor_train }]
+          run_job_task:
+            job_id: ${resources.jobs.motor_pricing_scorer_deploy.id}
+            job_parameters:
+              deploy_mode: "direct_only"
+
         # --- app-SP grants (endpoints must exist) then metadata + tags ---
         - task_key: grant_app_sp
           depends_on:
             - { task_key: scorer }
             - { task_key: governance_agent }
             - { task_key: chat_agent }
+            - { task_key: motor_scorer }
           run_job_task:
             job_id: ${resources.jobs.grant_app_sp.id}
         - task_key: metadata
