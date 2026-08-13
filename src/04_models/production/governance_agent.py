@@ -415,7 +415,7 @@ def _run_sql(sql: str):
     tok  = _os.environ.get("AGENT_TOKEN")
     host = _os.environ.get("AGENT_HOST") or _os.environ.get("DATABRICKS_HOST")
     w = WorkspaceClient(host=host, token=tok) if tok and host else WorkspaceClient()
-    warehouse_id = _os.environ.get("AGENT_WAREHOUSE_ID", "ab79eced8207d29b")
+    warehouse_id = _os.environ.get("AGENT_WAREHOUSE_ID", "")
     resp = w.statement_execution.execute_statement(
         statement=sql, warehouse_id=warehouse_id, wait_timeout="30s",
     )
