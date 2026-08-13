@@ -142,3 +142,10 @@ resources:
             - { task_key: supporting_tables }
           run_job_task:
             job_id: ${resources.jobs.apply_metadata.id}
+        - task_key: tags
+          depends_on:
+            - { task_key: metadata }
+            - { task_key: motor_scorer }
+            - { task_key: price_optimiser }
+          run_job_task:
+            job_id: ${resources.jobs.apply_tags.id}

@@ -50,6 +50,27 @@ resources:
             client: "5"
             dependencies: []
 
+    apply_tags:
+      name: "Build — apply uniform UC tags"
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+      tasks:
+        - task_key: tag
+          notebook_task:
+            notebook_path: ../src/00_setup/apply_tags.py
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name:  ${var.schema_name}
+          environment_key: env
+      environments:
+        - environment_key: env
+          spec:
+            client: "5"
+            dependencies: []
+
     grant_app_sp:
       name: "Build — grant app service principal (UC + endpoints)"
       parameters:
