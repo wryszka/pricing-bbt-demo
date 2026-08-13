@@ -38,38 +38,56 @@ External data ─ enrichment ─┐
 
 `src/new_data_impact/` — six standalone notebooks that answer *"does adding real external data actually make pricing models better?"* Standard vs enriched freq+sev GLMs on a 200K portfolio, Claude review agent, governance PDF. Hero numbers: Gini 0.11 → 0.25, Deviance Explained 1.0% → 5.3%.
 
-## Quick Start
+## Deploy to a fresh workspace
+
+Everything is serverless and scale-to-zero. Three commands after a one-time
+config edit. No notebook-by-notebook running — the **Full Build** orchestrator
+chains the whole populate in dependency order and is idempotent.
+
+**Prerequisites:** Databricks CLI authenticated to the target workspace
+(`databricks auth login --host <url> --profile <PROFILE>`), a serverless SQL
+warehouse, and Unity Catalog. That's it — no classic compute needed.
 
 ```bash
-# 1. Clone
-git clone https://github.com/wryszka/pricing-workbench.git
-cd pricing-workbench
+# 1. Point the target at your workspace
+#    Edit databricks.yml → targets.v2: host + profile, and its variables:
+#    catalog_name, schema_name (default pricing_workbench), warehouse_id.
 
-# 2. Configure (edit databricks.yml with your workspace)
-#    Change catalog_name and workspace host
+# 2. Create the app first so it mints its service principal, then bind + wire it.
+#    (The app SP is granted CAN_MANAGE_RUN on jobs, so the bundle needs its id;
+#     and the bundle can't adopt an app it didn't create — hence create+bind.)
+databricks apps create pricing-workbench --profile <PROFILE>
+#    → copy the printed service_principal_client_id into
+#      databricks.yml → targets.v2.variables.app_service_principal_id
+databricks bundle deployment bind pricing_workbench pricing-workbench \
+    --target v2 --profile <PROFILE> --auto-approve
 
-# 3. Deploy
-databricks bundle deploy
+# 3. Deploy the bundle (all jobs + the app resource)
+./deploy.sh v2          # builds frontend, syncs app.yaml, deploys bundle + app
 
-# 4. Run setup (creates tables + test data)
-databricks bundle run setup_demo
-
-# 5. Build the real UK postcode enrichment (~2-5 min — ONSPD + IMD download)
-databricks bundle run build_postcode_enrichment
-
-# 6. Run pipeline
-databricks bundle run ingest_external_data    # bronze → silver
-databricks bundle run build_upt                # derive_factors → UPT → feature_catalog
-databricks bundle run train_pricing_models     # GLMs + GBMs + challenger comparison
-
-# 7. Sync the notebook track to your Workspace Home folder
-./scripts/sync_notebooks.sh
-#   → /Workspace/Users/<you>/pricing-workbench/new_data_impact/
-
-# 8. Open the app (URL in Databricks Serving UI)
-#    Promote the Feature Store to the online store (Lakebase) from the
-#    "Feature Store" tab when you want to demo sub-10ms renewal scoring.
+# 4. Populate everything — ONE job, ~30-40 min, all serverless
+databricks bundle run full_build --target v2 --profile <PROFILE>
+#    data → UPT (incl. real 1.5M-row UK postcode enrichment) → 4 champions →
+#    aliases → rating config + release rate-book → inference/bias backfills →
+#    shadow-pricing → commercial rating-engine endpoint → governance + chat
+#    agents (self-mint their SQL token) → app-SP grants → metadata/tags.
 ```
+
+Open the app (URL from `databricks apps get pricing-workbench`). The commercial
+rating engine prices live (scale-to-zero); the agents answer from real tables.
+
+**Notes**
+- The agents self-provision a 90-day PAT for their SQL tools on deploy. If your
+  workspace disables PATs, inject `AGENT_TOKEN`/`AGENT_HOST` on the two agent
+  endpoints instead.
+- **Genie spaces + the Modelling-Mart dashboard** are workspace assets you
+  create once and wire via `app.v2.yaml` (`GENIE_SPACE_ID`,
+  `GENIE_QUOTE_SPACE_ID`, `MART_DASHBOARD_ID`); until set, those tabs stay
+  hidden.
+- The optional **live-serving tier** (Lakebase online store + route-optimized
+  scorer + QPS load tester) is *not* part of Full Build — it costs money while
+  up. Arm it on demand with `databricks bundle run live_pricing_provision` and
+  tear it down with `live_pricing_teardown`.
 
 ## Two tracks
 

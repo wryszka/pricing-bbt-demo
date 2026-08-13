@@ -569,6 +569,23 @@ try:
 except Exception as _e:
     print(f"No existing endpoint to inherit env_vars from: {_e}")
 
+# Self-provision the SQL OBO token if none is inherited/injected — the System SP
+# can't be granted UC perms, so the agent's tools need a token. This notebook
+# runs as the deploying identity; mint a PAT for it so a fresh-workspace deploy
+# is hands-off. If PATs are disabled, inject AGENT_TOKEN/AGENT_HOST out-of-band.
+if not env_vars.get("AGENT_TOKEN"):
+    try:
+        _tok = _w_pre.tokens.create(
+            comment="pricing-workbench governance agent SQL OBO (auto)",
+            lifetime_seconds=7776000,
+        )
+        env_vars["AGENT_TOKEN"] = _tok.token_value
+        env_vars["AGENT_HOST"] = _w_pre.config.host
+        print("Minted AGENT_TOKEN for SQL OBO (value not shown).")
+    except Exception as _te:
+        print(f"⚠ Could not mint AGENT_TOKEN ({str(_te)[:100]}). "
+              f"Agent SQL tools will fail until AGENT_TOKEN/AGENT_HOST are set.")
+
 # Use databricks-agents if present, else fall back to serving_endpoints
 try:
     from databricks import agents
