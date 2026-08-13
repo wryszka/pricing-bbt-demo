@@ -11,6 +11,34 @@ optimiser.
 
 ---
 
+## 0. Decisions taken (2026-08-13) — scope this to a DEMO
+
+Accepted into v2. Explicit steer from Laurence: **this is a demo OF optimisation,
+not an implementation of an optimiser.** The goal is to make an evaluator who is
+shopping for optimisation see that the pattern is available on Databricks — open,
+governed, their models. So build the *smallest credible* example, not a
+framework.
+
+- **Lead with new business** (conversion/profit). Renewal/retention is beneficial
+  and comes second — do NOT build `retention_churn` for the first cut.
+- **Jurisdiction: not important** — a UKI/EMEA insurer. Keep regulatory framing to
+  a **light, one-line nod** (a fair-value / no-price-walking guardrail shown as an
+  enforced constraint), NOT the full FCA framework of §6. §6 stays as optional
+  depth for a UK-specific conversation.
+- **Scope = MVP, trimmed.** One objective (profit), one or two constraints
+  (rate-change cap + margin floor), one app page, one segment view + portfolio
+  impact. Grid-search solve for transparency. No multi-objective frontier
+  machinery beyond a simple volume-vs-profit sweep if it's cheap.
+- **Elasticity DGP fix is still required but kept MINIMAL** — a simple calibrated
+  price→conversion logit so the demand curve actually slopes and there is a
+  visible optimum. Enough to be credible, not an elaborate segment-varying model.
+- **Tier: Core.** No live-serving/online-store dependency.
+
+Everything below is the fuller specification; the first build is the trimmed MVP
+above. §7 "Full" and §6 UK-specific depth are future, not now.
+
+---
+
 ## 1. Positioning (what we are and are not showing)
 
 Databricks does not sell a pricing optimiser and does not deliver models. What

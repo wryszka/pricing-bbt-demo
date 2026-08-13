@@ -140,6 +140,33 @@ Laurence is happy with how v2 looks.
 
 ---
 
+## WS7 — Price Optimisation demo (accepted 2026-08-13)
+
+The Earnix-displacement ask. Full spec: `docs/optimisation_demo_spec.md` (see its
+§0 for the decided scope). **This is a demo OF optimisation, not an optimiser** —
+smallest credible example, Core tier, new-business profit first.
+
+Decided scope (trimmed MVP):
+- **WS7.1 — minimal elasticity DGP.** Add a simple calibrated price→conversion
+  logit to the quote generator so the demand curve slopes and there's a visible
+  optimum (today conversion is flat ~0.62–0.68 across all prices → no optimum).
+  Regenerate quotes + retrain `demand_gbm`; validate the curve slopes down. This
+  also fixes the flat demand-curve views in the base demo. Foundational — do
+  first; it changes shared data.
+- **WS7.2 — optimisation engine notebook** — per-segment profit-max, grid search
+  over a price multiplier, one rate-change cap + margin floor; portfolio impact
+  (book vs optimised) + a simple volume↔profit sweep. MLflow-tracked.
+- **WS7.3 — one "Price Optimisation" app page** — demand curve + cost line, p*,
+  portfolio impact, what-if lever, and a light guardrail panel (rate cap + a
+  one-line fair-value nod — NOT the full FCA framework).
+- Renewal/`retention_churn` and the governed multi-objective + full FCA framing
+  are future (spec §6–7), not the first cut.
+
+Sequencing note: WS7.1 regenerates v2 data, so run it before/with WS2b polish,
+not after. Overlaps the backlog "drop a new dataset" item (same raw-vector need).
+
+---
+
 ## 8. Backlog (not in v2 scope)
 
 - **"Drop a new dataset" what-if trigger.** A simulated pull-from-the-internet
