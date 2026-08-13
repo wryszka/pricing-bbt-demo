@@ -149,10 +149,14 @@ with mlflow.start_run(run_name=f"freq_glm_motor_{run_name}", tags=tags) as run:
     sample_pred = wrapper.predict(sample_X)
     signature   = infer_signature(sample_X, sample_pred)
 
+    # serialization_format=cloudpickle: the statsmodels-wrapped GLM trips the
+    # sklearn flavor's newer skops "untrusted types" guard on load; cloudpickle
+    # avoids skops entirely (durable across mlflow version drift).
     fe.log_model(model=wrapper, artifact_path="model", flavor=mlflow.sklearn,
                  training_set=training_set,
                  registered_model_name=f"{fqn}.freq_glm_motor",
-                 signature=signature, input_example=sample_X)
+                 signature=signature, input_example=sample_X,
+                 serialization_format="cloudpickle")
     print(f"UC model: {fqn}.freq_glm_motor")
 
 # Promote latest version to champion alias

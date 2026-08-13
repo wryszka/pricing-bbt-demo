@@ -232,6 +232,9 @@ with mlflow.start_run(run_name=f"sev_glm_{run_name}", tags=tags) as run:
         registered_model_name = f"{fqn}.sev_glm",
         signature             = signature,
         input_example         = sample_X,
+        # cloudpickle: avoid the sklearn flavor's skops "untrusted types" guard
+        # on the statsmodels-wrapped GLM (durable across mlflow version drift).
+        serialization_format  = "cloudpickle",
     )
     print(f"UC model: {fqn}.sev_glm")
 

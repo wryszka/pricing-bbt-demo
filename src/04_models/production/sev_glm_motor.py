@@ -167,10 +167,13 @@ with mlflow.start_run(run_name=f"sev_glm_motor_{run_name}", tags=tags) as run:
     sample_pred = wrapper.predict(sample_X)
     signature   = infer_signature(sample_X, sample_pred)
 
+    # cloudpickle: avoid the sklearn flavor's skops "untrusted types" guard on
+    # the statsmodels-wrapped GLM (see freq_glm_motor).
     fe.log_model(model=wrapper, artifact_path="model", flavor=mlflow.sklearn,
                  training_set=training_set,
                  registered_model_name=f"{fqn}.sev_glm_motor",
-                 signature=signature, input_example=sample_X)
+                 signature=signature, input_example=sample_X,
+                 serialization_format="cloudpickle")
     print(f"UC model: {fqn}.sev_glm_motor")
 
 from mlflow.tracking import MlflowClient
