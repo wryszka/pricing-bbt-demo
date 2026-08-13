@@ -1,10 +1,21 @@
 import os
 import logging
+import threading
+import contextvars
 
 from databricks.sdk import WorkspaceClient
 
 logger = logging.getLogger(__name__)
 _workspace_client: WorkspaceClient | None = None
+# Guards the singleton so concurrent requests don't race to build/reset it
+# (multi-user: two users hitting a cold app both saw None and both built one).
+_client_lock = threading.Lock()
+
+# Request-scoped end user, set by middleware from the Databricks Apps
+# forwarded-identity header. Lets audit attribute actions to the real person
+# instead of the app service principal when many people use the app at once.
+_current_user: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "current_user", default=None)
 
 
 def is_databricks_app() -> bool:
@@ -14,11 +25,13 @@ def is_databricks_app() -> bool:
 def get_workspace_client() -> WorkspaceClient:
     global _workspace_client
     if _workspace_client is None:
-        if is_databricks_app():
-            _workspace_client = WorkspaceClient()
-        else:
-            profile = os.getenv("DATABRICKS_PROFILE", "DEFAULT")
-            _workspace_client = WorkspaceClient(profile=profile)
+        with _client_lock:                       # double-checked lock
+            if _workspace_client is None:
+                if is_databricks_app():
+                    _workspace_client = WorkspaceClient()
+                else:
+                    profile = os.getenv("DATABRICKS_PROFILE", "DEFAULT")
+                    _workspace_client = WorkspaceClient(profile=profile)
     return _workspace_client
 
 
@@ -33,7 +46,14 @@ def reset_workspace_client() -> None:
     the client in-process re-mints correctly — same effect as a restart, no
     redeploy needed."""
     global _workspace_client
-    _workspace_client = None
+    with _client_lock:
+        _workspace_client = None
+
+
+def set_current_user(user: str | None) -> None:
+    """Set the request's end user (called by middleware from the forwarded
+    identity header). Cleared per request via the contextvar default."""
+    _current_user.set(user or None)
 
 
 def get_catalog() -> str:
@@ -81,6 +101,11 @@ def get_workspace_host() -> str:
 
 
 def get_current_user() -> str:
+    # Prefer the real end user (set per request from the forwarded header) so
+    # audit attributes to the person, not the app service principal.
+    u = _current_user.get()
+    if u:
+        return u
     try:
         me = get_workspace_client().current_user.me()
         return me.user_name or me.display_name or "unknown"

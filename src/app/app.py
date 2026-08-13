@@ -39,6 +39,20 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+@app.middleware("http")
+async def _capture_end_user(request, call_next):
+    """Databricks Apps forwards the signed-in user on every request. Stash it so
+    audit attributes actions to the real person, not the app service principal —
+    essential once many people use the app at once."""
+    from server.config import set_current_user
+    h = request.headers
+    user = (h.get("x-forwarded-email")
+            or h.get("x-forwarded-preferred-username")
+            or h.get("x-forwarded-user"))
+    set_current_user(user)
+    return await call_next(request)
+
+
 app.include_router(datasets.router)
 app.include_router(agent.router)
 app.include_router(features.router)
