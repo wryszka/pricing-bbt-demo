@@ -66,8 +66,33 @@ print(f"Raw data volume: {VOLUME_PATH}")
 
 # COMMAND ----------
 
-def download_if_missing(url, dest_path, description):
-    """Stream a download to the target path if it doesn't already exist."""
+def _looks_pending(resp, dest_path) -> bool:
+    """The ArcGIS Open Geography download endpoint generates the file async: when
+    it isn't ready it returns HTTP 200 with a small JSON body like
+    {"message":"...being generated. please check back again later.","status":
+    "pending"} — which raise_for_status() happily passes and which we'd otherwise
+    write as the CSV. Detect that so we can poll instead of poisoning the file."""
+    ctype = (resp.headers.get("content-type") or "").lower()
+    if "json" in ctype:
+        return True
+    try:
+        if os.path.getsize(dest_path) < 4096:
+            with open(dest_path, "rb") as fh:
+                head = fh.read(256).lstrip().lower()
+            if head.startswith(b'{') and (b'"status"' in head or b'pending' in head
+                                          or b'being generated' in head):
+                return True
+    except OSError:
+        pass
+    return False
+
+
+def download_if_missing(url, dest_path, description, max_attempts=10, retry_wait=30):
+    """Stream a download to the target path if it doesn't already exist.
+
+    Robust against the ArcGIS "file is being generated, check back later"
+    placeholder: if the endpoint returns the pending JSON, wait and retry so a
+    fresh workspace deploy doesn't fail on a cold ONS download cache."""
     if os.path.exists(dest_path) and os.path.getsize(dest_path) > 0:
         size_mb = os.path.getsize(dest_path) / (1024 * 1024)
         print(f"[skip] {description} already present ({size_mb:,.1f} MB)")
@@ -76,26 +101,38 @@ def download_if_missing(url, dest_path, description):
     print(f"[download] {description}")
     print(f"  From: {url}")
     print(f"  To:   {dest_path}")
-    t0 = time.time()
 
-    with requests.get(url, stream=True, timeout=600) as r:
-        r.raise_for_status()
-        total = int(r.headers.get("content-length", 0))
-        written = 0
-        with open(dest_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8 * 1024 * 1024):  # 8 MB chunks
-                if chunk:
-                    f.write(chunk)
-                    written += len(chunk)
-                    if total > 0:
-                        pct = 100 * written / total
-                        if written % (64 * 1024 * 1024) < 8 * 1024 * 1024:  # every ~64 MB
-                            print(f"  ...{written/(1024*1024):>7.0f} MB ({pct:>5.1f}%)")
+    for attempt in range(1, max_attempts + 1):
+        t0 = time.time()
+        with requests.get(url, stream=True, timeout=600) as r:
+            r.raise_for_status()
+            total = int(r.headers.get("content-length", 0))
+            written = 0
+            with open(dest_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8 * 1024 * 1024):  # 8 MB chunks
+                    if chunk:
+                        f.write(chunk)
+                        written += len(chunk)
+                        if total > 0 and written % (64 * 1024 * 1024) < 8 * 1024 * 1024:
+                            print(f"  ...{written/(1024*1024):>7.0f} MB ({100*written/total:>5.1f}%)")
 
-    elapsed = time.time() - t0
-    size_mb = os.path.getsize(dest_path) / (1024 * 1024)
-    print(f"[done] {description}: {size_mb:,.1f} MB in {elapsed:.1f}s")
-    return dest_path
+        if _looks_pending(r, dest_path):
+            try: os.remove(dest_path)
+            except OSError: pass
+            if attempt < max_attempts:
+                print(f"  [pending] ONS is still generating the file — retry "
+                      f"{attempt}/{max_attempts} in {retry_wait}s")
+                time.sleep(retry_wait)
+                continue
+            raise RuntimeError(
+                f"{description}: ONS download still 'pending' after {max_attempts} "
+                f"attempts. The Open Geography Portal generates this file on demand; "
+                f"re-run this job in a few minutes.")
+
+        elapsed = time.time() - t0
+        size_mb = os.path.getsize(dest_path) / (1024 * 1024)
+        print(f"[done] {description}: {size_mb:,.1f} MB in {elapsed:.1f}s")
+        return dest_path
 
 
 # --- 1a. ONSPD (August 2025 release) ---
