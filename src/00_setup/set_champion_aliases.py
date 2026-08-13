@@ -11,12 +11,15 @@
 
 dbutils.widgets.text("catalog_name", "lr_pricing_v2_aws_us_catalog")
 dbutils.widgets.text("schema_name", "pricing_workbench")
+# Comma-separated model families to alias. Commercial champions by default;
+# pass the *_motor families for the motor/agentic core.
+dbutils.widgets.text("families", "freq_glm,sev_glm,demand_gbm,fraud_gbm")
 
 catalog = dbutils.widgets.get("catalog_name")
 schema = dbutils.widgets.get("schema_name")
 fqn = f"{catalog}.{schema}"
 
-FAMILIES = ["freq_glm", "sev_glm", "demand_gbm", "fraud_gbm"]
+FAMILIES = [f.strip() for f in dbutils.widgets.get("families").split(",") if f.strip()]
 
 # COMMAND ----------
 

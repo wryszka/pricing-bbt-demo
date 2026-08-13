@@ -22,6 +22,12 @@
 dbutils.widgets.text("catalog_name",  "lr_serverless_aws_us_catalog")
 dbutils.widgets.text("schema_name",   "pricing_upt")
 dbutils.widgets.text("endpoint_name", "motor_pricing_scorer")
+# deploy_mode: "full" also deploys the route-optimized FeatureLookup endpoint
+# (needs the Lakebase online store — the optional live-serving tier). "direct_only"
+# deploys ONLY the scale-to-zero motor_pricing_scorer_direct endpoint, which is
+# all the agentic buyer / MCP needs and requires no online store — the Core
+# default on a workspace without the live tier.
+dbutils.widgets.text("deploy_mode",   "full")
 
 # COMMAND ----------
 
@@ -34,6 +40,7 @@ dbutils.widgets.text("endpoint_name", "motor_pricing_scorer")
 catalog        = dbutils.widgets.get("catalog_name")
 schema         = dbutils.widgets.get("schema_name")
 endpoint_name  = dbutils.widgets.get("endpoint_name")
+deploy_mode    = dbutils.widgets.get("deploy_mode").strip().lower()
 fqn            = f"{catalog}.{schema}"
 scorer_uc_name = f"{fqn}.motor_pricing_scorer"
 
@@ -406,6 +413,12 @@ _host = w.config.host.rstrip("/")
 _hdrs = {**w.config._header_factory(), "Content-Type": "application/json"}
 
 import time as _time
+
+if deploy_mode == "direct_only":
+    print(f"deploy_mode=direct_only — skipping the route-optimized "
+          f"'{endpoint_name}' endpoint (needs the Lakebase online store). "
+          f"Only the scale-to-zero direct endpoint is deployed below.")
+
 existing = None
 try:
     existing = w.serving_endpoints.get(endpoint_name)
@@ -422,7 +435,9 @@ _create_payload = {"name": endpoint_name, "route_optimized": True,
                    "config": {"served_entities": [_served_entity]}}
 _is_ro = bool(getattr(existing, "route_optimized", False)) if existing else False
 
-if existing is None:
+if deploy_mode == "direct_only":
+    pass  # route-optimized endpoint intentionally not deployed in Core
+elif existing is None:
     _r = _rq.post(f"{_host}/api/2.0/serving-endpoints", headers=_hdrs,
                   data=_json.dumps(_create_payload), timeout=60)
     print(f"Created route-optimized endpoint {endpoint_name} v{target} -> {_r.status_code}: {_r.text[:200]}")

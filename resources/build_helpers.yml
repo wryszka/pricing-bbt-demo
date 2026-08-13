@@ -11,6 +11,8 @@ resources:
           default: ${var.catalog_name}
         - name: schema_name
           default: ${var.schema_name}
+        - name: families
+          default: "freq_glm,sev_glm,demand_gbm,fraud_gbm"
       tasks:
         - task_key: set_aliases
           notebook_task:
@@ -18,6 +20,7 @@ resources:
             base_parameters:
               catalog_name: ${var.catalog_name}
               schema_name:  ${var.schema_name}
+              families:     "{{job.parameters.families}}"
           environment_key: env
       environments:
         - environment_key: env
