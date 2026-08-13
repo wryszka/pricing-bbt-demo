@@ -1,6 +1,6 @@
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
 import { useEffect, useState } from 'react';
-import { Database, FlaskConical, Shield, Code, Rocket, Home as HomeIcon, Table2, Package, Sparkles, Calculator, Zap, Archive, BookOpen } from 'lucide-react';
+import { Database, FlaskConical, Shield, Code, Rocket, Home as HomeIcon, Table2, Package, Sparkles, Calculator, Zap, Archive, BookOpen, Target } from 'lucide-react';
 import Home from './pages/Home';
 import DatasetList from './pages/DatasetList';
 import DatasetDetail from './pages/DatasetDetail';
@@ -17,6 +17,7 @@ import NewDataImpact from './pages/NewDataImpact';
 import RatingEngineIntegration from './pages/RatingEngineIntegration';
 import Supervisor from './pages/Supervisor';
 import PricingEngine from './pages/PricingEngine';
+import PriceOptimisation from './pages/PriceOptimisation';
 import QuoteSystem from './pages/QuoteSystem';
 import BlackBox from './pages/BlackBox';
 import QuoteTester from './pages/QuoteTester';
@@ -28,6 +29,7 @@ const NAV_ITEMS = [
   { to: '/development',   label: 'Model Development', icon: Code,         match: (p: string) => p.startsWith('/development') },
   { to: '/deployment',    label: 'Model Deployment',  icon: Rocket,       match: (p: string) => p.startsWith('/deployment') },
   { to: '/pricing-engine',label: 'Pricing Engine',    icon: Calculator,   match: (p: string) => p.startsWith('/pricing-engine') },
+  { to: '/optimisation',  label: 'Price Optimisation',icon: Target,       match: (p: string) => p.startsWith('/optimisation') },
   { to: '/governance',    label: 'Model Governance',  icon: Shield,       match: (p: string) => p.startsWith('/governance') },
   { to: '/pricing-ai',    label: 'Pricing AI',        icon: Sparkles,     match: (p: string) => p.startsWith('/pricing-ai') || p.startsWith('/supervisor') || p.startsWith('/regulatory-ai') },
   { to: '/models',        label: 'Model Factory',     icon: FlaskConical, match: (p: string) => p.startsWith('/models') },
@@ -187,6 +189,7 @@ export default function App() {
             <Route path="/models" element={<ModelFactory />} />
             <Route path="/deployment" element={<ModelDeployment />} />
             <Route path="/pricing-engine" element={<PricingEngine />} />
+            <Route path="/optimisation" element={<PriceOptimisation />} />
             <Route path="/governance" element={<Governance />} />
             <Route path="/pricing-ai"   element={<Supervisor />} />
             <Route path="/supervisor"   element={<Supervisor />} />  {/* legacy URL */}

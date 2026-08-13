@@ -309,4 +309,7 @@ export const api = {
   mcpManifest: () => fetchJson<any>('/mcp/manifest'),
   distributionTelemetry: (hours = 24) =>
     fetchJson<any>(`/distribution/telemetry?hours=${encodeURIComponent(hours)}`),
+
+  // Price optimisation (worked example)
+  optimisationSummary: () => fetchJson<any>('/optimisation/summary'),
 };

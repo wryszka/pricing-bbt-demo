@@ -119,6 +119,12 @@ resources:
             job_parameters:
               deploy_mode: "direct_only"
 
+        # --- price optimisation worked example (needs the elasticity-bearing quotes) ---
+        - task_key: price_optimiser
+          depends_on: [{ task_key: setup }]
+          run_job_task:
+            job_id: ${resources.jobs.price_optimiser.id}
+
         # --- app-SP grants (endpoints must exist) then metadata + tags ---
         - task_key: grant_app_sp
           depends_on:
