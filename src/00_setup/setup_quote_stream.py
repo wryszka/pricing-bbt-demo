@@ -46,6 +46,7 @@ OUTLIER_TRANSACTION_IDS = ["TX-BAKERY-48M-2026Q2", "TX-OUTLIER-RETAIL-02"]
 # COMMAND ----------
 
 import json
+import math
 import random
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -253,6 +254,8 @@ for i in range(N_QUOTES):
 
     # Price the quote (unless journey was abandoned)
     gross_premium = None
+    market_premium = None
+    vs_market_rate = None
     quote_status  = "ABANDONED"
     if not force_dropout:
         factors = pricing_factors(sic_loading, pc_loading, construction, year_built,
@@ -264,8 +267,17 @@ for i in range(N_QUOTES):
         ipt = round(net * 0.12, 2)
         gross_premium = round(net + ipt, 2)
 
-        # Bind rate depends on size of quote — mega quotes convert less
-        bind_prob = 0.65 if gross_premium < 50_000 else 0.45
+        # Market benchmark: what competitors roughly charge for this risk — the
+        # technical price with competitive noise. Our offer relative to it drives
+        # conversion (PRICE ELASTICITY), so the demand model learns a real,
+        # downward-sloping demand curve and the optimiser has an interior optimum.
+        market_premium = round(gross_premium * random.lognormvariate(0.0, 0.11), 2)
+        vs_market_rate = round(gross_premium / market_premium, 4) if market_premium > 0 else 1.0
+        # Logit: ~0.62 convert at market parity, falling as we price above market.
+        # Larger accounts a touch more price-sensitive (they shop harder).
+        _elasticity = 8.0 if gross_premium < 50_000 else 11.0
+        _z = 0.5 - _elasticity * (vs_market_rate - 1.0)
+        bind_prob = 1.0 / (1.0 + math.exp(-max(-30.0, min(30.0, _z))))
         quote_status = "BOUND" if random.random() < bind_prob else "QUOTED"
 
     converted = "Y" if quote_status == "BOUND" else "N"
@@ -304,6 +316,8 @@ for i in range(N_QUOTES):
         annual_turnover=annual_turnover,
         model_version=model_version,
         gross_premium=float(gross_premium) if gross_premium is not None else None,
+        market_premium=float(market_premium) if market_premium is not None else None,
+        vs_market_rate=float(vs_market_rate) if vs_market_rate is not None else None,
         quote_status=quote_status,
         converted=converted,
         competitor_quoted=competitor_quoted,
@@ -454,6 +468,8 @@ flat_schema = StructType([
     StructField("annual_turnover",    LongType()),
     StructField("model_version",      StringType()),
     StructField("gross_premium",      DoubleType()),
+    StructField("market_premium",     DoubleType()),
+    StructField("vs_market_rate",     DoubleType()),
     StructField("quote_status",       StringType()),
     StructField("converted",          StringType()),
     StructField("competitor_quoted",  StringType()),

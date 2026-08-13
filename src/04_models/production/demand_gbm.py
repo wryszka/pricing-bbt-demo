@@ -89,6 +89,8 @@ FEATURES = [
     "buildings_si", "contents_si", "liability_si", "voluntary_excess",
     "gross_premium_quoted", "log_gross_premium", "log_buildings_si",
     "rate_per_1k_si", "vs_market_rate",
+    # Price-elasticity signal emitted by the quote generator (offer vs market).
+    "gross_premium", "market_premium",
     "market_median_rate", "competitor_a_min_rate", "price_index",
     "annual_turnover", "credit_score",
     "flood_zone_rating", "crime_theft_index",
