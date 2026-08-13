@@ -25,3 +25,8 @@ env:
     value: "pricing-workbench"
   - name: BUNDLE_TARGET
     value: "v2"
+  # Comma-separated emails allowed to run destructive admin actions (demo reset,
+  # sleep, AI-mode/cache) — so a random viewer can't wipe a live demo. Add the
+  # AXA presenters here for their sandbox.
+  - name: ADMIN_USERS
+    value: "laurence.ryszka@databricks.com"

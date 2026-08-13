@@ -2,18 +2,34 @@
 import asyncio
 import json
 import logging
+import os
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from server import ai_cache
 from server.audit import log_audit_event
-from server.config import get_catalog, get_schema, get_workspace_client, get_workspace_host
+from server.config import get_catalog, get_schema, get_workspace_client, get_workspace_host, get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 RESET_JOB_NAME = "v1 — Demo reset (landing page button)"
+
+
+def _require_admin(action: str) -> None:
+    """Gate destructive, everyone-affecting actions (demo reset, sleep, cache
+    clear) behind an allowlist so a random viewer can't wipe a live demo for all
+    users. ADMIN_USERS is a comma-separated env of emails. If it's unset the
+    guard is permissive (preserves single-presenter behaviour) but logs a warning
+    — set ADMIN_USERS in app.yaml to enforce for a shared demo."""
+    allow = [u.strip().lower() for u in os.getenv("ADMIN_USERS", "").split(",") if u.strip()]
+    if not allow:
+        logger.warning("ADMIN_USERS not set — '%s' allowed for any user (set ADMIN_USERS to restrict)", action)
+        return
+    user = (get_current_user() or "").lower()
+    if user not in allow:
+        raise HTTPException(403, f"'{action}' is admin-only. {user or 'unknown user'} is not in ADMIN_USERS.")
 
 
 def _find_job_id(w, name: str) -> int | None:
@@ -72,6 +88,7 @@ async def reset_demo() -> dict:
     """Fire the demo_reset job — single click to put the workbench back
     into clean demo state. Returns the job run ids so the UI can link
     to the workspace run page."""
+    _require_admin("reset-demo")
     w = get_workspace_client()
     job_id = await asyncio.to_thread(_find_job_id, w, RESET_JOB_NAME)
     if not job_id:
@@ -124,7 +141,9 @@ async def get_ai_mode() -> dict:
 @router.post("/ai-mode")
 async def set_ai_mode(req: AiModeRequest) -> dict:
     """Flip the global AI response mode. Persists to a UC Volume so a new
-    replica picks up the same setting."""
+    replica picks up the same setting. Admin-gated — it changes the mode for
+    every viewer, so a random user shouldn't flip it mid-demo."""
+    _require_admin("set-ai-mode")
     try:
         new_mode = ai_cache.set_mode(req.mode)
     except ValueError as e:
@@ -147,6 +166,7 @@ async def list_ai_cache() -> dict:
 async def clear_ai_cache() -> dict:
     """Remove every cached response. Use after a model rebuild so cached
     answers can be re-recorded against the new champion."""
+    _require_admin("clear-ai-cache")
     n = ai_cache.clear_cache()
     await log_audit_event(
         event_type="ai_cache_cleared",
@@ -299,6 +319,7 @@ async def sleep_all() -> dict:
     pricing serving endpoint and pauses the motor Lakebase instance. The
     three agent endpoints already scale to zero on idle, so no action is
     needed for them — the next quote or chat warms them naturally."""
+    _require_admin("sleep")
     import asyncio
     w = get_workspace_client()
     deleted = []
