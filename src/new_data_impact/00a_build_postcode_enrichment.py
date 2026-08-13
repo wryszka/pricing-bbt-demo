@@ -72,7 +72,7 @@ def _looks_pending(resp, dest_path) -> bool:
     {"message":"...being generated. please check back again later.","status":
     "pending"} — which raise_for_status() happily passes and which we'd otherwise
     write as the CSV. Detect that so we can poll instead of poisoning the file."""
-    ctype = (resp.headers.get("content-type") or "").lower()
+    ctype = (resp.headers.get("content-type") or "").lower() if resp is not None else ""
     if "json" in ctype:
         return True
     try:
@@ -94,9 +94,18 @@ def download_if_missing(url, dest_path, description, max_attempts=10, retry_wait
     placeholder: if the endpoint returns the pending JSON, wait and retry so a
     fresh workspace deploy doesn't fail on a cold ONS download cache."""
     if os.path.exists(dest_path) and os.path.getsize(dest_path) > 0:
-        size_mb = os.path.getsize(dest_path) / (1024 * 1024)
-        print(f"[skip] {description} already present ({size_mb:,.1f} MB)")
-        return dest_path
+        # Guard against a poisoned cache: a previous run may have written the
+        # ONS "pending" placeholder JSON here. Only treat it as present if it
+        # doesn't look like the placeholder.
+        if _looks_pending(None, dest_path):
+            print(f"[stale] {description}: cached file is the ONS pending "
+                  f"placeholder — deleting and re-downloading")
+            try: os.remove(dest_path)
+            except OSError: pass
+        else:
+            size_mb = os.path.getsize(dest_path) / (1024 * 1024)
+            print(f"[skip] {description} already present ({size_mb:,.1f} MB)")
+            return dest_path
 
     print(f"[download] {description}")
     print(f"  From: {url}")
