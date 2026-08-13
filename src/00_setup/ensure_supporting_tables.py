@@ -1,0 +1,56 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC # Ensure supporting tables exist
+# MAGIC
+# MAGIC The agent serving endpoints declare several tables as `resources` at
+# MAGIC deploy time, so those tables must EXIST before the agents deploy:
+# MAGIC governance_packs_index, governance_pack_sidecars, factory_runs,
+# MAGIC factory_variants. The governance PDF job and the app lifespan normally
+# MAGIC create them, but the orchestrator can't depend on those, so we create
+# MAGIC them here (idempotent, empty). Real content is populated later by the
+# MAGIC governance-pack job / the app.
+
+# COMMAND ----------
+
+dbutils.widgets.text("catalog_name", "lr_pricing_v2_aws_us_catalog")
+dbutils.widgets.text("schema_name", "pricing_workbench")
+
+catalog = dbutils.widgets.get("catalog_name")
+schema = dbutils.widgets.get("schema_name")
+fqn = f"{catalog}.{schema}"
+
+# COMMAND ----------
+
+DDL = {
+    "governance_packs_index": f"""
+        CREATE TABLE IF NOT EXISTS {fqn}.governance_packs_index (
+            pack_id STRING, model_family STRING, model_version STRING,
+            model_uc_name STRING, mlflow_run_id STRING, story STRING,
+            simulated BOOLEAN, primary_metric STRING, primary_value DOUBLE,
+            pdf_path STRING, size_bytes BIGINT, generated_by STRING,
+            generated_at TIMESTAMP
+        )""",
+    "governance_pack_sidecars": f"""
+        CREATE TABLE IF NOT EXISTS {fqn}.governance_pack_sidecars (
+            pack_id STRING, filename STRING, content STRING,
+            content_type STRING, written_at TIMESTAMP
+        )""",
+    "factory_runs": f"""
+        CREATE TABLE IF NOT EXISTS {fqn}.factory_runs (
+            run_id STRING, model_family STRING, plan_json STRING,
+            narrative STRING, approved_by STRING, started_at TIMESTAMP,
+            duration_seconds DOUBLE, status STRING, variant_count INT
+        )""",
+    "factory_variants": f"""
+        CREATE TABLE IF NOT EXISTS {fqn}.factory_variants (
+            run_id STRING, variant_id STRING, name STRING, category STRING,
+            config_json STRING, metrics_json STRING, n_features INT,
+            created_at TIMESTAMP
+        )""",
+}
+
+for name, ddl in DDL.items():
+    spark.sql(ddl)
+    print(f"✓ ensured {name}")
+
+print("Supporting tables ready.")

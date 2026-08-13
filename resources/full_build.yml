@@ -1,0 +1,114 @@
+# Full Build orchestrator — one job that populates a fresh workspace end to end
+# by chaining the individual bundle jobs in the validated dependency order.
+#
+# This is THE post-deploy command for a no-Claude-Code deploy:
+#     databricks bundle run full_build --target <t> --profile <p>
+#
+# Every child job is idempotent and serverless. The graph below is the
+# commercial Core (data → UPT → champions → seeds/backfills → scorer endpoint →
+# agents → app-SP grants → metadata). Motor/agentic-buyer tasks are appended
+# once validated. The optional live-serving tier (Lakebase online store, QPS
+# tester) is NOT here — it is run separately on demand.
+resources:
+  jobs:
+    full_build:
+      name: "Pricing Workbench — Full Build (populate everything)"
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+
+      tasks:
+        # --- foundation (parallel) ---
+        - task_key: setup
+          run_job_task:
+            job_id: ${resources.jobs.setup_demo.id}
+        - task_key: postcode
+          run_job_task:
+            job_id: ${resources.jobs.build_postcode_enrichment.id}
+
+        # --- bronze/silver, then gold UPT ---
+        - task_key: ingest
+          depends_on: [{ task_key: setup }]
+          run_job_task:
+            job_id: ${resources.jobs.ingest_external_data.id}
+        - task_key: build_upt
+          depends_on: [{ task_key: ingest }, { task_key: postcode }]
+          run_job_task:
+            job_id: ${resources.jobs.build_upt.id}
+
+        # --- train champions, then set aliases ---
+        - task_key: train
+          depends_on: [{ task_key: build_upt }]
+          run_job_task:
+            job_id: ${resources.jobs.production_training.id}
+        - task_key: aliases
+          depends_on: [{ task_key: train }]
+          run_job_task:
+            job_id: ${resources.jobs.set_champion_aliases.id}
+
+        # --- config seeds + backfills + supporting tables (parallel) ---
+        - task_key: rating_seed
+          depends_on: [{ task_key: train }]
+          run_job_task:
+            job_id: ${resources.jobs.rating_engine_seed.id}
+        - task_key: releases_seed
+          depends_on: [{ task_key: train }]
+          run_job_task:
+            job_id: ${resources.jobs.pricing_engine_releases_seed.id}
+        - task_key: inference
+          depends_on: [{ task_key: aliases }]
+          run_job_task:
+            job_id: ${resources.jobs.inference_backfill.id}
+        - task_key: bias
+          depends_on: [{ task_key: build_upt }]
+          run_job_task:
+            job_id: ${resources.jobs.bias_demographics_backfill.id}
+        - task_key: shadow_pricing
+          depends_on: [{ task_key: train }]
+          run_job_task:
+            job_id: ${resources.jobs.uc1_shadow_pricing.id}
+        - task_key: supporting_tables
+          depends_on: [{ task_key: setup }]
+          run_job_task:
+            job_id: ${resources.jobs.ensure_supporting_tables.id}
+
+        # --- commercial rating-engine endpoint ---
+        - task_key: scorer
+          depends_on: [{ task_key: aliases }]
+          run_job_task:
+            job_id: ${resources.jobs.pricing_scorer_deploy.id}
+
+        # --- agents (need their resource tables to exist) ---
+        - task_key: governance_agent
+          depends_on:
+            - { task_key: supporting_tables }
+            - { task_key: shadow_pricing }
+            - { task_key: bias }
+            - { task_key: rating_seed }
+          run_job_task:
+            job_id: ${resources.jobs.governance_agent_deploy.id}
+        - task_key: chat_agent
+          depends_on:
+            - { task_key: supporting_tables }
+            - { task_key: shadow_pricing }
+          run_job_task:
+            job_id: ${resources.jobs.pricing_chat_agent_deploy.id}
+
+        # --- app-SP grants (endpoints must exist) then metadata + tags ---
+        - task_key: grant_app_sp
+          depends_on:
+            - { task_key: scorer }
+            - { task_key: governance_agent }
+            - { task_key: chat_agent }
+          run_job_task:
+            job_id: ${resources.jobs.grant_app_sp.id}
+        - task_key: metadata
+          depends_on:
+            - { task_key: build_upt }
+            - { task_key: shadow_pricing }
+            - { task_key: bias }
+            - { task_key: supporting_tables }
+          run_job_task:
+            job_id: ${resources.jobs.apply_metadata.id}

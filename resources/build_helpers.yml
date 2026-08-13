@@ -1,0 +1,76 @@
+# Helper jobs that fill the gaps the individual populate jobs leave, so the
+# Full Build orchestrator can run end-to-end on a fresh workspace with no manual
+# steps. Each is idempotent and serverless.
+resources:
+  jobs:
+
+    set_champion_aliases:
+      name: "Build — set champion aliases"
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+      tasks:
+        - task_key: set_aliases
+          notebook_task:
+            notebook_path: ../src/00_setup/set_champion_aliases.py
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name:  ${var.schema_name}
+          environment_key: env
+      environments:
+        - environment_key: env
+          spec:
+            client: "5"
+            dependencies:
+              - databricks-sdk
+
+    ensure_supporting_tables:
+      name: "Build — ensure supporting tables (agent resources)"
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+      tasks:
+        - task_key: ensure_tables
+          notebook_task:
+            notebook_path: ../src/00_setup/ensure_supporting_tables.py
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name:  ${var.schema_name}
+          environment_key: env
+      environments:
+        - environment_key: env
+          spec:
+            client: "5"
+            dependencies: []
+
+    grant_app_sp:
+      name: "Build — grant app service principal (UC + endpoints)"
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: app_service_principal_id
+          default: ${var.app_service_principal_id}
+        - name: endpoint_names
+          default: "pricing_scorer,pricing_chat_agent,pricing_governance_agent"
+      tasks:
+        - task_key: grant
+          notebook_task:
+            notebook_path: ../src/00_setup/grant_app_sp.py
+            base_parameters:
+              catalog_name:             ${var.catalog_name}
+              schema_name:              ${var.schema_name}
+              app_service_principal_id: ${var.app_service_principal_id}
+              endpoint_names:           "{{job.parameters.endpoint_names}}"
+          environment_key: env
+      environments:
+        - environment_key: env
+          spec:
+            client: "5"
+            dependencies:
+              - databricks-sdk
