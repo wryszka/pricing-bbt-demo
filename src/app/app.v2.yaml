@@ -12,11 +12,14 @@ env:
   # Genie spaces + dashboard are created after the data exists — leave blank so
   # the app hides those tabs until the ids are filled in and the app redeployed.
   - name: GENIE_SPACE_ID
-    value: ""
+    # Modelling Mart — Pricing Q&A (cloned from dev to v2 2026-08-14)
+    value: "01f197cca659176686dc225e90c612a1"
   - name: GENIE_QUOTE_SPACE_ID
-    value: ""
+    # Commercial Quote Review (cloned from dev to v2 2026-08-14)
+    value: "01f197cca7661b68839d65e138b29331"
   - name: MART_DASHBOARD_ID
-    value: ""
+    # Modelling Mart — Overview (cloned + published from dev to v2 2026-08-14)
+    value: "01f197cd25e718fca0f98d292f530c4d"
   # Root of the deployed source tree — drives workspace links to notebooks
   # without baking in a deployer's home path (production mode → /Workspace/Shared).
   - name: BUNDLE_FILES_BASE
