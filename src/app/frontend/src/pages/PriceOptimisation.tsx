@@ -32,8 +32,24 @@ export default function PriceOptimisation() {
   const [showHelp, setShowHelp] = useState(false);
 
   useEffect(() => {
+    const num = (v: any) => (v === null || v === undefined || v === '' ? v : Number(v));
+    const numify = (r: any) => {
+      const o = { ...r };
+      for (const k of ['n_quotes', 'elasticity', 'market_ref', 'cost_line',
+        'current_multiplier', 'current_conversion', 'current_profit_per_quote',
+        'optimal_multiplier', 'optimal_conversion', 'optimal_profit_per_quote',
+        'profit_uplift_per_quote', 'profit_uplift_pct', 'price_multiplier',
+        'expected_conversion', 'price', 'expected_profit_per_quote']) {
+        if (k in o) o[k] = num(o[k]);
+      }
+      return o;
+    };
     api.optimisationSummary()
       .then((d) => {
+        // Belt-and-suspenders: coerce numbers client-side too so a stray string
+        // can never white-screen the page.
+        if (d?.segments) d.segments = d.segments.map(numify);
+        if (d?.curve) d.curve = d.curve.map(numify);
         setData(d);
         if (d?.segments?.length) setSeg(d.segments[0].segment);
       })

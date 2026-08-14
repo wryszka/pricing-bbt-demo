@@ -25,6 +25,34 @@ async def _safe(sql: str):
         return None
 
 
+# The SQL Statement API returns every value as a string; the UI does maths on
+# these (.toFixed, comparisons), so coerce numeric columns to real numbers.
+_NUM_COLS = {
+    "n_quotes", "elasticity", "market_ref", "cost_line", "current_multiplier",
+    "current_conversion", "current_profit_per_quote", "optimal_multiplier",
+    "optimal_conversion", "optimal_profit_per_quote", "profit_uplift_per_quote",
+    "profit_uplift_pct", "price_multiplier", "expected_conversion", "price",
+    "expected_profit_per_quote", "rate_change_cap", "target_loss_ratio",
+    "margin_floor",
+}
+_BOOL_COLS = {"within_rate_cap"}
+
+
+def _coerce(rows):
+    if not rows:
+        return rows
+    for r in rows:
+        for k, v in list(r.items()):
+            if v is None:
+                continue
+            if k in _NUM_COLS:
+                try: r[k] = float(v)
+                except (TypeError, ValueError): pass
+            elif k in _BOOL_COLS:
+                r[k] = str(v).lower() in ("true", "1", "t")
+    return rows
+
+
 @router.get("/summary")
 async def optimisation_summary():
     """Per-segment current-vs-optimal, the price/demand/profit curve for the
@@ -58,7 +86,7 @@ async def optimisation_summary():
 
     return {
         "available": True,
-        "segments": summary or [],
-        "curve": curve or [],
-        "config": (config or [None])[0],
+        "segments": _coerce(summary) or [],
+        "curve": _coerce(curve) or [],
+        "config": (_coerce(config) or [None])[0],
     }
