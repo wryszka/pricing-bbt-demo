@@ -413,7 +413,7 @@ except Exception:
     user = "system"
 
 det = json.dumps({
-    "champion_aliases":  CHAMPION_VERSIONS,
+    "champion_aliases":  alias_results,
     "rating_engine":     "v2.0 champion",
     "active_release":    "apr_2026",
     "tables_truncated":  list(cleanup_counts.keys()),
@@ -467,7 +467,7 @@ except Exception as _e:
     print(f"⚠ ai-cache step skipped (non-fatal): {_e}")
 
 dbutils.notebook.exit(json.dumps({
-    "champion_aliases": CHAMPION_VERSIONS,
+    "champion_aliases": alias_results,
     "cleanup":          cleanup_counts,
     "geospatial_rows":  n,
     "motor_reset":      motor_reset,
