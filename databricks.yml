@@ -109,6 +109,10 @@ sync:
   # still ships it — the Apps runtime needs it for the uvicorn start command.
   include:
     - src/app/app.yaml
+    # The built frontend is .gitignored (regenerated at deploy) but the Apps
+    # runtime serves it statically — without it the SPA route never registers
+    # and the app returns {"detail":"Not Found"}. Force-sync it.
+    - src/app/frontend/dist/**
   exclude:
     - src/app/.venv/
     - src/app/.venv-local/
