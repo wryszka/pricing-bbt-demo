@@ -100,6 +100,46 @@ def get_workspace_host() -> str:
     return host
 
 
+_asset_cache: dict[str, str] = {}
+
+
+def resolve_genie_space_by_title(title: str) -> str:
+    """Look up a Genie space id by title (cached). Lets the app self-configure on
+    a fresh deploy where GENIE_SPACE_ID isn't wired: the create_ai_assets job
+    makes spaces with known titles and the app finds them. Env var still wins."""
+    if not title:
+        return ""
+    if title in _asset_cache:
+        return _asset_cache[title]
+    try:
+        resp = get_workspace_client().api_client.do("GET", "/api/2.0/genie/spaces")
+        for sp in (resp.get("spaces") or []):
+            if sp.get("title") == title:
+                _asset_cache[title] = sp.get("space_id") or ""
+                return _asset_cache[title]
+    except Exception as e:
+        logger.info("genie title resolve failed for %r: %s", title, e)
+    return ""
+
+
+def resolve_dashboard_by_title(name: str) -> str:
+    """Look up a Lakeview dashboard id by display_name (cached)."""
+    if not name:
+        return ""
+    key = f"dash::{name}"
+    if key in _asset_cache:
+        return _asset_cache[key]
+    try:
+        resp = get_workspace_client().api_client.do("GET", "/api/2.0/lakeview/dashboards")
+        for d in (resp.get("dashboards") or []):
+            if d.get("display_name") == name:
+                _asset_cache[key] = d.get("dashboard_id") or ""
+                return _asset_cache[key]
+    except Exception as e:
+        logger.info("dashboard title resolve failed for %r: %s", name, e)
+    return ""
+
+
 def get_current_user() -> str:
     # Prefer the real end user (set per request from the forwarded header) so
     # audit attributes to the person, not the app service principal.

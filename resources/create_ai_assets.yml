@@ -1,0 +1,36 @@
+# Create the Genie spaces + Modelling Mart dashboard from the serialized
+# definitions in resources/ai_assets/ (retargeted to this workspace's catalog).
+# Genie/dashboards aren't DAB resources, but they're scriptable via the official
+# APIs — this makes a script deploy self-contained (no source-workspace clone).
+resources:
+  jobs:
+    create_ai_assets:
+      name: "Build — create Genie spaces + mart dashboard"
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: warehouse_id
+          default: ${var.warehouse_id}
+        - name: app_service_principal_id
+          default: ${var.app_service_principal_id}
+      tasks:
+        - task_key: create_assets
+          notebook_task:
+            notebook_path: ../src/00_setup/create_ai_assets.py
+            base_parameters:
+              catalog_name:             ${var.catalog_name}
+              schema_name:              ${var.schema_name}
+              warehouse_id:             ${var.warehouse_id}
+              app_service_principal_id: ${var.app_service_principal_id}
+              # DAB resolves the deployed files root; the JSONs live under it.
+              assets_path:              ${workspace.file_path}/resources/ai_assets
+              parent_path:              /Workspace/Shared
+          environment_key: env
+      environments:
+        - environment_key: env
+          spec:
+            client: "5"
+            dependencies:
+              - databricks-sdk

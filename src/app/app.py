@@ -82,11 +82,14 @@ async def health():
 
 @app.get("/api/config")
 async def config():
-    from server.config import get_bundle_files_base
+    from server.config import (get_bundle_files_base, resolve_genie_space_by_title,
+                               resolve_dashboard_by_title)
     host = get_workspace_host()
-    genie_id = os.getenv("GENIE_SPACE_ID", "")
-    genie_quote_id = os.getenv("GENIE_QUOTE_SPACE_ID", "")
-    mart_dashboard_id = os.getenv("MART_DASHBOARD_ID", "")
+    # Env var wins; if blank (fresh deploy where ids aren't wired), resolve by
+    # the titles the create_ai_assets job uses — so the app self-configures.
+    genie_id = os.getenv("GENIE_SPACE_ID", "") or resolve_genie_space_by_title("Modelling Mart — Pricing Q&A")
+    genie_quote_id = os.getenv("GENIE_QUOTE_SPACE_ID", "") or resolve_genie_space_by_title("Commercial Quote Review")
+    mart_dashboard_id = os.getenv("MART_DASHBOARD_ID", "") or resolve_dashboard_by_title("Modelling Mart — Overview")
     files_base = get_bundle_files_base()
     return {
         "bundle_files_base":     files_base,

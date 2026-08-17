@@ -1,0 +1,5 @@
+{
+  "title": "Modelling Mart \u2014 Pricing Q&A",
+  "description": "Ask questions about the Modelling Mart (unified_pricing_table_live) \u2014 the single gold table that joins every approved source used for pricing.",
+  "serialized_space": "{\n  \"version\": 2,\n  \"data_sources\": {\n    \"tables\": [\n      {\n        \"identifier\": \"__PWCATALOG__.__PWSCHEMA__.unified_pricing_table_live\"\n      }\n    ]\n  }\n}\n"
+}

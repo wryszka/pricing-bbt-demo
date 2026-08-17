@@ -1,0 +1,5 @@
+{
+  "title": "Commercial Quote Review",
+  "description": "Commercial quote stream Q&A \u2014 transactions, prices, outliers, drop-outs, model version splits.",
+  "serialized_space": "{\n  \"version\": 2,\n  \"data_sources\": {\n    \"tables\": [\n      {\n        \"identifier\": \"__PWCATALOG__.__PWSCHEMA__.quote_payload_engine_request\"\n      },\n      {\n        \"identifier\": \"__PWCATALOG__.__PWSCHEMA__.quote_payload_engine_response\"\n      },\n      {\n        \"identifier\": \"__PWCATALOG__.__PWSCHEMA__.quote_payload_sales\"\n      },\n      {\n        \"identifier\": \"__PWCATALOG__.__PWSCHEMA__.quotes\"\n      }\n    ]\n  }\n}\n"
+}
