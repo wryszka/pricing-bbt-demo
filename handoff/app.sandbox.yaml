@@ -1,0 +1,28 @@
+# Pricing Workbench — sandbox env template.
+# deploy.sh copies this to app.yaml before `databricks bundle deploy`.
+# >>> SET catalog / warehouse to match databricks.yml. Genie + dashboard ids
+#     are optional — leave blank and those tabs stay hidden until you create the
+#     AI/BI assets and paste the ids here (see README). <<<
+command: ["python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+env:
+  - name: CATALOG_NAME
+    value: "main"
+  - name: SCHEMA_NAME
+    value: "pricing_workbench"
+  - name: WAREHOUSE_ID
+    value: ""
+  - name: GENIE_SPACE_ID
+    value: ""
+  - name: GENIE_QUOTE_SPACE_ID
+    value: ""
+  - name: MART_DASHBOARD_ID
+    value: ""
+  - name: BUNDLE_FILES_BASE
+    value: "/Workspace/Shared/.bundle/pricing-workbench/sandbox/files/src"
+  - name: BUNDLE_NAME
+    value: "pricing-workbench"
+  - name: BUNDLE_TARGET
+    value: "sandbox"
+  # Emails allowed to run destructive admin actions (reset/sleep/AI-mode/cache).
+  - name: ADMIN_USERS
+    value: ""

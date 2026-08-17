@@ -1,0 +1,88 @@
+bundle:
+  name: pricing-workbench
+
+# ---------------------------------------------------------------------------
+# Configure the `sandbox` target for your workspace, then deploy. See README.md
+# for the three-command deploy. Everything is serverless and scale-to-zero; no
+# classic compute is required.
+# ---------------------------------------------------------------------------
+variables:
+  catalog_name:
+    description: Unity Catalog to hold all demo objects (must already exist)
+    default: main
+  schema_name:
+    description: Schema for all demo tables — everything lives in one schema
+    default: pricing_workbench
+  volume_name:
+    description: Volume for landing external data files
+    default: external_landing
+  entity_name:
+    description: Name of the (fictional) reporting undertaking
+    default: "Bricksurance SE"
+  warehouse_id:
+    description: Serverless SQL warehouse id the app + jobs query
+    default: ""
+  app_service_principal_id:
+    description: |
+      The Databricks App's service principal (appId). Empty on first deploy —
+      the README two-phase bootstrap fills it in: create the app, copy its SP,
+      set it here, then deploy so the job grants attach.
+    default: ""
+  genie_space_id:
+    description: AI/BI Genie space over the Modelling Mart (empty hides the tab)
+    default: ""
+  genie_quote_space_id:
+    description: AI/BI Genie space over the quote stream (empty hides the tab)
+    default: ""
+  mart_dashboard_id:
+    description: Lakeview dashboard for the Modelling Mart tab (empty hides it)
+    default: ""
+  deploy_profile:
+    description: |
+      core = commercial rating engine + models + governance + agents + MCP/
+      agentic buyer + price optimisation (all scale-to-zero, no live feature
+      table). The optional live-serving tier (Lakebase online store, QPS tester)
+      is defined but dormant — run those jobs on demand.
+    default: "core"
+  live_online_store_name:
+    default: "pw-pricing-online-store"
+  live_endpoint_name:
+    default: "pw_pricing_scorer"
+  scale_factor:
+    description: Synthetic dataset size multiplier (1 = 50k policies)
+    default: "1"
+
+targets:
+  sandbox:
+    mode: production
+    default: true
+    workspace:
+      # >>> SET for your workspace <<<
+      host: https://YOUR-WORKSPACE.cloud.databricks.com
+      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
+    variables:
+      # >>> SET catalog_name + warehouse_id (and app_service_principal_id after
+      #     the app is created — see README) <<<
+      catalog_name:  main
+      schema_name:   pricing_workbench
+      warehouse_id:  ""
+      scale_factor:  "1"
+      deploy_profile: "core"
+
+sync:
+  include:
+    - src/app/app.yaml
+    # The built frontend is .gitignored (deploy.sh rebuilds it) but the Apps
+    # runtime serves it statically — without it the app returns
+    # {"detail":"Not Found"}. Force-sync it.
+    - src/app/frontend/dist/**
+  exclude:
+    - src/app/.venv/
+    - src/app/.venv-local/
+    - src/app/frontend/node_modules/
+    - docs/
+    - "*.bak"
+    - data/
+
+include:
+  - resources/*.yml
