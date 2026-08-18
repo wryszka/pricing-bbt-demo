@@ -36,9 +36,14 @@ for stmt in [
     f"GRANT USE SCHEMA ON SCHEMA {catalog}.{schema} TO `{app_sp}`",
     f"GRANT SELECT ON SCHEMA {catalog}.{schema} TO `{app_sp}`",
     f"GRANT EXECUTE ON SCHEMA {catalog}.{schema} TO `{app_sp}`",
+    # READ VOLUME so the app can stream governance-pack PDFs + saved payloads.
+    f"GRANT READ VOLUME ON SCHEMA {catalog}.{schema} TO `{app_sp}`",
 ]:
-    spark.sql(stmt)
-    print(f"✓ {stmt}")
+    try:
+        spark.sql(stmt)
+        print(f"✓ {stmt}")
+    except Exception as e:
+        print(f"⚠ {stmt} — {str(e)[:100]}")
 
 # COMMAND ----------
 

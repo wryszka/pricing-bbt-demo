@@ -48,7 +48,8 @@ resources:
         - environment_key: env
           spec:
             client: "5"
-            dependencies: []
+            dependencies:
+              - databricks-sdk
 
     apply_tags:
       name: "Build — apply uniform UC tags"
