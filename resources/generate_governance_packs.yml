@@ -1,0 +1,66 @@
+# Generate a REAL governance pack for each production champion — one job, four
+# chained tasks (the generator writes to a single volume; keep it serial). Used
+# two ways: full_build calls it during deployment, AND it's the standalone
+# "populate governance" process to run right after any deploy:
+#     databricks bundle run generate_governance_packs --target <t> --profile <p>
+# Idempotent per version (re-running adds a fresh pack for the current champion).
+resources:
+  jobs:
+    generate_governance_packs:
+      name: "Build — generate governance packs (all champions)"
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+      tasks:
+        - task_key: pack_freq_glm
+          notebook_task: &nb
+            notebook_path: ../src/04_models/production/governance_pack.py
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name:  ${var.schema_name}
+              model_family: "freq_glm"
+              requested_by: "full_build"
+          environment_key: pack_env
+        - task_key: pack_sev_glm
+          depends_on: [{ task_key: pack_freq_glm }]
+          notebook_task:
+            <<: *nb
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name:  ${var.schema_name}
+              model_family: "sev_glm"
+              requested_by: "full_build"
+          environment_key: pack_env
+        - task_key: pack_demand_gbm
+          depends_on: [{ task_key: pack_sev_glm }]
+          notebook_task:
+            <<: *nb
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name:  ${var.schema_name}
+              model_family: "demand_gbm"
+              requested_by: "full_build"
+          environment_key: pack_env
+        - task_key: pack_fraud_gbm
+          depends_on: [{ task_key: pack_demand_gbm }]
+          notebook_task:
+            <<: *nb
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name:  ${var.schema_name}
+              model_family: "fraud_gbm"
+              requested_by: "full_build"
+          environment_key: pack_env
+
+      environments:
+        - environment_key: pack_env
+          spec:
+            client: "5"
+            dependencies:
+              - mlflow
+              - fpdf2
+              - matplotlib
+              - pyarrow
+              - pandas

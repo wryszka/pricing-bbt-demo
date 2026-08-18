@@ -131,29 +131,13 @@ resources:
           run_job_task:
             job_id: ${resources.jobs.create_ai_assets.id}
 
-        # --- REAL governance packs for each champion (multi-section PDF + charts
-        # + sidecars). Chained: the generator job is single-concurrency. Needs the
-        # champion aliases and the packs volume. ~2-3 min each. ---
-        - task_key: pack_freq
+        # --- REAL governance packs for every champion (multi-section PDF + charts
+        # + sidecars). One reusable job (4 chained tasks); also runnable standalone
+        # post-deploy. Needs champion aliases + the packs volume. ---
+        - task_key: governance_packs
           depends_on: [{ task_key: aliases }, { task_key: supporting_tables }]
           run_job_task:
-            job_id: ${resources.jobs.governance_pack_generation.id}
-            job_parameters: { model_family: "freq_glm" }
-        - task_key: pack_sev
-          depends_on: [{ task_key: pack_freq }]
-          run_job_task:
-            job_id: ${resources.jobs.governance_pack_generation.id}
-            job_parameters: { model_family: "sev_glm" }
-        - task_key: pack_demand
-          depends_on: [{ task_key: pack_sev }]
-          run_job_task:
-            job_id: ${resources.jobs.governance_pack_generation.id}
-            job_parameters: { model_family: "demand_gbm" }
-        - task_key: pack_fraud
-          depends_on: [{ task_key: pack_demand }]
-          run_job_task:
-            job_id: ${resources.jobs.governance_pack_generation.id}
-            job_parameters: { model_family: "fraud_gbm" }
+            job_id: ${resources.jobs.generate_governance_packs.id}
 
         # --- app-SP grants (endpoints must exist) then metadata + tags ---
         - task_key: grant_app_sp
