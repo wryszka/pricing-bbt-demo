@@ -30,8 +30,10 @@ dbutils.widgets.text("requested_by",  "app")
 
 # COMMAND ----------
 
-# MAGIC %pip install fpdf2 mlflow --quiet
-# MAGIC dbutils.library.restartPython()
+# NOTE: fpdf2 / mlflow / matplotlib come from the job's serverless environment
+# (see resources/governance_pack.yml). Do NOT `%pip install ... ; restartPython()`
+# here — on serverless that pattern stalls the run at exec=0 (the hang that kept
+# this job from producing real packs). Deps belong in the environment spec.
 
 # COMMAND ----------
 
