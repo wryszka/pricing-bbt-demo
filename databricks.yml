@@ -70,8 +70,8 @@ targets:
       catalog_name:  lr_pricing_v2_aws_us_catalog
       schema_name:   pricing_workbench
       warehouse_id:  "f738fde9a1197aeb"
-      # App SP minted when the app was created on the v2 workspace (2026-08-13).
-      app_service_principal_id: "acd2d10b-1d14-427e-b442-8263057618dc"
+      # App SP minted when the app was (re)created on the v2 workspace (2026-08-17).
+      app_service_principal_id: "8f20568f-50cc-4ed4-b119-8a532f9b2e6c"
       scale_factor:  "1"
       deploy_profile: "core"
 

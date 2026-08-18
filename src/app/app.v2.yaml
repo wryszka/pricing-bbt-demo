@@ -11,15 +11,16 @@ env:
     value: "f738fde9a1197aeb"
   # Genie spaces + dashboard are created after the data exists — leave blank so
   # the app hides those tabs until the ids are filled in and the app redeployed.
+  # Leave blank — full_build's create_ai_assets makes these fresh each deploy and
+  # the app resolves them BY TITLE at runtime. Hardcoding a stale id breaks on
+  # redeploy (points at a trashed space → 403).
   - name: GENIE_SPACE_ID
-    # Modelling Mart — Pricing Q&A (cloned from dev to v2 2026-08-14)
-    value: "01f197cca659176686dc225e90c612a1"
+    value: ""
   - name: GENIE_QUOTE_SPACE_ID
-    # Commercial Quote Review (cloned from dev to v2 2026-08-14)
-    value: "01f197cca7661b68839d65e138b29331"
+    value: ""
   - name: MART_DASHBOARD_ID
-    # Modelling Mart — Overview (cloned + published from dev to v2 2026-08-14)
-    value: "01f197cd25e718fca0f98d292f530c4d"
+    # Blank on purpose — resolved by title at runtime (see Genie note above).
+    value: ""
   # Root of the deployed source tree — drives workspace links to notebooks
   # without baking in a deployer's home path (production mode → /Workspace/Shared).
   - name: BUNDLE_FILES_BASE
