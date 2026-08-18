@@ -98,11 +98,20 @@ databricks bundle run full_build --target v2 --profile PRICING_V2
 Generates, in dependency order (~35–45 min): synthetic data + quote stream (with
 price elasticity) → real UK postcode enrichment → bronze/silver ingest → UPT →
 4 champions + `@champion` aliases → rating config + release rate-book →
-inference/bias backfills → shadow-pricing → supporting tables **+ governance
-pack history** → commercial rating-engine endpoint → governance + chat agents
-(self-mint their SQL token) → motor/agentic core (`motor_pricing_scorer_direct`)
-→ price-optimiser tables → **Genie spaces + mart dashboard** (`create_ai_assets`)
-→ app-SP grants (UC + endpoints) → metadata → uniform `pw_` tags.
+inference/bias backfills → shadow-pricing → supporting tables + packs volume →
+commercial rating-engine endpoint → governance + chat agents (self-mint their SQL
+token) → motor/agentic core (`motor_pricing_scorer_direct`) → price-optimiser
+tables → **Genie spaces + mart dashboard** (`create_ai_assets`) → **real
+governance packs per champion** (`generate_governance_packs`) → app-SP grants (UC
++ endpoints + READ VOLUME) → metadata → uniform `pw_` tags.
+
+**Populate governance separately (if ever needed):** the real packs are made by
+their own reusable job, so you can (re)fill governance any time without a full
+rebuild:
+```bash
+databricks bundle run generate_governance_packs --target v2 --profile PRICING_V2
+```
+One real multi-section PDF (+ charts + sidecars) per champion, ~10 min.
 
 ---
 
