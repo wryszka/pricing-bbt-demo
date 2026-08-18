@@ -21,7 +21,7 @@ chmod +x "$DEST"/deploy.sh "$DEST"/scripts/*.sh 2>/dev/null || true
 echo "==> removing internal-only docs / scripts / handoff dir"
 rm -rf "$DEST"/handoff
 rm -f "$DEST"/docs/v2_plan.md "$DEST"/docs/parked_backlog.md \
-      "$DEST"/docs/optimisation_demo_spec.md \
+      "$DEST"/docs/optimisation_demo_spec.md "$DEST"/docs/DEPLOY.md \
       "$DEST"/scripts/patch_mart_dashboard.py "$DEST"/scripts/restore_motor_scorer.py \
       "$DEST"/scripts/make_handoff.sh
 
