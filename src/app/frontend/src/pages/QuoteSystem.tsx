@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Car, ShieldCheck, Loader2, Check, Lock } from 'lucide-react';
 import { api } from '../lib/api';
+import { brand } from '../lib/brand';
 
 const JOHN = 'POL-MOTOR-00000001';
 
@@ -71,7 +72,7 @@ export default function QuoteSystem() {
           <div className="w-9 h-9 rounded-lg bg-blue-600 flex items-center justify-center">
             <Car className="w-5 h-5 text-white" />
           </div>
-          <div className="font-bold text-lg tracking-tight">Bricksurance<span className="text-blue-600"> Motor</span></div>
+          <div className="font-bold text-lg tracking-tight">{brand.short}<span className="text-blue-600"> Motor</span></div>
           <div className="ml-auto text-xs text-slate-500 flex items-center gap-1.5">
             <Lock className="w-3.5 h-3.5" /> Secure quote
           </div>
@@ -207,7 +208,7 @@ export default function QuoteSystem() {
       {/* Subtle internal return link */}
       <footer className="border-t border-slate-200 py-4">
         <div className="max-w-5xl mx-auto px-6 flex items-center justify-between text-[11px] text-slate-400">
-          <span>© Bricksurance SE · Demo environment</span>
+          <span>© {brand.name} · Demo environment</span>
           <a href="/" className="hover:text-slate-600 underline-offset-2 hover:underline">Pricing Workbench</a>
         </div>
       </footer>

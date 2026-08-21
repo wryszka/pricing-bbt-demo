@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { brand, isPrototype } from '../lib/brand';
 import {
   Database, FlaskConical, Table2, Shield, ArrowRight, Code, Rocket, Package, Sparkles,
   RotateCcw, Loader2, ExternalLink, CheckCircle2, AlertCircle,
@@ -26,14 +27,17 @@ export default function Home() {
       {/* About this demo — single landing-page disclaimer */}
       <div className="max-w-3xl mx-auto mb-10 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
         <div className="text-xs font-semibold text-amber-900 uppercase tracking-wide mb-1">
-          About this demo
+          {isPrototype ? 'About this prototype' : 'About this demo'}
         </div>
         <p className="text-sm text-amber-900/90 leading-relaxed">
-          Bricksurance SE is a synthetic insurance carrier. All policies, quotes, claims, and
+          {isPrototype
+            ? `This is a working prototype of the production pricing workbench for ${brand.short}, running on synthetic, illustrative data in a Databricks sandbox. `
+            : `${brand.name} is a synthetic insurance carrier. `}
+          All policies, quotes, claims, and
           director demographics are generated; the UK postcode enrichment is real public data.
           Production models, agents (Claude Sonnet 4.6 via the Databricks Foundation Model API),
           governance packs, audit logs, and the scoring flow are real — everything else is
-          illustrative.
+          illustrative{isPrototype ? ` and not ${brand.short}'s live book` : ''}.
         </p>
       </div>
 
@@ -136,8 +140,10 @@ export default function Home() {
           fork it, adapt it, use it as a starting point.
         </p>
         <p className="text-sm text-gray-600">
-          All company names (Bricksurance SE), policy data and financial figures are fictional. No real
-          customer data. The optional postcode enrichment in Add-ons uses genuine UK public data (ONSPD +
+          {isPrototype
+            ? `The policy data and financial figures are synthetic and illustrative — not ${brand.short}'s real portfolio or rates. `
+            : `All company names (${brand.name}), policy data and financial figures are fictional. No real customer data. `}
+          The optional postcode enrichment in Add-ons uses genuine UK public data (ONSPD +
           IMD 2019 + ONS RUC) under the Open Government Licence.
         </p>
       </div>

@@ -29,6 +29,11 @@ env:
     value: "pricing-workbench"
   - name: BUNDLE_TARGET
     value: "v2"
+  # AXA handover sandbox: run agents LIVE (real serving round-trips) rather than
+  # the cached demo cadence — a hands-on prototype should not serve canned
+  # answers. Operators can still flip to 'cached' at runtime via /api/admin/ai-mode.
+  - name: AI_RESPONSE_MODE
+    value: "live"
   # Comma-separated emails allowed to run destructive admin actions (demo reset,
   # sleep, AI-mode/cache) — so a random viewer can't wipe a live demo. Add the
   # AXA presenters here for their sandbox.

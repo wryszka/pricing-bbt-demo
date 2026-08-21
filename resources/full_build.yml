@@ -119,12 +119,6 @@ resources:
             job_parameters:
               deploy_mode: "direct_only"
 
-        # --- price optimisation worked example (needs the elasticity-bearing quotes) ---
-        - task_key: price_optimiser
-          depends_on: [{ task_key: setup }]
-          run_job_task:
-            job_id: ${resources.jobs.price_optimiser.id}
-
         # --- AI/BI assets: Genie spaces + mart dashboard (scripted from JSON) ---
         - task_key: ai_assets
           depends_on: [{ task_key: build_upt }]
@@ -160,6 +154,5 @@ resources:
           depends_on:
             - { task_key: metadata }
             - { task_key: motor_scorer }
-            - { task_key: price_optimiser }
           run_job_task:
             job_id: ${resources.jobs.apply_tags.id}

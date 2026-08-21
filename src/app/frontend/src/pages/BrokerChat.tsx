@@ -5,6 +5,7 @@ import {
   ArrowRight, Gauge, Info, ChevronDown, ChevronUp,
 } from 'lucide-react';
 import { api } from '../lib/api';
+import { brand, isPrototype } from '../lib/brand';
 
 /**
  * Conversational motor quote — the direct/broker chatbot surface.
@@ -86,7 +87,7 @@ export default function BrokerChat() {
             <Car className="w-5 h-5 text-white" />
           </div>
           <div className="font-bold text-lg tracking-tight">
-            Bricksurance<span className="text-blue-600"> Motor</span>
+            {brand.short}<span className="text-blue-600"> Motor</span>
           </div>
           <span className="text-[11px] px-2 py-0.5 rounded bg-blue-50 text-blue-700 font-medium">
             Quote assistant
@@ -285,9 +286,9 @@ export default function BrokerChat() {
 
       <footer className="border-t border-slate-200 bg-white py-3">
         <div className="max-w-6xl mx-auto px-6 text-[11px] text-slate-400">
-          About this demo — Bricksurance SE is a fictional insurer. The pricing models,
-          serving endpoints, governance and data are real Databricks components; the
-          portfolio is synthetic. Nothing here reflects a real insurer's rates or book.
+          {isPrototype
+            ? `About this prototype — a prototype of the production quote assistant for ${brand.short}, on synthetic data. The pricing models, serving endpoints, governance and data flow are real Databricks components; the portfolio is synthetic and does not reflect ${brand.short}'s live rates or book.`
+            : `About this demo — ${brand.name} is a fictional insurer. The pricing models, serving endpoints, governance and data are real Databricks components; the portfolio is synthetic. Nothing here reflects a real insurer's rates or book.`}
         </div>
       </footer>
     </div>
